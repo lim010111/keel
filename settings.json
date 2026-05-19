@@ -44,6 +44,16 @@
             "command": "python3 /home/shine/.claude/hooks/tdd_guard.py"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd=$(jq -r '.tool_input.command // empty'); case \"$cmd\" in *\"git commit\"*) root=$(git rev-parse --show-toplevel 2>/dev/null); if [ -n \"$root\" ] && [ -f \"$root/STATUS.md\" ] && [ -f \"$HOME/.claude/scripts/status.py\" ]; then python3 \"$HOME/.claude/scripts/status.py\" >/dev/null 2>&1; git -C \"$root\" add STATUS.md >/dev/null 2>&1; fi ;; esac; exit 0",
+            "statusMessage": "Refreshing STATUS.md before commit"
+          }
+        ]
       }
     ],
     "PostToolUse": [
