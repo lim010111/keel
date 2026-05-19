@@ -36,3 +36,9 @@ agents/korean-context-writer.md
 CLAUDE.md
 statusline.sh
 settings.json
+
+# --- Deliberately excluded ---
+# Authored content that is keel-maintenance tooling, not harness content
+# (see docs/adr/0002). detect-drift.sh reads these so they stop being
+# flagged as untracked drift.
+# exclude: skills/keel-update
