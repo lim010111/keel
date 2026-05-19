@@ -1,0 +1,11 @@
+# Runtime cruft — must never enter keel
+*:Zone.Identifier
+__pycache__/
+*.pyc
+
+# Live hook state / logs (the .session-devlog logs leak real paths)
+.tdd-state/
+.tdd-markers/
+.session-devlog/
+
+.DS_Store

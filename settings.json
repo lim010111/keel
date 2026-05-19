@@ -1,0 +1,130 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./private/**)",
+      "Read(./.gemini/**)",
+      "Read(./GEMINI.md)",
+      "Glob(./private/**)",
+      "Glob(./.gemini/**)",
+      "Grep(./private/**)",
+      "Grep(./.gemini/**)",
+      "Edit(./private/**)",
+      "Edit(./.gemini/**)",
+      "Edit(./GEMINI.md)"
+    ],
+    "defaultMode": "auto"
+  },
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/shine/.claude/scripts/sound_permission.sh"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/shine/.claude/hooks/tdd_keyword.py"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/shine/.claude/hooks/tdd_guard.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/shine/.claude/hooks/tdd_mark.py"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"; python3 /home/shine/.claude/scripts/status.py >/dev/null 2>&1; if [ -f \"$root/STATUS.md\" ]; then echo '=== Project status board (STATUS.md) ==='; cat \"$root/STATUS.md\"; fi"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/shine/.claude/scripts/sound_complete.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/shine/.claude/hooks/tdd_verify.py"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/shine/.claude/scripts/status.py"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/shine/.claude/hooks/session_devlog.py"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash /home/shine/.claude/statusline.sh"
+  },
+  "enabledPlugins": {
+    "typescript-lsp@claude-plugins-official": false,
+    "superpowers@claude-plugins-official": false,
+    "codex@openai-codex": true,
+    "claude-md-management@claude-plugins-official": true
+  },
+  "extraKnownMarketplaces": {
+    "openai-codex": {
+      "source": {
+        "source": "github",
+        "repo": "openai/codex-plugin-cc"
+      }
+    }
+  },
+  "effortLevel": "xhigh",
+  "skipDangerousModePermissionPrompt": true,
+  "autoCompactEnabled": false,
+  "remoteControlAtStartup": true,
+  "skipAutoPermissionPrompt": true
+}

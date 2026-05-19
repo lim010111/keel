@@ -1,0 +1,38 @@
+# keel/.allowlist — what sync.sh mirrors from ~/.claude.
+#
+# Only the user's own authored content goes here. Third-party skills,
+# the gstack submodule, and plugins are referenced in docs/DEPENDENCIES.md
+# — never copied into this repo (see docs/adr/0002).
+#
+# Paths are relative to $CLAUDE_DIR (default: ~/.claude).
+
+# --- Skills (authored) ---
+skills/ai-readiness-cartography
+skills/audit-and-write-readme
+skills/daily-dev-log
+skills/session-dev-log
+skills/setup-status-harness
+skills/status
+skills/tech-blog
+
+# --- Hooks ---
+hooks/tdd_guard.py
+hooks/tdd_keyword.py
+hooks/tdd_mark.py
+hooks/tdd_verify.py
+hooks/session_devlog.py
+hooks/test_session_devlog.py
+hooks/test_tdd_hooks.py
+
+# --- Scripts ---
+scripts/status.py
+scripts/sound_complete.sh
+scripts/sound_permission.sh
+
+# --- Agent (definition only; agent-memory/ is intentionally excluded) ---
+agents/korean-context-writer.md
+
+# --- Config ---
+CLAUDE.md
+statusline.sh
+settings.json
