@@ -20,10 +20,16 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
+
+# Sessions started before this local hour are attributed to the previous
+# calendar day (late-night work continuation). 01:30 next-day becomes the
+# previous day's "25-30" slot — the wall-clock hour + 24 — so files sort after
+# the evening sessions they continue.
+LATE_NIGHT_CUTOFF_HOUR = 5
 
 COMMAND_NAME_RE = re.compile(r"<command-name>([^<]+)</command-name>")
 COMMAND_ARGS_RE = re.compile(r"<command-args>([^<]*)</command-args>", re.DOTALL)
@@ -53,6 +59,29 @@ def parse_ts(s):
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def logical_date(ts):
+    """Date the user would consider this timestamp to 'belong to'.
+
+    Past-midnight hours (00:00 to LATE_NIGHT_CUTOFF_HOUR - 1) are folded into
+    the previous calendar day.
+    """
+    if ts is None:
+        return None
+    local = ts.astimezone()
+    if local.hour < LATE_NIGHT_CUTOFF_HOUR:
+        return (local - timedelta(days=1)).date()
+    return local.date()
+
+
+def display_hhmm(ts):
+    """HH-MM string for filenames. Past-midnight hours use 24+ (01:30 -> 25-30)."""
+    if ts is None:
+        return None
+    local = ts.astimezone()
+    hour = local.hour + 24 if local.hour < LATE_NIGHT_CUTOFF_HOUR else local.hour
+    return f"{hour:02d}-{local.minute:02d}"
 
 
 def extract_text(content) -> str:
@@ -221,12 +250,17 @@ def process(path: Path) -> dict:
 
     flush_ai()
 
+    logical = logical_date(first_ts)
+    calendar = first_ts.astimezone().date() if first_ts else None
     return {
         "session_id": path.stem,
         "path": str(path),
         "cwd": cwd or path.parent.name,
         "git_branch": git_branch,
-        "date": first_ts.astimezone().date().isoformat() if first_ts else None,
+        "logical_date": logical.isoformat() if logical else None,
+        "calendar_date": calendar.isoformat() if calendar else None,
+        "display_hhmm": display_hhmm(first_ts),
+        "late_night": bool(logical and calendar and logical != calendar),
         "first_ts_local": first_ts.astimezone().isoformat() if first_ts else None,
         "last_ts_local": last_ts.astimezone().isoformat() if last_ts else None,
         "human_turn_count": human_count,

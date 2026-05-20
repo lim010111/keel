@@ -7,6 +7,8 @@ description: Reviews all Claude Code sessions active on a given date (default to
 
 오늘(또는 지정한 날짜)에 활동이 있었던 모든 Claude Code 세션을 훑어 프로젝트별로 정리한 한국어 마크다운을 Obsidian Dev log 보관함에 저장한다.
 
+> **"하루"의 정의**: 05:00 ~ 다음날 04:59 (로컬 시각). 즉 0~5시 사이의 새벽 작업은 *전날*의 연장으로 본다. 19일 02:00에 `/daily-dev-log`를 실행하면 기본 대상은 18일이다. `--date 2026-05-18`은 `2026-05-18 05:00 ~ 2026-05-19 04:59` 범위의 활동을 모은다.
+
 ## Quick start
 
 ```bash
@@ -69,6 +71,7 @@ python3 ~/.claude/skills/daily-dev-log/scripts/collect_today.py --date 2026-05-1
 - **의미 있는 prompt가 없는 세션** (예: `/clear`만 누르고 끝) 은 "탐색/리셋만" 한 줄로 묶거나 생략.
 - **노이즈 제외**: `<system-reminder>`, `<command-name>` 같은 메타는 스크립트가 이미 걸러냄. 그래도 prompts에 명령어성 텍스트(`/foo`)가 남아 있으면 묶어서 처리.
 - **세션이 어제부터 이어진 경우**: JSON의 `first_ts_local`이 어제 날짜더라도 today에 활동이 있어서 포함된 것 — "어제부터 이어진 세션" 표기 한 줄.
+- **새벽까지 이어진 작업**: `first_ts_local`이 *오늘*인데 `last_ts_local`이 다음날 새벽(< 05:00)이라면 정상이다. 시각은 벽시계 그대로 (`23:00 ~ 02:30 (KST)`).
 
 ## 검증 체크리스트
 

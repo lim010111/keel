@@ -15,10 +15,15 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
+
+# Sessions started before this local hour are attributed to the previous
+# calendar day (late-night work continuation). A "day" here means
+# [target 05:00, target+1 05:00) in local time.
+LATE_NIGHT_CUTOFF_HOUR = 5
 
 COMMAND_NAME_RE = re.compile(r"<command-name>([^<]+)</command-name>")
 COMMAND_ARGS_RE = re.compile(r"<command-args>([^<]*)</command-args>", re.DOTALL)
@@ -50,6 +55,15 @@ def local_date(ts):
     if ts is None:
         return None
     return ts.astimezone().date()
+
+
+def logical_date(ts):
+    if ts is None:
+        return None
+    local = ts.astimezone()
+    if local.hour < LATE_NIGHT_CUTOFF_HOUR:
+        return (local - timedelta(days=1)).date()
+    return local.date()
 
 
 def extract_text(content) -> str:
@@ -147,7 +161,7 @@ def process_session(path: Path, target_date) -> dict | None:
                         first_ts = ts
                     if last_ts is None or ts > last_ts:
                         last_ts = ts
-                    if local_date(ts) == target_date:
+                    if logical_date(ts) == target_date:
                         on_target = True
 
                 if obj.get("cwd") and not cwd:
@@ -239,7 +253,7 @@ def main():
             print(f"Invalid --date: {args.date!r} (expected YYYY-MM-DD)", file=sys.stderr)
             sys.exit(2)
     else:
-        target = datetime.now().astimezone().date()
+        target = logical_date(datetime.now().astimezone())
 
     sessions: list[dict] = []
     if PROJECTS_DIR.exists():
@@ -248,14 +262,12 @@ def main():
                 continue
             for jsonl in project_dir.glob("*.jsonl"):
                 try:
-                    mtime_date = (
-                        datetime.fromtimestamp(jsonl.stat().st_mtime)
-                        .astimezone()
-                        .date()
+                    mtime_logical = logical_date(
+                        datetime.fromtimestamp(jsonl.stat().st_mtime).astimezone()
                     )
                 except OSError:
                     continue
-                if mtime_date < target:
+                if mtime_logical < target:
                     continue
                 result = process_session(jsonl, target)
                 if result:

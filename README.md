@@ -33,10 +33,10 @@ keel은 그 실수를 *구조적으로* 막는다.
 
 | 종류 | 항목 |
 |---|---|
-| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `daily-dev-log`, `session-dev-log`, `setup-status-harness`, `status`, `tech-blog` |
+| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `daily-dev-log`, `session-dev-log`, `setup-status-harness`, `status`, `tech-blog` |
 | Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `session_devlog` |
 | Scripts | `status.py`, `sound_complete.sh`, `sound_permission.sh` |
-| Agent | `korean-context-writer` |
+| Agents | `ci-researcher`, `korean-context-writer` |
 | Config | `CLAUDE.md`, `statusline.sh`, `settings.json` |
 
 컴포넌트들은 독립적이지 않다. 아래 세 묶음은 **함께 있어야 동작**한다 — 하나만
@@ -84,6 +84,9 @@ keel은 그 실수를 *구조적으로* 막는다.
   HTML 대시보드와 ROI 정렬 액션 목록을 만든다. `scripts/score.py` 번들.
 - `audit-and-write-readme` — 프로젝트를 깊게 감사해 검증된 영문/한국어 README를
   쓴다. 모든 주장은 실제 파일 대조 게이트를 통과해야 한다.
+- `ci-setup` — 현재 repo를 검토해 GitHub Actions CI 워크플로를 언어별로
+  생성한다. `ci-researcher` 서브에이전트가 modern/stable toolchain 두 안을
+  web에서 리서치, 사용자가 5단계 게이트로 결정한다.
 - `tech-blog` — 담백한 한국어 기술 블로그 글. 검증된 사실만, 과장 없이.
 - `statusline.sh` — 커스텀 상태줄.
 - `sound_complete.sh` / `sound_permission.sh` — 완료·권한요청 알림음.

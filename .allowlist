@@ -9,6 +9,7 @@
 # --- Skills (authored) ---
 skills/ai-readiness-cartography
 skills/audit-and-write-readme
+skills/ci-setup
 skills/daily-dev-log
 skills/session-dev-log
 skills/setup-status-harness
@@ -29,7 +30,8 @@ scripts/status.py
 scripts/sound_complete.sh
 scripts/sound_permission.sh
 
-# --- Agent (definition only; agent-memory/ is intentionally excluded) ---
+# --- Agents (definitions only; agent-memory/ is intentionally excluded) ---
+agents/ci-researcher.md
 agents/korean-context-writer.md
 
 # --- Config ---

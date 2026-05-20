@@ -1,39 +1,50 @@
 ---
 name: setup-status-harness
-description: Install and wire up the STATUS harness in a project that lacks it — the global status.py generator, the SessionStart/Stop hooks in settings.json, and the .scratch issue-tracker directory structure — then generate the initial STATUS.md. Use when a project has no STATUS.md, the status board is missing or never updates, the user asks to "set up the STATUS harness", "STATUS.md 만들어줘", "상태 보드 붙여줘", "이 프로젝트에 status harness 깔아줘", or when bootstrapping the harness on a fresh clone or a new machine.
+description: Install and wire up the STATUS harness in two layers — global infrastructure (~/.claude status.py generator + SessionStart/Stop hooks) and per-project files (vendored scripts/status.py, .github/workflows/regen-status.yml for main-push regen, .gitignore entries for worktree state) — then generate the initial STATUS.md. Use when a project has no STATUS.md, the status board is missing or never updates, the user asks to "set up the STATUS harness", "STATUS.md 만들어줘", "상태 보드 붙여줘", "이 프로젝트에 status harness 깔아줘", or when bootstrapping the harness on a fresh clone or a new machine.
 ---
 
 # Set up the STATUS harness
 
-The STATUS harness keeps a `STATUS.md` board at a project root automatically in
-sync with its issue files. It has three parts; this skill ensures all three.
+The STATUS harness keeps a `STATUS.md` board at the project root automatically
+in sync with its issue files. It has two layers; this skill installs both.
 
-1. **Global infrastructure** — `~/.claude/scripts/status.py` (the generator)
-   and two hooks in `~/.claude/settings.json`: a `SessionStart` hook that runs
-   the generator and prints `STATUS.md`, and a `Stop` hook that runs it after
-   every turn.
-2. **Project content** — issue files at `.scratch/<feature>/issues/*.md`. The
-   harness is **opt-in**: with no issue files the generator is a silent no-op
-   and no `STATUS.md` is produced.
-3. **Output** — `STATUS.md` at the project root, regenerated from (2).
+**Global layer** — shared across every project on this machine:
+1. `~/.claude/scripts/status.py` — the generator.
+2. Two hooks in `~/.claude/settings.json`: `SessionStart` (runs the generator
+   and prints `STATUS.md`) and `Stop` (runs it after every turn).
 
-This skill installs (1), scaffolds the directory for (2), and triggers (3).
-It does **not** create issues — that is the job of `/triage` or `/to-issues`.
-See [REFERENCE.md](REFERENCE.md) for harness internals and the issue format.
+**Project layer** — committed into each repo that uses the harness:
+3. `<repo>/scripts/status.py` — vendored copy so CI can run it (GitHub Actions
+   cannot reach `~/.claude`).
+4. `<repo>/.github/workflows/regen-status.yml` — regenerates `STATUS.md` after
+   each push to `main`, so worktree branches never need to commit it (which
+   prevents the merge-conflict storm parallel worktrees would otherwise hit).
+5. `<repo>/.gitignore` adds `.claude/handoffs/` and `.claude/worktrees/`.
+
+**Issue content** — at `.scratch/<feature>/issues/*.md`. The harness is
+opt-in: with no issue files the generator is a silent no-op and no `STATUS.md`
+is produced. Creating issues is **not** this skill's job — use `/triage` (one
+issue) or `/to-issues` (break a plan into issues).
+
+See [REFERENCE.md](REFERENCE.md) for harness internals, the issue format, and
+the rationale behind the two-layer split.
 
 ## Workflow
 
-**1 — Preview the infrastructure install.** Run:
+**1 — Preview both layers.** From inside the target repo run:
 ```
 python3 ~/.claude/skills/setup-status-harness/scripts/setup_status_harness.py --dry-run
 ```
-This is idempotent and machine-agnostic: it installs `status.py` only if
-missing and adds a hook only if no existing hook already runs `status.py`.
+Idempotent: each line shows ✓ (already in place), + (will change), or ⚠
+(present but differs from template — needs manual review). Outside any git
+repo, the project layer is skipped automatically.
 
-**2 — Confirm if it touches global config.** If the dry run shows a `+` line
-that adds a hook (it edits the user's global `~/.claude/settings.json`), show
-the user those lines and get an explicit go-ahead before applying. If every
-line is `✓` (already complete), skip the confirmation.
+**2 — Confirm if anything will change.** If the dry run shows a `+` line that
+touches global config (`~/.claude/settings.json`) or adds project files
+(`scripts/status.py`, `.github/workflows/regen-status.yml`, `.gitignore`),
+show the user those lines and get an explicit go-ahead. If every line is ✓,
+skip the confirmation. For ⚠ lines, surface them — the user decides whether
+to sync manually.
 
 **3 — Apply.** Re-run the script without `--dry-run`. Report what changed.
 
@@ -58,17 +69,24 @@ Confirm `STATUS.md` now exists at the project root. It will carry a
 the template — offer to run `/status` to fill in *Current focus*,
 *Start here next session*, and *Open decisions*.
 
-**6 — Report.** One short summary: what infrastructure was installed vs.
-already present, whether the harness is now live (STATUS.md generated) or
-inert (awaiting first issue), and the suggested next step.
+**6 — Activate the CI workflow** (only if step 3 created `regen-status.yml`).
+Tell the user to enable, in GitHub → repo Settings → Actions → General →
+**Workflow permissions**, "Read and write permissions" — otherwise the
+workflow cannot push regenerated STATUS.md back to main.
+
+**7 — Report.** One short summary: what was installed vs. already present,
+whether the harness is now live (STATUS.md generated) or inert (awaiting first
+issue), and the suggested next step.
 
 ## Notes
 
-- Safe to run on a project that already has the harness — every step is
-  idempotent and reports "already present".
-- The script never overwrites an existing `~/.claude/scripts/status.py`. If a
-  project needs a newer generator, that is a deliberate manual update, out of
-  scope here.
+- Safe to re-run — every step is idempotent and reports "already present".
+- The script never overwrites an existing global `~/.claude/scripts/status.py`
+  or an existing per-project `scripts/status.py`. If a project's vendored
+  copy drifts from the global, the script warns; the user syncs manually
+  (`cp ~/.claude/scripts/status.py scripts/status.py`).
 - The `SessionStart` hook prints `STATUS.md` into context only when the file
   exists, and the generator no-ops without issue files — so installing the
   global hooks is harmless in every other repo on the machine.
+- Use `--no-project` to skip the project layer (e.g. when bootstrapping a
+  fresh machine from outside any repo).
