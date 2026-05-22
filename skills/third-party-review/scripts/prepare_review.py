@@ -45,6 +45,47 @@ def find_session_jsonl(session=None, jsonl=None):
     return max(candidates, key=os.path.getmtime)  # newest = current session
 
 
+# --- active-path reconstruction (drop rewound branches) ------------------
+def is_human_turn(m):
+    """True when a user message carries real human text — not just
+    tool_result blocks or harness <system-reminder> noise."""
+    content = m.get("content")
+    if isinstance(content, str):
+        content = [{"type": "text", "text": content}]
+    if not isinstance(content, list):
+        return False
+    for b in content:
+        if (isinstance(b, dict) and b.get("type") == "text"
+                and SYSREMINDER.sub("", b.get("text", "")).strip()):
+            return True
+    return False
+
+
+def active_path_uuids(raw):
+    """Reconstruct the uuids on the active conversation branch.
+
+    A Claude Code session JSONL is an append-only *tree*, not a linear log:
+    when the human rewinds and resends, the abandoned branch stays in the
+    file and a new branch is appended (anywhere — even at the file's end).
+    The active conversation is the chain from the current leaf (the
+    `leafUuid` on the last `last-prompt` entry) up through parentUuid to the
+    root. Returns (uuid_set, ok); ok is False when no reliable leaf is found,
+    and the caller then keeps the full linear transcript and warns.
+    """
+    by_uuid = {o["uuid"]: o for o in raw if o.get("uuid")}
+    leaf = None
+    for o in raw:                  # several last-prompt entries: last wins
+        if o.get("type") == "last-prompt" and o.get("leafUuid"):
+            leaf = o["leafUuid"]
+    if not leaf or leaf not in by_uuid:
+        return set(), False
+    active, cur = set(), leaf
+    while cur and cur in by_uuid and cur not in active:   # cur not in: cycle guard
+        active.add(cur)
+        cur = by_uuid[cur].get("parentUuid")
+    return active, True
+
+
 # --- parse JSONL into chronological events (A1-A3 cleanup) ---------------
 def load_events(path):
     raw = []
@@ -58,6 +99,8 @@ def load_events(path):
             except json.JSONDecodeError:
                 continue
 
+    active, path_ok = active_path_uuids(raw)
+
     tool_names, tool_inputs = {}, {}
     for o in raw:
         m = o.get("message")
@@ -67,7 +110,7 @@ def load_events(path):
                     tool_names[b.get("id")] = b.get("name", "?")
                     tool_inputs[b.get("id")] = b.get("input", {})
 
-    events, human_n = [], 0
+    events, human_n, rewound = [], 0, 0
     for o in raw:
         if o.get("type") in ("file-history-snapshot", "summary"):
             continue                                    # A1
@@ -77,6 +120,13 @@ def load_events(path):
             continue                                    # A3
         m = o.get("message")
         if not isinstance(m, dict):
+            continue
+        # A3b — drop rewound branches: keep only messages on the active
+        # path. An off-path user message carrying real text is a rewound
+        # human turn; count it so the header can report the rewind.
+        if path_ok and o.get("uuid") not in active:
+            if m.get("role") == "user" and is_human_turn(m):
+                rewound += 1
             continue
         role = m.get("role")
         content = m.get("content")
@@ -127,7 +177,7 @@ def load_events(path):
             human_n += 1
             events.append({"kind": "human", "n": human_n,
                            "text": "\n\n".join(human_parts)})
-    return events
+    return events, rewound, path_ok
 
 
 # --- reduction helpers ---------------------------------------------------
@@ -245,7 +295,7 @@ def main():
             jsonl = args[i + 1]
 
     path = find_session_jsonl(session, jsonl)
-    events = load_events(path)
+    events, rewound, path_ok = load_events(path)
     apply_A4(events)
     original = est_tokens(events)
 
@@ -260,18 +310,31 @@ def main():
                 break
     reduced = est_tokens(events)
 
+    cleanup = [
+        "dropped: file-history / isMeta / isCompactSummary / isSidechain",
+        f"Read tool_result bodies kept to first {cfg.READ_HEAD_LINES} lines",
+    ]
+    if path_ok:
+        cleanup.append(
+            "rewound branches dropped — transcript is the active "
+            "conversation path only (leafUuid -> root)")
+
     header = {
         "source_jsonl": path,
         "original_tokens_est": original,
         "reduced_tokens_est": reduced,
         "target_tokens": cfg.TARGET_TOKENS,
-        "structural_cleanup": [
-            "dropped: file-history / isMeta / isCompactSummary / isSidechain",
-            f"Read tool_result bodies kept to first {cfg.READ_HEAD_LINES} lines",
-        ],
+        "structural_cleanup": cleanup,
         "stages_applied": applied,
         "core_exceeds_target": reduced > cfg.TARGET_TOKENS,
+        "active_path_reconstructed": path_ok,
+        "rewound_human_turns": rewound,
     }
+    if not path_ok:
+        header["warning"] = (
+            "no leafUuid found — could not reconstruct the active path; "
+            "transcript may include rewound (abandoned) branches that the "
+            "main agent never actually had in context")
 
     os.makedirs(OUT_DIR, exist_ok=True)
     transcript_path = os.path.join(OUT_DIR, "transcript.md")

@@ -20,6 +20,13 @@ description: Runs an independent third-party review of the current Claude Code s
    만든다. stdout의 JSON `stats`(원본/축소 토큰, 적용 단계)를 사용자에게 한 줄로
    보고한다. `core_exceeds_target`이 true면 "세션이 너무 커서 핵심 대화만으로도
    예산 초과 — 평가가 부분적일 수 있음"을 알린다.
+   - 세션 JSONL은 선형 로그가 아니라 트리다. 인간이 rewind 후 다시 보내면 버려진
+     브랜치가 파일에 그대로 남는다. 스크립트는 `leafUuid`→root 활성 경로만
+     추출해 transcript에 담는다 — 버려진 브랜치는 main agent 컨텍스트에 없었으므로
+     평가에서 빠져야 한다. `rewound_human_turns`가 0보다 크면 "rewind로 버려진
+     인간 턴 N개는 transcript에서 제외됨"을 보고한다. `active_path_reconstructed`가
+     false면 `warning`을 그대로 사용자에게 알린다(활성 경로 복원 실패 — transcript에
+     버려진 브랜치가 섞였을 수 있음).
 
 2. **`.tpr/` 산출물** — `.tpr/`는 평가 산출물 디렉토리. **추적 중인
    `.gitignore`는 건드리지 말 것** — 평가 한 번 돌렸다고 repo에 diff가 생기면
@@ -37,8 +44,15 @@ description: Runs an independent third-party review of the current Claude Code s
    codex exec "$(cat .tpr/prompt.txt)" --sandbox read-only      > .tpr/eval-codex.md
    agy   -p   "$(cat .tpr/prompt.txt)" --sandbox                 > .tpr/eval-agy.md
    ```
-   - 둘 다 **read-only**: 평가자는 판사이지 작업자가 아니다. write/실행 플래그
-     (`--dangerously-*`) 절대 금지.
+   - **codex**는 `--sandbox read-only`로 쓰기가 *강제 차단*된다. **agy**는
+     read-only 강제 수단이 없다 — `--sandbox`로도 프로젝트에 파일을 쓸 수 있음이
+     검증됨. agy의 read-only는 evaluator-prompt 지시에만 의존한다(미집행).
+     어느 쪽이든 `--dangerously-*` 플래그는 절대 금지.
+   - **agy 쓰기 탐지** — agy는 read-only 미집행이므로 실행 *전후*로 프로젝트
+     변경을 탐지한다. git 저장소면 실행 직전 `git status --porcelain`을 저장하고
+     실행 후 다시 떠 비교한다 (`.tpr/`는 `.git/info/exclude`에 있어 자동 제외).
+     차이가 나면 agy가 프로젝트를 건드린 것 — 5단계에서 그 diff를 사용자에게
+     크게 경고한다. git 저장소가 아니면 탐지 불가임을 알린다.
    - 평가자가 transcript를 못 읽으면 프로젝트 디렉토리를 명시 추가해 재시도
      (`agy --add-dir <cwd>`).
    - 결과 파일은 stdout 리다이렉트로 *셸*이 만든다 — 평가자가 쓰는 게 아니다.
@@ -48,6 +62,8 @@ description: Runs an independent third-party review of the current Claude Code s
      구조)가 있어야 한다. 없으면(예: "Authentication required", 빈 파일, 에러
      덤프) 그 평가자는 **실패**다 — 평가인 척 보여주지 말고 실패 사실과 stderr를
      사용자에게 알린다.
+   - 4단계 agy 쓰기 탐지에서 차이가 나왔으면 **맨 먼저** 그 사실과 변경 목록을
+     경고로 띄운다 — 평가 내용보다 우선한다.
    - 검증을 통과한 평가만 **그대로, 평가자별로 따로** 사용자에게 보여준다.
      요약·수정·필터링 금지. 두 평가를 하나로 머지하지 말 것 — 불일치 자체가 신호다.
    - **그다음에야** main agent가 그 평가에 대한 자기 입장을 *별도 섹션*으로 덧붙인다.

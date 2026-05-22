@@ -23,6 +23,12 @@
 main agent가 아니라 스크립트가 한다(편향 차단). 구조는 두 종류:
 - A(항상): 구조적 노이즈 제거 — file-history/isMeta/isCompactSummary/isSidechain
   삭제, Read 결과 본문은 head N줄로 붕괴.
+- A3b(항상): rewind 브랜치 제거. 세션 JSONL은 append-only 트리 — 인간이 rewind 후
+  재전송하면 버려진 브랜치가 파일에 남는다(파일 끝에 올 수도 있어 file-order로는
+  못 거른다). `leafUuid`→`parentUuid` 활성 경로만 추출한다. 버려진 브랜치는 main
+  agent 컨텍스트에 없었으므로 평가에 들어가면 거짓 divergence를 만든다. 버려진
+  인간 턴 수는 `rewound_human_turns`로 헤더에 남겨 마찰 신호로 보존한다.
+  `leafUuid`가 없으면 복원 실패 — 선형 전사를 유지하고 헤더 `warning`으로 경고.
 - B(예산 초과 시): 단일 전역 예산 `TARGET_TOKENS` 밑으로 갈 때까지 S1~S6을 고정
   순서로 적용. 단계별 예산은 없다 — 예산은 최종 출력물의 속성이고, 단계는 *무엇을
   먼저 희생하나*의 우선순위. 저신호(tool 결과)부터, 고신호(`thinking`)는 최후.
@@ -37,8 +43,12 @@ main agent가 아니라 스크립트가 한다(편향 차단). 구조는 두 종
 (Codex/Gemini)가 진짜 제3자. 그래서 외부 CLI를 셸 호출. 플러그인 대신 셸인 이유:
 codex 플러그인은 Codex 전용이라 codex·agy를 한 방식으로 못 부른다.
 
-**권한.** 평가자는 판사이지 작업자가 아니다 → read-only sandbox. `--dangerously-*`
-금지. 프로젝트 *읽기*는 허용(축 2 판단 + Read 본문을 축소로 버렸으므로 복구 경로).
+**권한.** 평가자는 판사이지 작업자가 아니다 → read-only. 프로젝트 *읽기*는 허용
+(축 2 판단 + Read 본문을 축소로 버렸으므로 복구 경로). `--dangerously-*` 금지.
+codex는 `--sandbox read-only`로 쓰기가 강제 차단된다. agy는 read-only 강제
+플래그가 없다(검증함 — `--sandbox`로도 프로젝트에 씀). 그래서 agy의 read-only는
+evaluator-prompt 지시에만 의존하며, 보완책으로 agy 실행 전후 `git status`
+스냅샷을 비교해 쓰기를 *탐지*한다(예방이 아니라 탐지).
 
 **입력/출력 경로.** 페르소나 프롬프트는 codex·agy에 동일 투입(변수는 모델뿐).
 평가는 stdout으로 나오고 셸이 파일로 캡처 — 평가자는 write 권한 0이어도 된다.
