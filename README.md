@@ -179,7 +179,6 @@ hardening tasks are still open:
       `daily-dev-log`, `daily-token-report`, `session-dev-log`, `tech-blog`,
       and `korean-context-writer` into configuration.
 - [ ] Genericize absolute paths — `/home/shine` → `$HOME`.
-- [ ] Add a `LICENSE`.
 - [ ] Split `settings.json` into a harness block and personal preference.
 - [ ] Make `sound_*.sh` cross-platform (optional).
 
