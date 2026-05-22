@@ -33,7 +33,7 @@ keel은 그 실수를 *구조적으로* 막는다.
 
 | 종류 | 항목 |
 |---|---|
-| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `daily-dev-log`, `session-dev-log`, `setup-status-harness`, `status`, `tech-blog` |
+| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `daily-dev-log`, `daily-token-report`, `session-dev-log`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
 | Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `session_devlog` |
 | Scripts | `status.py`, `sound_complete.sh`, `sound_permission.sh` |
 | Agents | `ci-researcher`, `korean-context-writer` |
@@ -87,7 +87,12 @@ keel은 그 실수를 *구조적으로* 막는다.
 - `ci-setup` — 현재 repo를 검토해 GitHub Actions CI 워크플로를 언어별로
   생성한다. `ci-researcher` 서브에이전트가 modern/stable toolchain 두 안을
   web에서 리서치, 사용자가 5단계 게이트로 결정한다.
+- `daily-token-report` — 하루치 Claude Code 토큰 사용량을 프로젝트·모델·세션·
+  작업별로 집계해 자립형 HTML 리포트로 만든다. Obsidian Dev log 폴더에 저장.
 - `tech-blog` — 담백한 한국어 기술 블로그 글. 검증된 사실만, 과장 없이.
+- `third-party-review` — 현재 세션 transcript를 결정론적으로 축소해 외부
+  모델(Codex·Gemini)에 먹이고, 인간↔에이전트 대화가 나중에 후폭풍 날 만큼
+  어긋났는지 제3자 시점으로 평가받는다.
 - `statusline.sh` — 커스텀 상태줄.
 - `sound_complete.sh` / `sound_permission.sh` — 완료·권한요청 알림음.
   **WSL 전용** (`powershell.exe`로 Windows 사운드를 재생).
@@ -145,8 +150,9 @@ keel을 직접 편집하지 않는다 ([ADR-0001](docs/adr/0001-keel-is-a-sync-m
 
 keel은 지금 private다. 공개 전 처리할 것:
 
-- [ ] Obsidian 경로 하드코딩 제거 — `daily-dev-log`, `session-dev-log`,
-      `tech-blog`, `korean-context-writer`의 메모리 경로를 설정값으로 분리.
+- [ ] Obsidian 경로 하드코딩 제거 — `daily-dev-log`, `daily-token-report`,
+      `session-dev-log`, `tech-blog`, `korean-context-writer`의 메모리 경로를
+      설정값으로 분리.
 - [ ] 절대경로 제너릭화 — `/home/shine` → `$HOME`.
 - [ ] `LICENSE` 추가.
 - [ ] README 영문 동반본 (`audit-and-write-readme` 스킬 활용).

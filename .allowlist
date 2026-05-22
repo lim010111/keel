@@ -11,10 +11,12 @@ skills/ai-readiness-cartography
 skills/audit-and-write-readme
 skills/ci-setup
 skills/daily-dev-log
+skills/daily-token-report
 skills/session-dev-log
 skills/setup-status-harness
 skills/status
 skills/tech-blog
+skills/third-party-review
 
 # --- Hooks ---
 hooks/tdd_guard.py
