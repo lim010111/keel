@@ -30,6 +30,8 @@ not with good intentions.
   I?" is read from a file instead of guessed.
 
 Norms → enforcement → visibility. Those three layers are keel's skeleton.
+That is the harness *within* a unit of work — for how it gates the SDLC
+*between* phases, see [`docs/HARNESS-DESIGN.md`](docs/HARNESS-DESIGN.md).
 
 ---
 
@@ -186,6 +188,8 @@ hardening tasks are still open:
 ## Docs
 
 - [`CONTEXT.md`](CONTEXT.md) — terminology.
+- [`docs/HARNESS-DESIGN.md`](docs/HARNESS-DESIGN.md) — how the harness gates
+  the SDLC (the three-gate model).
 - [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md) — third-party dependencies not
   vendored into keel.
 - [`docs/adr/`](docs/adr/) — architecture decision records.
