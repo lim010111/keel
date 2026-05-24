@@ -39,13 +39,13 @@ That is the harness *within* a unit of work — for how it gates the SDLC
 
 | Kind | Items |
 |---|---|
-| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `daily-dev-log`, `daily-token-report`, `session-dev-log`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
+| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `daily-dev-log`, `daily-token-report`, `run-codex-validators`, `session-dev-log`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
 | Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `session_devlog` |
 | Scripts | `status.py`, `sound_complete.sh`, `sound_permission.sh` |
-| Agents | `ci-researcher`, `korean-context-writer` |
+| Agents | `ci-researcher`, `codex-review-validator`, `korean-context-writer` |
 | Config | `CLAUDE.md`, `statusline.sh`, `settings.json` |
 
-These components aren't all independent. The three bundles below **only work
+These components aren't all independent. The four bundles below **only work
 when their pieces are kept together** — install just one and you get half a
 feature.
 
@@ -92,6 +92,32 @@ same folder.
 
 > ⚠️ This bundle has an Obsidian vault path hardcoded. See the Roadmap below.
 
+### 4. The merge gate
+
+A bundle that installs and runs a pre-merge CI gate in a target project:
+Codex does the adversarial review, then a Claude validator subagent
+classifies each finding (`uphold`/`dismiss`/`unsure`) against the project's
+own documented context, and the gate blocks merge on `critical`/`high` ∩
+`uphold` (with `unsure` failing safe behind a labelled bypass lane). MVP is
+Claude-only; second validator returns once enough soft-mode measurement
+data is in.
+
+- `setup-merge-gate` — the installer. Renders the workflow into
+  `.github/workflows/codex-review.yml`, writes a `[merge-gate]` section in
+  the project's `harness.toml`, and **vendors** the validator agent + the
+  runtime skill into the target's `.claude/` so clean CI runners discover
+  them without a global `~/.claude/`. `--uninstall` reverses everything,
+  leaving docs alone if the user has edited their generated marker out.
+- `run-codex-validators` — the runtime invoked by the workflow. Reads
+  Codex JSON, adapts it to the validator agent's input shape, dispatches
+  the subagent via the Agent tool, aggregates verdicts, and writes
+  `validators.{json,md}` for the workflow's `Decide check outcome` step to
+  consume. **Always exits 0**; the workflow is the sole authoritative gate.
+- `codex-review-validator` (agent) — the classifier itself. Takes one
+  finding at a time and returns `uphold`/`dismiss`/`unsure` plus a strict
+  citation rule: a `dismiss` without a quoted code/doc line auto-promotes
+  to `unsure`.
+
 ### Standalone components
 
 - `ai-readiness-cartography` — audits a repo against an AI-Ready rubric
@@ -107,6 +133,11 @@ same folder.
 - `daily-token-report` — aggregates a day's Claude Code token usage by
   project, model, session, and task into a self-contained HTML report, saved
   to the Obsidian Dev log folder.
+- `setup-agents-md` — bootstraps the `AGENTS.md` ↔ `CLAUDE.md` relationship
+  in a target repo. `AGENTS.md` is the canonical agent guidance read
+  directly by Codex / antigravity; `CLAUDE.md` `@import`s it so Claude Code
+  sees the same content. Also handles nested `AGENTS.md` under module
+  subdirectories.
 - `tech-blog` — plain, honest Korean technical blog posts. Verified facts
   only, no exaggeration.
 - `third-party-review` — deterministically reduces the current session

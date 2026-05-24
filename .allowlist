@@ -12,7 +12,10 @@ skills/audit-and-write-readme
 skills/ci-setup
 skills/daily-dev-log
 skills/daily-token-report
+skills/run-codex-validators
 skills/session-dev-log
+skills/setup-agents-md
+skills/setup-merge-gate
 skills/setup-status-harness
 skills/status
 skills/tech-blog
@@ -34,6 +37,7 @@ scripts/sound_permission.sh
 
 # --- Agents (definitions only; agent-memory/ is intentionally excluded) ---
 agents/ci-researcher.md
+agents/codex-review-validator.md
 agents/korean-context-writer.md
 
 # --- Config ---
