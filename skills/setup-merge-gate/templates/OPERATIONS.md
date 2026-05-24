@@ -6,7 +6,7 @@ the **Gate** for the pre-merge phase of the **Harness** (see
 primary reviewer and a Claude validator (MVP) that classifies each
 finding against project context before the gate decides to block.
 The MVP runs a single Claude validator per
-[ADR-0005](docs/adr/0005-claude-only-validator-mvp-gemini-deferred.md);
+[ADR-0005](adr/0005-claude-only-validator-mvp-gemini-deferred.md);
 a second validator returns once issue #10's soft-mode measurement
 data is in.
 
@@ -193,7 +193,7 @@ The label is **never** appropriate for:
   it there.
 - "I disagree with the finding" without a written argument — open a
   `merge-gate-fp` issue and resolve through §5, not the bypass lane.
-- Avoiding the validator-disagreement runbook in §6 — bypass is the
+- Avoiding the validator `unsure` runbook in §6 — bypass is the
   lane of last resort, not the default for `unsure`.
 
 ### Approval

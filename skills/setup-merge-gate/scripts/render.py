@@ -84,6 +84,20 @@ def die(msg: str, code: int = 1):
     sys.exit(code)
 
 
+def check_vendor_symlinks(target: Path) -> None:
+    # If a vendored target is a symlink, install would write through it
+    # into the externally-pointed tree, and uninstall would rmtree the
+    # external tree's contents. Refuse both — make the operator point
+    # at a real path first.
+    for rel in (VENDOR_AGENT_REL, VENDOR_SKILL_REL):
+        path = target / rel
+        if path.is_symlink():
+            die(
+                f"Refusing to operate on {rel}: it is a symlink. "
+                "Replace it with a real path (or remove it) before re-running."
+            )
+
+
 # --- Target discovery ---------------------------------------------------------
 
 
@@ -297,6 +311,7 @@ def parse_globs(raw: str) -> list[str]:
 
 def install(target: Path, values: dict, dry_run: bool, runtime_src_override: Path | None) -> None:
     require_agents_md(target)
+    check_vendor_symlinks(target)
 
     agent_src = GLOBAL_AGENT_SRC
     if not agent_src.exists():
@@ -383,6 +398,7 @@ def print_next_steps() -> None:
 
 def uninstall(target: Path, dry_run: bool) -> None:
     section_hdr("uninstall")
+    check_vendor_symlinks(target)
     actions: list[tuple[str, Path, str | None]] = []
 
     # Workflow

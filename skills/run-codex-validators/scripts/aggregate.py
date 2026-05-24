@@ -185,7 +185,7 @@ def cmd_write_outputs(args: argparse.Namespace) -> int:
         })
 
     validators_json = {
-        "validators": [{"name": "claude", "lines": lines}],
+        "validators": [{"name": "claude", "raw_stdout": validator_text, "lines": lines}],
         "aggregate": aggregate,
     }
     (out_dir / "validators.json").write_text(
@@ -284,11 +284,15 @@ def main(argv: list[str] | None = None) -> int:
     fb.add_argument("--out-dir", required=True)
     fb.set_defaults(func=cmd_write_fallback)
 
-    args = p.parse_args(argv)
+    try:
+        args = p.parse_args(argv)
+    except SystemExit:
+        # argparse already wrote the usage error to stderr; honor the
+        # "always exit 0" runtime contract (#05 AC, ADR-0005). The
+        # workflow's `Decide check outcome` step is the sole gate.
+        return 0
     try:
         return args.func(args)
-    except SystemExit:
-        raise
     except Exception as e:
         err(f"unexpected error in {args.cmd}: {e}")
         out_dir = getattr(args, "out_dir", None)

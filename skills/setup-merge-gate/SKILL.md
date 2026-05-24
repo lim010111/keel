@@ -61,7 +61,7 @@ sensible defaults:
 | `docs_only_globs`      | `["**/*.md","docs/**","LICENSE","NOTICE"]` |
 | `node_version`         | `"20"` |
 | `codex_install_cmd`    | `npm install -g @openai/codex@latest` |
-| `codex_review_cmd`     | `codex exec --json --output-schema .codex-review/schema.json --sandbox read-only "Run an adversarial review of the diff against origin/$BASE_REF"` |
+| `codex_review_cmd`     | `codex exec --json --sandbox read-only "Run an adversarial review of the diff against origin/$BASE_REF"` |
 | `bypass_label`         | `merge-gate-bypass` |
 
 Use `AskUserQuestion` to confirm each value (or accept all defaults
