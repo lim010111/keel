@@ -45,18 +45,92 @@ def err(msg: str) -> None:
     sys.stderr.write(f"run-codex-validators: {msg}\n")
 
 
+def _findings_from_result_doc(doc: object) -> list[dict] | None:
+    """Extract findings[] from a single-doc payload of the workflow's
+    normalize-step shape: {result: {findings: [...]}, codex: {...}}.
+
+    Returns None if `doc` is not that shape (caller falls back to JSONL).
+    Returns [] if shape matches but findings are absent/empty.
+    """
+    if not isinstance(doc, dict):
+        return None
+    result = doc.get("result")
+    if not isinstance(result, dict):
+        return None
+    findings = result.get("findings", [])
+    return findings if isinstance(findings, list) else []
+
+
+def _findings_from_jsonl_stream(lines: list[str]) -> list[dict]:
+    """Extract findings from raw Codex `--json` JSONL output.
+
+    Matches the workflow's "Normalize Codex JSONL" jq expression: filter
+    item.completed[agent_message] events, take the last one, json.loads
+    its .item.text, return result.findings[]. Returns [] on any failure
+    (missing event, malformed payload, etc.) — same fail-safe as the
+    workflow's fallback branches.
+    """
+    last_agent_msg: dict | None = None
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") != "item.completed":
+            continue
+        item = ev.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            last_agent_msg = item
+    if last_agent_msg is None:
+        return []
+    text = last_agent_msg.get("text")
+    if not isinstance(text, str):
+        return []
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    findings = payload.get("findings", [])
+    return findings if isinstance(findings, list) else []
+
+
 def load_codex_findings(path: str) -> list[dict]:
+    """Return Codex findings[] from either a single-doc payload (workflow
+    case — what the normalize step writes) or a raw JSONL stream (defensive
+    path for direct local invocation, regression tests, alternative hosts).
+
+    The two paths must produce identical findings for equivalent input.
+    Both fail safely (empty list + stderr note) rather than raising — the
+    runtime contract is "never block from inside this script."
+    """
     try:
         with open(path, encoding="utf-8") as fh:
-            doc = json.load(fh)
+            raw = fh.read()
     except Exception as e:
-        err(f"could not load codex JSON at {path}: {e}")
+        err(f"could not read codex JSON at {path}: {e}")
         return []
-    result = doc.get("result") if isinstance(doc, dict) else None
-    if not isinstance(result, dict):
+    if not raw.strip():
         return []
-    findings = result.get("findings")
-    return findings if isinstance(findings, list) else []
+    # Try single-doc first — this is the normalized-payload case the
+    # workflow installs after #18. json.load on a JSONL file raises
+    # JSONDecodeError ("Extra data") on the second top-level value, so
+    # this never silently picks up only the first event.
+    try:
+        doc = json.loads(raw)
+        single = _findings_from_result_doc(doc)
+        if single is not None:
+            return single
+    except json.JSONDecodeError:
+        pass
+    # Fall back to JSONL stream interpretation.
+    return _findings_from_jsonl_stream(raw.splitlines())
 
 
 def adapt_finding(f: dict) -> dict:

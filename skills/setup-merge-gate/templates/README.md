@@ -41,7 +41,7 @@ before writing the file. None of the tokens may remain in the rendered file.
 | `%%DOCS_ONLY_GLOBS%%` | JSON array of globs (string) | `["**/*.md","docs/**","LICENSE","NOTICE"]` | Whole-PR docs-only short-circuit. When **every** changed file matches one of the globs, the gate skips. Pass a valid JSON array literal; the workflow parses it with `jq`/`json.loads`. `**` matches across path separators, `*` does not. |
 | `%%NODE_VERSION%%` | string | `"20"` | Major Node version for the Codex CLI install. |
 | `%%CODEX_INSTALL_CMD%%` | shell snippet | `npm install -g @openai/codex@latest` | Must leave a working `codex` (and any plugin script the review invocation needs) on `$PATH`. |
-| `%%CODEX_REVIEW_CMD%%` | shell snippet | `codex exec --json --sandbox read-only "Run an adversarial review of the diff against origin/$BASE_REF"` | Must write a JSON document to `.codex-review/codex-review.json` on stdout. Stderr is captured separately. The workflow wraps a fallback so an invalid/missing JSON still produces a parseable artefact, but the command should normally succeed. Operators who want to pin a specific review-output schema can pass `--output-schema <path>` and ship the schema file themselves; the installer does not produce one. |
+| `%%CODEX_REVIEW_CMD%%` | shell snippet | `codex exec --json --output-schema .codex-review/schema.json --dangerously-bypass-approvals-and-sandbox "Run an adversarial review of the diff against origin/$BASE_REF"` | Must write a JSONL stream to stdout. Each line is a Codex conversation event; the final `item.completed[agent_message]` carries the review payload (JSON conforming to `review-output.schema.json`) inside its `.item.text` field. The workflow's "Normalize Codex JSONL" step extracts that payload to `.codex-review/codex-review.normalized.json` for downstream consumers. The installer vendors the schema to `.codex-review/schema.json` (target-local) so CI runners can satisfy `--output-schema` without the openai-codex plugin marketplace. The `--dangerously-bypass-approvals-and-sandbox` flag is required on GitHub Actions runners because Codex's `--sandbox read-only` enforcement uses `bwrap`, which needs kernel namespace capabilities the runners don't grant (refs claude-harness-work#20). Operators who want a different sandbox policy or schema can override the command in `harness.toml [merge-gate].codex_review_cmd`. |
 | `%%BYPASS_LABEL%%` | string | `merge-gate-bypass` | Label that, when applied to a PR, causes preflight to short-circuit and the gate to pass without running Codex. Surfaced in the bypass sticky comment and check-outcome notice. Logged as an audited bypass — see operations playbook §4. Default `merge-gate-bypass` is fine for most projects; override if a project's label-namespacing convention demands a different name. |
 
 ## Substitution rules
@@ -60,9 +60,12 @@ before writing the file. None of the tokens may remain in the rendered file.
 
 ## Secrets the rendered workflow expects
 
-- `OPENAI_API_KEY` *(or)* `CODEX_API_KEY` — whichever the chosen
-  `%%CODEX_REVIEW_CMD%%` reads. At least one is required by the
-  Codex adversarial-review step.
+- `CODEX_API_KEY` — required by the `Run Codex adversarial-review`
+  step. The Codex CLI's `codex exec` non-interactive auth reads
+  **only** `CODEX_API_KEY`; `OPENAI_API_KEY` is NOT honored even
+  when set. Source:
+  <https://developers.openai.com/codex/noninteractive#authenticate-in-ci>
+  ("`CODEX_API_KEY` is only supported in `codex exec`").
 - `CLAUDE_CODE_OAUTH_TOKEN` — read by the `Run Claude validator`
   step, which invokes `claude -p "/run-codex-validators ..."` to
   classify each Codex finding as `uphold` / `dismiss` / `unsure`.

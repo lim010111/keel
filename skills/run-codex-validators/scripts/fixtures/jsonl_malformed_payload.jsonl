@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01TEST-malformed-payload"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"This is not valid JSON conforming to review-output.schema.json — it is just prose."}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":20,"reasoning_output_tokens":5}}

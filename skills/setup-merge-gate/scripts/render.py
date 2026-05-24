@@ -64,6 +64,11 @@ DOCS_QUICKREF_REL = "docs/merge-gate.md"
 DOCS_OPERATIONS_REL = "docs/merge-gate-operations.md"
 VENDOR_AGENT_REL = ".claude/agents/codex-review-validator.md"
 VENDOR_SKILL_REL = ".claude/skills/run-codex-validators"
+# Codex review-output schema, vendored verbatim from the openai-codex plugin.
+# The default codex_review_cmd points `--output-schema` here. CI runners do
+# not have the plugin marketplace, so the schema must live inside the target
+# repo. JSON has no comment syntax, so the file is written without a marker.
+SCHEMA_REL = ".codex-review/schema.json"
 
 OK, ADD, WARN, ERR, REM = "✓", "+", "⚠", "✗", "-"
 
@@ -262,7 +267,12 @@ def _prepend_preserving_shebang(text: str, marker: str) -> str:
     return f"{marker}\n{text}"
 
 
-SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+             # Test fixtures live next to the script they exercise (matching the
+             # hooks/test_*.py pattern) and have no runtime role — they are dev-only.
+             # Vendoring them would also corrupt JSON files because add_marker would
+             # prepend a `#`-style comment that JSON does not accept.
+             "fixtures"}
 SKIP_SUFFIXES = {".pyc", ".pyo", ".so", ".dylib", ".dll"}
 SKIP_NAMES = {".DS_Store", "Thumbs.db"}
 
@@ -273,7 +283,13 @@ def _should_skip(src: Path, runtime_src: Path) -> bool:
         return True
     if src.suffix.lower() in SKIP_SUFFIXES:
         return True
-    return src.name in SKIP_NAMES
+    if src.name in SKIP_NAMES:
+        return True
+    # Skip stdlib-unittest test modules (test_*.py) — dev-only regression
+    # suites that should not ship into target repos.
+    if src.name.startswith("test_") and src.suffix == ".py":
+        return True
+    return False
 
 
 def vendored_files(runtime_src: Path) -> list[tuple[Path, str]]:
@@ -337,6 +353,9 @@ def install(target: Path, values: dict, dry_run: bool, runtime_src_override: Pat
     ops_body = (TEMPLATES / "OPERATIONS.md").read_text(encoding="utf-8")
     artefacts.append((Path(DOCS_OPERATIONS_REL), f"{DOCS_MARKER}\n\n{ops_body}"))
     artefacts.append((Path(VENDOR_AGENT_REL), add_marker(agent_src.read_text(encoding="utf-8"), agent_src.suffix)))
+    # Codex review-output schema — verbatim copy, no marker (JSON has no
+    # comment syntax). Default `codex_review_cmd` points --output-schema here.
+    artefacts.append((Path(SCHEMA_REL), (TEMPLATES / "review-output.schema.json").read_text(encoding="utf-8")))
     artefacts.extend(vendored_files(runtime_src))
 
     # harness.toml surgery — built separately because of drift check.
@@ -380,7 +399,8 @@ def print_next_steps() -> None:
     print()
     print("  1. Add Actions secrets to the repo on github.com:")
     print("       CLAUDE_CODE_OAUTH_TOKEN  (required — read by Run Claude validator)")
-    print("       OPENAI_API_KEY           (or CODEX_API_KEY — required by Codex review)")
+    print("       CODEX_API_KEY            (required — `codex exec` non-interactive auth;")
+    print("                                 OPENAI_API_KEY is NOT honored by `codex exec`)")
     print()
     print("  2. Add a branch-protection rule on `main` (and any other protected")
     print("     branch) requiring this check:")
@@ -427,6 +447,11 @@ def uninstall(target: Path, dry_run: bool) -> None:
     if vs.exists():
         actions.append((REM, vs, None))
 
+    # Vendored review-output schema
+    sch = target / SCHEMA_REL
+    if sch.exists():
+        actions.append((REM, sch, None))
+
     # Docs — marker-gated
     for rel in (DOCS_QUICKREF_REL, DOCS_OPERATIONS_REL):
         p = target / rel
@@ -464,7 +489,7 @@ def uninstall(target: Path, dry_run: bool) -> None:
         else:
             path.unlink()
 
-    # Best-effort cleanup of empty parent dirs we created (.claude/agents/, .claude/skills/, .claude/, .github/workflows/, .github/, docs/).
+    # Best-effort cleanup of empty parent dirs we created (.claude/agents/, .claude/skills/, .claude/, .github/workflows/, .github/, docs/, .codex-review/).
     for rel in (
         ".claude/agents",
         ".claude/skills",
@@ -472,6 +497,7 @@ def uninstall(target: Path, dry_run: bool) -> None:
         ".github/workflows",
         ".github",
         "docs",
+        ".codex-review",
     ):
         p = target / rel
         if p.exists() and p.is_dir() and not any(p.iterdir()):

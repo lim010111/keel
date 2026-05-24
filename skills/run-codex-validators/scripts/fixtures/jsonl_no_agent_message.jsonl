@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01TEST-no-agent-message"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/usr/bin/zsh -lc 'git status'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/usr/bin/zsh -lc 'git status'","aggregated_output":"On branch main\nnothing to commit\n","exit_code":0,"status":"completed"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":0,"reasoning_output_tokens":10}}

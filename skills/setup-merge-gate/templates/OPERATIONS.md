@@ -2,7 +2,7 @@
 
 This document is the human-facing playbook for the **Merge gate** —
 the **Gate** for the pre-merge phase of the **Harness** (see
-`CONTEXT.md`). The gate runs Codex's adversarial review as the
+`CONTEXT-MAP.md`). The gate runs Codex's adversarial review as the
 primary reviewer and a Claude validator (MVP) that classifies each
 finding against project context before the gate decides to block.
 The MVP runs a single Claude validator per
@@ -15,7 +15,7 @@ artifacts; it is not itself a gate. This playbook describes how to
 *operate* the installed gate.
 
 Glossary terms (`Harness`, `Gate`, `Audited bypass lane`,
-`Oracle weakening`) are defined in `CONTEXT.md` — do not redefine
+`Oracle weakening`) are defined in `CONTEXT-MAP.md` — do not redefine
 them here; link or quote.
 
 ---
@@ -27,8 +27,9 @@ them here; link or quote.
 | **Soft** | Not required | Runs, posts findings, **never blocks** | Data-collection — every PR is a measurement |
 | **Hard** | Required check | Blocks merge on `critical` or `high` ∩ `uphold` | Steady state — gate is trusted |
 
-Mode is recorded in `harness.toml` under `[merge-gate].mode`. The
-flip from `soft` to `hard` is HITL and is governed by §2 below.
+Mode is recorded in `harness.toml` under `[merge-gate].soft_mode_default`
+(string boolean: `"true"` = soft, `"false"` = hard). The flip from
+`"true"` to `"false"` is HITL and is governed by §2 below.
 
 The gate's check name is stable — `merge-gate / codex-review` — so
 branch-protection references do not need updating across mode flips.
@@ -86,12 +87,12 @@ issue #10's measurement motivates re-introducing it.
 > Signed off by: `<name>`
 > Date: `<YYYY-MM-DD>`
 > N = `<count>` PRs · FPR = `<count>/<N>`
-> Flipping `[merge-gate].mode` from `soft` to `hard` and enabling the
+> Flipping `[merge-gate].soft_mode_default` from `"true"` to `"false"` and enabling the
 > branch-protection rule on `merge-gate / codex-review`.
 
 ### After the flip
 
-- Update `harness.toml`: `[merge-gate].mode = "hard"`.
+- Update `harness.toml`: `[merge-gate].soft_mode_default = "false"`.
 - Enable the branch-protection rule (the `/setup-merge-gate` install
   output printed the exact rule text — keep it in the install log).
 - Announce the flip in whatever channel the team uses; the first
@@ -153,7 +154,7 @@ the brief did *not* inject. Two common causes:
    with a citation (γ Strict — see §5). If the validator also fails
    to dismiss, treat it as a *project-context gap*: open an issue per
    §4 tagged `merge-gate-fp` with a pointer to the AGENTS.md /
-   `CONTEXT.md` text that should have made the dismissal possible.
+   `CONTEXT-MAP.md` text that should have made the dismissal possible.
 
 ### Interpreting a missed canary
 
@@ -169,7 +170,7 @@ in a later iteration — they are not blockers for soft→hard.
 ## 4. Audited bypass lane — the `merge-gate-bypass` label
 
 The merge gate provides an **Audited bypass lane** in the sense
-defined in `CONTEXT.md`: an acknowledged, recorded way to pass the
+defined in `CONTEXT-MAP.md`: an acknowledged, recorded way to pass the
 gate without satisfying it. The lane exists so emergencies are not
 forced through the silent-circumvention door. It is **not** a
 shortcut for routine merges.
@@ -250,7 +251,7 @@ The gate has three layers that can be tightened, in order of
 preference:
 
 1. **Project context** (cheapest, most durable). Add the missing
-   convention to AGENTS.md / `CONTEXT.md` / an ADR so the validator
+   convention to AGENTS.md / `CONTEXT-MAP.md` / an ADR so the validator
    can find and cite it on the next run. Most false positives
    resolve here.
 2. **Validator prompt / references** (moderate). Expand the
@@ -333,7 +334,7 @@ this section when that data exists.
   does not currently chunk; if this becomes painful, open an issue
   to add chunking, do not lower coverage.
 - **Validator `project_refs`** — adding many large reference files
-  raises validator cost. Prefer linking to ADRs and `CONTEXT.md`
+  raises validator cost. Prefer linking to ADRs and `CONTEXT-MAP.md`
   sections over inlining whole files.
 
 A cost or latency complaint should land as an issue with a measured
@@ -374,7 +375,7 @@ check pointing at a deleted workflow.
    `main` (and any other protected branches). The check itself can
    keep running until step 4 — it will simply no longer block.
 2. **Flip `harness.toml` back to soft.** Set
-   `[merge-gate].mode = "soft"`. This step alone is the "pause"
+   `[merge-gate].soft_mode_default = "true"`. This step alone is the "pause"
    button — if the team is undecided about full removal, stop here
    and observe for a week before continuing.
 3. **Run the install skill's uninstall path.**

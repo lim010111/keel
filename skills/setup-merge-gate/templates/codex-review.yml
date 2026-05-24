@@ -196,32 +196,103 @@ jobs:
         id: review
         if: env.RUN_REVIEW == 'true'
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Codex CLI `codex exec` reads CODEX_API_KEY for non-interactive auth.
+          # OPENAI_API_KEY is NOT honored by `codex exec` even when set — see
+          # https://developers.openai.com/codex/noninteractive#authenticate-in-ci
+          # (`CODEX_API_KEY is only supported in codex exec`). Leaving
+          # OPENAI_API_KEY here historically masked the real auth path and
+          # produced 401s when CODEX_API_KEY was unset (refs harness-work#19).
           CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
           mkdir -p .codex-review
-          # Placeholder filled by /setup-merge-gate. The command MUST write
-          # JSON conforming to the openai-codex review-output schema to
-          # .codex-review/codex-review.json. Stderr is captured separately.
+          # Placeholder filled by /setup-merge-gate. The command writes a JSONL
+          # stream of Codex conversation events to stdout; the final
+          # `item.completed[agent_message]` event carries the structured review
+          # payload (conforming to review-output.schema.json) inside its
+          # `.item.text` field. Stderr is captured separately.
           #
           # Typical realisations:
-          #   * `codex exec --json --output-schema <schema> "..."`
+          #   * `codex exec --json --output-schema .codex-review/schema.json "..."`
           #   * `node "$CODEX_PLUGIN_ROOT/scripts/codex-companion.mjs" adversarial-review --wait --json --base origin/$BASE_REF --scope branch`
+          #
+          # The next step ("Normalize Codex JSONL") extracts the payload from
+          # this stream into a single-doc file the downstream consumers (jq
+          # sticky-comment builder, Claude validator) read. That step ALSO owns
+          # the "Codex failed" fallback — we no longer guard parseability here.
           set +e
           %%CODEX_REVIEW_CMD%% > .codex-review/codex-review.json 2> .codex-review/codex-review.stderr
           codex_exit=$?
           set -e
-          # Guarantee the artefact has parseable JSON even if Codex failed.
-          if ! jq -e . .codex-review/codex-review.json > /dev/null 2>&1; then
-            echo "Codex did not produce valid JSON (exit=$codex_exit); writing empty fallback."
-            jq -n --arg err "Codex run failed (exit=$codex_exit). See codex-review.stderr." '
-              {result: {verdict: "needs-attention", summary: $err, findings: [], next_steps: []},
-               codex: {status: "error"}}
-            ' > .codex-review/codex-review.json
-          fi
           echo "codex_exit=$codex_exit" >> "$GITHUB_OUTPUT"
+
+      - name: Normalize Codex JSONL → single-doc review payload
+        # Codex emits JSONL (one JSON object per line, one per conversation
+        # event). The review payload lives inside the LAST
+        # `item.completed[agent_message]` event as a stringified JSON in
+        # `.item.text` — NOT as a top-level `.result` field. Earlier
+        # iterations of this workflow assumed `.result.findings[]` lived at
+        # the top level of a single JSON document, which silently produced
+        # zero findings on every PR. See claude-harness-work#18.
+        #
+        # This step is the SINGLE SOURCE OF TRUTH for producing a parseable
+        # single-doc payload regardless of Codex behaviour:
+        #   - Codex succeeded → extract last agent_message payload, wrap as
+        #     {result: <payload>, codex: {status: "ok"}}
+        #   - Codex exited non-zero → write codex-failed fallback
+        #   - No agent_message in stream → write missing-result fallback
+        #   - .item.text not valid JSON → write malformed-payload fallback
+        #   - jq -s itself failed (raw JSONL malformed) → outer fallback
+        if: always() && env.RUN_REVIEW == 'true'
+        env:
+          CODEX_EXIT: ${{ steps.review.outputs.codex_exit || '0' }}
+        run: |
+          set -euo pipefail
+          mkdir -p .codex-review
+          jq -s --arg codex_exit "${CODEX_EXIT}" '
+            if $codex_exit != "0" then
+              {result: {verdict: "unknown",
+                        summary: ("Codex exited with status " + $codex_exit + ". See codex-review.stderr in the run artefact."),
+                        findings: [], next_steps: []},
+               codex: {status: "codex-failed", exit: ($codex_exit | tonumber? // -1)}}
+            else
+              (map(select(.type == "item.completed"
+                          and ((.item // {}).type // "") == "agent_message"))
+               | last) as $msg
+              | if $msg == null then
+                  {result: {verdict: "unknown",
+                            summary: "Codex returned no agent_message event in its JSONL stream.",
+                            findings: [], next_steps: []},
+                   codex: {status: "missing-result"}}
+                else
+                  (try ($msg.item.text | fromjson) catch null) as $payload
+                  | if $payload == null then
+                      {result: {verdict: "unknown",
+                                summary: "Codex agent_message.text was not valid JSON conforming to review-output.schema.json.",
+                                findings: [], next_steps: []},
+                       codex: {status: "malformed-payload"}}
+                    else
+                      {result: $payload, codex: {status: "ok"}}
+                    end
+                end
+            end
+          ' .codex-review/codex-review.json \
+            > .codex-review/codex-review.normalized.json 2> .codex-review/normalize.stderr \
+            || true
+          # Outer fallback — jq itself failed (raw file is not valid JSONL,
+          # e.g. Codex CLI streaming error text written instead of events).
+          if ! jq -e '.result.verdict' .codex-review/codex-review.normalized.json > /dev/null 2>&1; then
+            jq -n --arg exit "${CODEX_EXIT}" --arg err "$(cat .codex-review/normalize.stderr 2>/dev/null | head -c 500)" '
+              {result: {verdict: "unknown",
+                        summary: ("Normalize step could not parse Codex output (codex_exit=" + $exit + "). See codex-review.stderr and normalize.stderr in the artefact."),
+                        findings: [], next_steps: []},
+               codex: {status: "normalize-failed", exit: ($exit | tonumber? // -1), normalize_stderr: $err}}
+            ' > .codex-review/codex-review.normalized.json
+          fi
+          echo "--- normalized.json ---"
+          jq '.codex' .codex-review/codex-review.normalized.json
+          echo "findings_count=$(jq '.result.findings | length' .codex-review/codex-review.normalized.json)"
 
       - name: Install Claude CLI
         if: env.RUN_REVIEW == 'true'
@@ -239,7 +310,11 @@ jobs:
           # reads validators.json. If this step itself fails (CLI install,
           # auth, network), the sticky-comment and decide-outcome steps below
           # still run (their `if:` is `always()`) and will surface the failure.
-          claude -p "/run-codex-validators --codex-json .codex-review/codex-review.json --soft-mode ${SOFT_MODE}" \
+          #
+          # Reads the NORMALIZED payload, not the raw JSONL. The normalize
+          # step above guarantees this file is a single JSON document with
+          # `.result.findings[]` shape.
+          claude -p "/run-codex-validators --codex-json .codex-review/codex-review.normalized.json --soft-mode ${SOFT_MODE}" \
             --permission-mode bypassPermissions
 
       - name: Upload review artefact
@@ -253,9 +328,9 @@ jobs:
       - name: Build sticky comment (review ran)
         # `always()` so a failed `Run Claude validator` step (auth, install,
         # network) still produces a PR comment instead of leaving the sticky
-        # comment empty. The jq below reads `codex-review.json` (always
-        # present by §"Run Codex adversarial-review" fallback) and appends
-        # validators.md if the validator produced it.
+        # comment empty. The jq below reads `codex-review.normalized.json`
+        # (always present by §"Normalize Codex JSONL" step — that step is
+        # `always()` too and always writes a parseable single-doc payload).
         if: always() && env.RUN_REVIEW == 'true'
         run: |
           set -euo pipefail
@@ -294,7 +369,7 @@ jobs:
                  end)
               + "_Full JSON: download the `codex-review` artefact from "
               + "[this run](https://github.com/" + $repo + "/actions/runs/" + $run + ")._\n"
-          ' .codex-review/codex-review.json > .codex-review/comment.md
+          ' .codex-review/codex-review.normalized.json > .codex-review/comment.md
           if [[ -f .codex-review/validators.md ]]; then
             printf '\n---\n\n' >> .codex-review/comment.md
             cat .codex-review/validators.md >> .codex-review/comment.md
@@ -335,16 +410,26 @@ jobs:
         # order: missing validators.json → Codex CLI itself errored →
         # validator-upheld critical/high finding count > 0. Soft mode never
         # blocks, but still logs a Codex failure for visibility.
+        #
+        # Reads codex.status from the NORMALIZED payload. Status values
+        # produced by the "Normalize Codex JSONL" step:
+        #   - "ok"               : Codex produced a structured review
+        #   - "codex-failed"     : Codex CLI exited non-zero
+        #   - "missing-result"   : no agent_message event in JSONL stream
+        #   - "malformed-payload": agent_message.text was not valid JSON
+        #   - "normalize-failed" : jq itself could not parse the raw output
+        # Anything other than "ok" is treated as a Codex-side failure under
+        # hard mode (fail-closed).
         if: always() && env.RUN_REVIEW == 'true'
         run: |
           set -euo pipefail
           codex_status=""
-          if [[ -f .codex-review/codex-review.json ]]; then
-            codex_status=$(jq -r '.codex.status // ""' .codex-review/codex-review.json 2>/dev/null || echo "")
+          if [[ -f .codex-review/codex-review.normalized.json ]]; then
+            codex_status=$(jq -r '.codex.status // ""' .codex-review/codex-review.normalized.json 2>/dev/null || echo "")
           fi
           if [[ "${SOFT_MODE}" == "true" ]]; then
-            if [[ "${codex_status}" == "error" ]]; then
-              echo "::notice title=Codex failed (soft mode)::Codex CLI did not produce a review; not blocking under soft mode."
+            if [[ -n "${codex_status}" && "${codex_status}" != "ok" ]]; then
+              echo "::notice title=Codex failed (soft mode)::Codex did not produce a usable review (codex.status=${codex_status}); not blocking under soft mode."
             fi
             echo "::notice title=Soft mode::Report-only — not blocking."
             exit 0
@@ -353,8 +438,8 @@ jobs:
             echo "::error title=Validator infra failure::No validators.json — Run Claude validator step did not complete; failing closed under hard mode."
             exit 1
           fi
-          if [[ "${codex_status}" == "error" ]]; then
-            echo "::error title=Codex failed::Codex CLI did not produce a review; failing closed under hard mode."
+          if [[ -n "${codex_status}" && "${codex_status}" != "ok" ]]; then
+            echo "::error title=Codex failed::Codex did not produce a usable review (codex.status=${codex_status}); failing closed under hard mode."
             exit 1
           fi
           blocked=$(jq -r '[.aggregate[] | select(.block == true)] | length' .codex-review/validators.json)

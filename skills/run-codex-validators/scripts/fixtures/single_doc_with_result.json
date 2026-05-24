@@ -1,0 +1,24 @@
+{
+  "result": {
+    "verdict": "needs-attention",
+    "summary": "The diff adds injected.py, which reads raw user input and executes it through the shell.",
+    "findings": [
+      {
+        "severity": "critical",
+        "title": "Arbitrary shell command execution from raw input",
+        "body": "run() reads a command string from input() and passes it to os.system(). Any caller can execute arbitrary shell commands with the process privileges.",
+        "file": "injected.py",
+        "line_start": 4,
+        "line_end": 4,
+        "confidence": 0.99,
+        "recommendation": "Remove os.system(cmd). Use subprocess.run([...], shell=False) with an allowlist."
+      }
+    ],
+    "next_steps": [
+      "Remove the unsafe shell execution path."
+    ]
+  },
+  "codex": {
+    "status": "ok"
+  }
+}

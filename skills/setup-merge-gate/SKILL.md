@@ -61,7 +61,7 @@ sensible defaults:
 | `docs_only_globs`      | `["**/*.md","docs/**","LICENSE","NOTICE"]` |
 | `node_version`         | `"20"` |
 | `codex_install_cmd`    | `npm install -g @openai/codex@latest` |
-| `codex_review_cmd`     | `codex exec --json --sandbox read-only "Run an adversarial review of the diff against origin/$BASE_REF"` |
+| `codex_review_cmd`     | `codex exec --json --output-schema .codex-review/schema.json --dangerously-bypass-approvals-and-sandbox "Run an adversarial review of the diff against origin/$BASE_REF"` |
 | `bypass_label`         | `merge-gate-bypass` |
 
 Use `AskUserQuestion` to confirm each value (or accept all defaults
@@ -93,7 +93,7 @@ or `⚠` (manual attention needed). Report this back to the user.
 
 **5 — Print next steps.** `render.py` ends with a "Next steps"
 block listing the Secrets to add to the GitHub repo
-(`CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`) and the
+(`CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY`) and the
 branch-protection rule to add (`merge-gate / codex-review`).
 Surface this to the user verbatim — these steps are HITL and the
 skill cannot perform them.
@@ -154,7 +154,7 @@ After `--dry-run`, sanity-check:
 
 End-to-end CI verification (the workflow actually running and
 gating a PR) requires #05 to be merged and `CLAUDE_CODE_OAUTH_TOKEN`
-+ `OPENAI_API_KEY` to be wired up on the target GitHub repo. See
++ `CODEX_API_KEY` to be wired up on the target GitHub repo. See
 operations playbook §2 for the soft → hard promotion checklist.
 
 ## Notes
