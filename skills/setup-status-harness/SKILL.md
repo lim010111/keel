@@ -1,6 +1,6 @@
 ---
 name: setup-status-harness
-description: Install and wire up the STATUS harness in two layers — global infrastructure (~/.claude status.py generator + SessionStart/Stop hooks) and per-project files (vendored scripts/status.py, .github/workflows/regen-status.yml for main-push regen, .gitignore entries for worktree state) — then generate the initial STATUS.md. Use when a project has no STATUS.md, the status board is missing or never updates, the user asks to "set up the STATUS harness", "STATUS.md 만들어줘", "상태 보드 붙여줘", "이 프로젝트에 status harness 깔아줘", or when bootstrapping the harness on a fresh clone or a new machine.
+description: Install and wire up the STATUS harness in two layers — global infrastructure (~/.claude status.py generator + SessionStart/Stop hooks) and per-project files (vendored scripts/status.py, .github/workflows/regen-status.yml for main-push regen, .gitignore entries for worktree state, docs/agents/issue-tracker.md agent reference for the AC-checkbox / narrative-block conventions) — then generate the initial STATUS.md. Use when a project has no STATUS.md, the status board is missing or never updates, the user asks to "set up the STATUS harness", "STATUS.md 만들어줘", "상태 보드 붙여줘", "이 프로젝트에 status harness 깔아줘", or when bootstrapping the harness on a fresh clone or a new machine.
 ---
 
 # Set up the STATUS harness
@@ -20,6 +20,10 @@ in sync with its issue files. It has two layers; this skill installs both.
    each push to `main`, so worktree branches never need to commit it (which
    prevents the merge-conflict storm parallel worktrees would otherwise hit).
 5. `<repo>/.gitignore` adds `.claude/handoffs/` and `.claude/worktrees/`.
+6. `<repo>/docs/agents/issue-tracker.md` — agent-facing doc explaining the
+   issue file contract, STATUS.md editing rules, and the close-an-issue
+   procedure. Agents in the repo need this as their reference for the
+   AC-checkbox / narrative-block conventions the harness depends on.
 
 **Issue content** — at `.scratch/<feature>/issues/*.md`. The harness is
 opt-in: with no issue files the generator is a silent no-op and no `STATUS.md`
@@ -48,11 +52,25 @@ to sync manually.
 
 **3 — Apply.** Re-run the script without `--dry-run`. Report what changed.
 
-**4 — Handle project content.** Check for issue files:
+**4 — Wire the doc into agent guidance.** If step 3 created (or already had)
+`docs/agents/issue-tracker.md`, agents need a pointer to it from the repo's
+canonical guidance file. Check what exists at the repo root:
+- **`AGENTS.md` exists** → suggest the user add `@docs/agents/issue-tracker.md`
+  to it (one line, near the issue-tracker / process section).
+- **Only `CLAUDE.md` exists** → suggest adding `@docs/agents/issue-tracker.md`
+  there.
+- **Neither exists** → suggest running `/setup-agents-md` first, then adding
+  the `@` line.
+
+Do **not** mutate AGENTS.md / CLAUDE.md from this skill — those files belong
+to the user (and to `setup-agents-md`). Print the suggested line; let the
+user paste.
+
+**5 — Handle project content.** Check for issue files:
 ```
 ls .scratch/*/issues/*.md
 ```
-- **Issues already exist** → go to step 5; the harness is content-ready.
+- **Issues already exist** → go to step 6; the harness is content-ready.
 - **No issues** → scaffold the structure only. Ask the user for a feature
   slug (kebab-case, e.g. the product or milestone name), then create
   `.scratch/<slug>/issues/.gitkeep`. Tell the user the harness is installed
@@ -60,7 +78,7 @@ ls .scratch/*/issues/*.md
   `/to-issues` (break a plan into issues) populates it — the next `Stop` hook
   then generates `STATUS.md` automatically. **Stop here.**
 
-**5 — Generate and verify `STATUS.md`.** Run:
+**6 — Generate and verify `STATUS.md`.** Run:
 ```
 python3 ~/.claude/scripts/status.py
 ```
@@ -69,14 +87,15 @@ Confirm `STATUS.md` now exists at the project root. It will carry a
 the template — offer to run `/status` to fill in *Current focus*,
 *Start here next session*, and *Open decisions*.
 
-**6 — Activate the CI workflow** (only if step 3 created `regen-status.yml`).
+**7 — Activate the CI workflow** (only if step 3 created `regen-status.yml`).
 Tell the user to enable, in GitHub → repo Settings → Actions → General →
 **Workflow permissions**, "Read and write permissions" — otherwise the
 workflow cannot push regenerated STATUS.md back to main.
 
-**7 — Report.** One short summary: what was installed vs. already present,
-whether the harness is now live (STATUS.md generated) or inert (awaiting first
-issue), and the suggested next step.
+**8 — Report.** One short summary: what was installed vs. already present,
+the AGENTS.md wiring suggestion from step 4, whether the harness is now live
+(STATUS.md generated) or inert (awaiting first issue), and the suggested next
+step.
 
 ## Notes
 

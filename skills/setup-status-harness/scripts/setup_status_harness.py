@@ -14,6 +14,11 @@ Project layer (attempted only when cwd is inside a git repo, unless --no-project
   4. <repo>/.github/workflows/regen-status.yml — regenerates STATUS.md after
      each push to main, so worktree branches do not need to commit it.
   5. <repo>/.gitignore — adds .claude/handoffs/ and .claude/worktrees/.
+  6. <repo>/docs/agents/issue-tracker.md — vendored agent-facing doc that
+     explains the issue file contract, STATUS.md editing rules, and the
+     "close an issue by ticking its AC boxes" procedure. The harness
+     depends on agents following this convention; without the doc, agents
+     have no in-repo reference for it.
 
 Idempotent. Every step reports ✓ (already in place), + (will change), or
 ⚠ (present but differs from template — manual review). Re-running after a
@@ -36,6 +41,10 @@ SCRIPTS = CLAUDE / "scripts"
 SETTINGS = CLAUDE / "settings.json"
 STATUS_PY = SCRIPTS / "status.py"
 BUNDLED = Path(__file__).resolve().parent / "status.py"
+
+SKILL_ROOT = Path(__file__).resolve().parent.parent
+DOC_TEMPLATE = SKILL_ROOT / "templates" / "issue-tracker.md"
+DOC_REL = Path("docs") / "agents" / "issue-tracker.md"
 
 # $HOME (not an absolute /home/<user> path) keeps hooks portable across
 # machines. Hooks run in a shell, so $HOME expands at run time.
@@ -193,6 +202,28 @@ def install_project(root, actions, apply):
         if apply:
             wf.parent.mkdir(parents=True, exist_ok=True)
             wf.write_text(WORKFLOW_CONTENT, encoding="utf-8")
+
+    # Vendored agent-facing doc (issue-tracker.md). The harness depends on
+    # agents following the AC-checkbox / narrative-block conventions; this
+    # doc is their in-repo reference.
+    doc_dest = root / DOC_REL
+    if not DOC_TEMPLATE.exists():
+        actions.append(("warn", f"doc template missing at {DOC_TEMPLATE} — "
+                                 "skill installation is incomplete"))
+    else:
+        template_text = DOC_TEMPLATE.read_text(encoding="utf-8")
+        if doc_dest.exists():
+            if doc_dest.read_text(encoding="utf-8") == template_text:
+                actions.append(("ok", f"{DOC_REL} in sync with template"))
+            else:
+                actions.append(("warn", f"{DOC_REL} present but differs from "
+                                         "template — review and sync manually "
+                                         "if you want the latest version"))
+        else:
+            actions.append(("change", f"vendor {DOC_REL} from skill template"))
+            if apply:
+                doc_dest.parent.mkdir(parents=True, exist_ok=True)
+                doc_dest.write_text(template_text, encoding="utf-8")
 
     # .gitignore entries (additive: only appends missing lines, never modifies
     # existing ones).
