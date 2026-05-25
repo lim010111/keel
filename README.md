@@ -130,6 +130,11 @@ data is in.
   workflows per language. The `ci-researcher` sub-agent researches two
   toolchain options (modern / stable) on the web, and you decide through a
   five-gate flow.
+- `consult-externals` — mid-grilling council. Pulls two outside models
+  (Codex, agy) into a single decision point in parallel, each producing a
+  structured five-section report grounded in the repo and a slice of the
+  live conversation. The skill never picks a winner — disagreement between
+  the two is the load-bearing signal.
 - `daily-token-report` — aggregates a day's Claude Code token usage by
   project, model, session, and task into a self-contained HTML report, saved
   to the Obsidian Dev log folder.
