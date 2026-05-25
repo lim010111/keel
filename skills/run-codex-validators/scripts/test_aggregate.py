@@ -23,6 +23,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,6 +31,10 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent
 AGGREGATE = SCRIPTS / "aggregate.py"
 FIXTURES = SCRIPTS / "fixtures"
+
+# Import parse_validator_output directly for unit tests on the pure function.
+sys.path.insert(0, str(SCRIPTS))
+from aggregate import parse_validator_output  # noqa: E402
 
 # The workflow's "Normalize Codex JSONL → single-doc review payload" step
 # jq expression. Kept here as a string so the test can prove byte-equivalence
@@ -119,10 +124,82 @@ class TestFixturesPresent(unittest.TestCase):
             "jsonl_empty_findings.jsonl",
             "jsonl_malformed_payload.jsonl",
             "single_doc_with_result.json",
+            "validator-prose-preamble.txt",
         }
         actual = {p.name for p in FIXTURES.iterdir() if p.is_file()}
         self.assertEqual(expected, actual & expected,
                          f"missing fixtures: {expected - actual}")
+
+
+# ---------------------------------------------------------------------------
+# parse_validator_output: robustness against agent guardrail violations
+# ---------------------------------------------------------------------------
+
+class TestParseValidatorOutput(unittest.TestCase):
+    """Regression suite for parse_validator_output (refs claude-harness-work#22).
+
+    The validator agent's <output_contract> forbids prose preamble, but real
+    observed runs (chess_transformer PR #8 run 26380160257) showed the agent
+    writing a paragraph of analysis before the first [SEV] line. The parser
+    must scan the full stdout and not bail at the first blank line.
+    """
+
+    def test_prose_preamble_does_not_lose_finding(self):
+        """PR #8 raw_stdout regression — prose paragraph + blank + [SEV] line.
+
+        Before the fix: blank-line-stop made parser parse only the prose
+        paragraph, return [], and the cmd_write_outputs fail-safe synthesized
+        a bogus `unsure` verdict even though the agent emitted `uphold`.
+        """
+        fixture = (FIXTURES / "validator-prose-preamble.txt").read_text()
+        parsed = parse_validator_output(fixture)
+        self.assertEqual(len(parsed), 1, f"expected 1 finding line, got {parsed}")
+        self.assertEqual(parsed[0]["sev"], "critical")
+        self.assertEqual(parsed[0]["verdict"], "uphold")
+        self.assertEqual(parsed[0]["file"],
+                         "src/engine/_smoke_upload_artefact_canary.py")
+        self.assertEqual(parsed[0]["line"], 17)
+
+    def test_lines_only_no_prose(self):
+        """Spec-compliant stdout (no prose, no trailing summary) still parses."""
+        text = (
+            "[HIGH] uphold src/a.py:10 — src/a.py:10: bad pattern\n"
+            "[LOW] dismiss src/b.py:5 — docs/adr/0001.md:3: explicitly allowed\n"
+        )
+        parsed = parse_validator_output(text)
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0]["verdict"], "uphold")
+        self.assertEqual(parsed[1]["verdict"], "dismiss")
+
+    def test_summary_block_is_skipped(self):
+        """The 3-line summary block (block_count/bypass_eligible/action) is
+        recomputed by aggregate.py and must not be parsed as a finding."""
+        text = (
+            "[HIGH] uphold src/a.py:10 — src/a.py:10: bad pattern\n"
+            "\n"
+            "block_count: 1\n"
+            "bypass_eligible: no\n"
+            "action: apply fixes for 1 upheld finding(s)\n"
+        )
+        parsed = parse_validator_output(text)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["verdict"], "uphold")
+
+    def test_prose_trailing_does_not_create_extra_findings(self):
+        """If the agent writes prose AFTER the [SEV] lines (also a contract
+        violation), the parser still captures only the matched lines."""
+        text = (
+            "[MEDIUM] unsure src/c.py:42 — no ADR covers magic-number policy\n"
+            "\n"
+            "Note: I considered widening the search but found no further evidence.\n"
+        )
+        parsed = parse_validator_output(text)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["verdict"], "unsure")
+        self.assertEqual(parsed[0]["sev"], "medium")
+
+    def test_empty_text_returns_empty(self):
+        self.assertEqual(parse_validator_output(""), [])
 
 
 # ---------------------------------------------------------------------------

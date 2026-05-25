@@ -1,0 +1,7 @@
+The evidence is conclusive. The file at line 17 contains exactly the pattern Codex identified: `os.system(cmd)` where `cmd = input("command: ")`. The file header at line 2 states "SMOKE CANARY — DO NOT MERGE." and the commit message repeats "(DO NOT MERGE)". The file is an intentional smoke canary — but the docstring and commit message are explicit that the defect is deliberate and the branch must not land. No ADR or AGENTS.md passage sanctions merging this file; on the contrary, the documentation embedded in the file itself confirms the defect is real and is the entire point of the branch. Under the calibration rules, an intentional defect that is explicitly forbidden from merging is still an upheld blocking defect: the code at line 17 does exactly what Codex says, and there is no documented decision that permits it to land.
+
+[CRITICAL] uphold src/engine/_smoke_upload_artefact_canary.py:17 — src/engine/_smoke_upload_artefact_canary.py:17: os.system(cmd)
+
+block_count: 1
+bypass_eligible: no
+action: apply fixes for 1 upheld finding(s)

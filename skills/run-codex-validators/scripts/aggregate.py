@@ -164,17 +164,26 @@ def cmd_build_input(args: argparse.Namespace) -> int:
 def parse_validator_output(text: str) -> list[dict]:
     """Parse the validator stdout. Returns one dict per matched finding line.
 
-    Stops at the first blank line (the validator emits a blank line before
-    its three-line summary; that summary is recomputed here, not trusted).
+    Scans the entire stdout for lines matching LINE_RE; non-matching lines
+    (blank lines, the three summary lines, and any stray prose) are skipped.
+
+    Why not stop at the first blank line: the validator agent's contract
+    forbids prose preamble, but the agent has been observed (PR #8 run
+    `26380160257`, fixture validator-prose-preamble.txt) to write a paragraph
+    of analysis BEFORE the first `[SEV]` line, separated by a blank line.
+    Stopping at the first blank line then parses only prose, returns zero
+    matches, and trips the fail-safe `unsure` branch in cmd_write_outputs.
+    Full-text scan is robust to prose-before, prose-after, and lines-only
+    cases. The summary block (`block_count:`, `bypass_eligible:`, `action:`)
+    is naturally rejected by LINE_RE. See claude-harness-work#22.
     """
     parsed: list[dict] = []
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
-            break
+            continue
         m = LINE_RE.match(line)
         if not m:
-            err(f"could not parse validator line: {line!r}")
             continue
         sev, verdict, file_, line_no, citation = m.groups()
         parsed.append({

@@ -96,7 +96,7 @@ Definitions:
   - `apply fixes for <N> upheld finding(s)` — block_count > 0.
   - `human review required for <N> unsure finding(s)` — block_count = 0 but high-severity unsure exists.
 
-Emit nothing else. No prose preamble, no JSON, no markdown headings, no trailing commentary.
+Emit nothing else. No prose preamble, no JSON, no markdown headings, no trailing commentary. Even if you have analysis to share, fold it into the one-line citation slot or omit it; any text before the first `[SEV]` line is a protocol violation and risks dropping the verdict to fail-safe `unsure` downstream.
 </output_contract>
 
 <guardrails>
