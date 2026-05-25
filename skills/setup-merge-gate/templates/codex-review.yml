@@ -317,13 +317,33 @@ jobs:
           claude -p "/run-codex-validators --codex-json .codex-review/codex-review.normalized.json --soft-mode ${SOFT_MODE}" \
             --permission-mode bypassPermissions
 
+      - name: Inspect .codex-review/ before upload
+        # Diagnostic — intentionally kept after claude-harness-work#21.
+        # `actions/upload-artifact@v4` silently drops dot-prefixed paths
+        # by default; without this listing a future regression on the
+        # same filter (or an unrelated working-dir mismatch) is invisible
+        # until the post-hoc artefact bundle is needed and missing.
+        if: always() && env.RUN_REVIEW == 'true'
+        run: |
+          echo "pwd=$(pwd)"
+          ls -la .codex-review/ || echo "(.codex-review/ does not exist)"
+
       - name: Upload review artefact
+        # `include-hidden-files: true` is required — `.codex-review/` is
+        # a dot-prefixed directory and `actions/upload-artifact@v4`
+        # filters out any path whose segments start with `.` by default
+        # (changed from v3). Without this, the artefact bundle was
+        # silently empty for 5 consecutive runs — claude-harness-work#21.
+        # `if-no-files-found: error` so a future regression on the same
+        # filter surfaces immediately instead of accumulating silent
+        # `warn`s.
         if: always() && env.RUN_REVIEW == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: codex-review
           path: .codex-review/
-          if-no-files-found: warn
+          include-hidden-files: true
+          if-no-files-found: error
 
       - name: Build sticky comment (review ran)
         # `always()` so a failed `Run Claude validator` step (auth, install,
