@@ -39,7 +39,7 @@ That is the harness *within* a unit of work — for how it gates the SDLC
 
 | Kind | Items |
 |---|---|
-| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `daily-dev-log`, `daily-token-report`, `run-codex-validators`, `session-dev-log`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
+| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `daily-dev-log`, `daily-token-report`, `harden-issue`, `run-codex-validators`, `session-dev-log`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
 | Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `session_devlog` |
 | Scripts | `status.py`, `sound_complete.sh`, `sound_permission.sh` |
 | Agents | `ci-researcher`, `codex-review-validator`, `korean-context-writer` |
