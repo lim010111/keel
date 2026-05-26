@@ -35,7 +35,16 @@ Follow [grill-with-docs](../grill-with-docs/SKILL.md) for questioning style, cod
 
 ### Gate 1 — Issue file is the primary output target
 
-The issue file at the provided path **must end up with a diff** by end of session. If grilling concludes with only chat-level Plan text and no edit, that's a failure mode — name it, then write the diff before terminating.
+The issue file at the provided path **must end up with a diff** by end of session. Mechanically: `git diff <issue-path>` must be non-empty before you declare done.
+
+**Default behaviour — auto-write.** When grilling settles a decision, edit it into the issue file right then. Don't batch into an end-of-session dump. If you reach the end and notice the file is still unchanged, name the Gate 1 violation explicitly ("the issue file is unchanged — that's a Gate 1 failure"), then write the diff from the conversation before terminating.
+
+**Two exceptions — confirm instead of auto-write:**
+
+1. **Explicit decide-later items.** If grilling parked a question as unresolved (e.g. "decide once we see Phase 2 traffic shape"), do not invent an AC for it. Report it at end-of-session as an open decision, no edit.
+2. **Final-round user pushback.** If the user pushed back on your recommendation in the last grilling round and the new shape isn't yet locked, ask once: "Reflect this into AC as `- [ ] X`?" before writing.
+
+Outside those two cases, write the diff yourself — don't ask permission per edit.
 
 ### Gate 2 — Decisions land as concrete AC items, not abstract plan text
 
