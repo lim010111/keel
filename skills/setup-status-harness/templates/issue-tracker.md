@@ -61,21 +61,37 @@ Create a new file under `.scratch/<feature-slug>/` (creating the directory if ne
 
 Read the file at the referenced path. The user will normally pass the path or the issue number directly.
 
-## Closing an issue
+## AC checkbox discipline — flip `[x]` in the same PR
 
-When work for an issue actually lands (PR merged, code shipped, behavior
-verified end-to-end), edit the issue file:
+The status harness has no view into git history, PR descriptions, or
+merged GitHub state. **The only signal it reads is the checkbox state on
+disk.** So an AC is "complete" only when its `- [x]` is flipped in the
+issue file *and that change is committed in the same PR that satisfied
+it* — not after merge, not in a follow-up chore.
 
-1. Flip each completed `- [ ]` to `- [x]` under `## Acceptance criteria`.
-   The status harness derives the progress bar and lifecycle state from
-   these boxes — leaving them unchecked makes STATUS silently understate
-   completion.
-2. If a criterion got split into a follow-up issue, leave it unchecked
-   and append `*(deferred to #NN)*` so the table reflects the split
-   rather than the original scope.
-3. Append a short `> **Resolution:**` block at the end of the AC section
-   pointing at the PR / commit that closes it — cheap cross-link for
-   future readers.
+Required of every PR that lands implementation work:
+
+1. As part of the PR's commits, edit `.scratch/<feature>/issues/NN-*.md`
+   and flip every AC checkbox the PR satisfies from `- [ ]` to `- [x]`.
+2. If the PR only partially satisfies an issue, flip only the boxes it
+   satisfies and leave the rest `- [ ]`. The issue stays open.
+3. If a criterion was split out into a follow-up issue, leave the box
+   unchecked and append `*(deferred to #NN)*` so the table reflects the
+   split rather than the original scope.
+4. If the PR unblocks a downstream issue, also remove the now-resolved
+   bullet from that issue's `## Blocked by` section in the same PR.
+5. Update the `Status:` triage label inline too when the PR moves the
+   issue along the state machine.
+6. Optionally append a `> **Resolution:**` line at the end of the AC
+   section pointing at the PR / commit — cheap cross-link for future
+   readers.
+
+A PR that merges without ticking its boxes leaves STATUS silently
+misrepresenting the work as `todo`. There is no CI gate that catches
+this, so it is **reviewer responsibility on the PR**. If you discover an
+already-merged PR that skipped step 1, fix it by editing the issue file
+directly on `main` (no PR needed for the checkbox flip — the work
+landed, the file just needs to catch up).
 
 This is not the `/status` skill's job — that regenerates the table *from*
 your checkboxes, not the other way round.
