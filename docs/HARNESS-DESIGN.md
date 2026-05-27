@@ -1,30 +1,33 @@
-# Harness design — gating the SDLC
+# Harness design — gating trust transitions
 
 > Where [`README.md`](../README.md) lists *what keel ships today*, this
 > document explains *the shape it is growing into*.
 
 keel started as three layers — norms, enforcement, visibility. That is how the
 harness keeps an agent honest *within* a unit of work. This document is about
-the layer above it: how the harness gates the software development lifecycle
-*between* its phases.
+the layer above it: how the harness gates the **trust transitions** an
+agent-produced artifact crosses on its way to a wider audience.
 
 ## The idea
 
 An autonomous coding agent does not fail uniformly. It fails at the seams —
-where one phase of work hands off to the next. It starts implementing before
-it has understood the problem. It calls a change verified when the test it
-trusted was quietly weakened. It merges work that no second party ever read.
+where the artifact it produced crosses into a wider audience, effect-radius,
+authority, or verifier. It starts implementing before the human↔agent context
+is rich enough. It calls a change verified when the test it trusted was
+quietly weakened. It merges work that no second party ever read.
 
-So the harness is **SDLC-shaped**. Each phase of the lifecycle ends at a
-**gate**: a trustworthy success signal that the phase actually produced what
-the next phase needs. The agent loops autonomously where that signal is
-mechanical, and pauses for human confirmation where the gate hands judgment
-to a person.
+So the harness is a **change-control plane** organized around those **trust
+transitions**. At each transition it places one **gate** — a trustworthy
+success signal that the artifact is ready for the next world. Between
+transitions is an **implementation work interval** governed by protocols
+(TDD, scope discipline, hooks) rather than gates: no trust boundary is
+crossed in between, so a gate there would force the agent to grade its own
+work against itself.
 
 ## What a gate is
 
-A **gate** is a trustworthy success signal for one SDLC phase — one gate per
-phase. Two rules give the word its meaning:
+A **gate** is a trustworthy success signal for one **trust transition** —
+one gate per transition. Two rules give the word its meaning:
 
 - **No gate here is fully automatic.** By default every gate delegates some
   judgment to the human. The agent loops where the signal is mechanical; the
@@ -34,23 +37,36 @@ phase. Two rules give the word its meaning:
   `--no-verify` commit, a bypass label). The harness makes a bypass *visible*
   for scrutiny rather than pretending it cannot happen.
 
-## The three gates
+## The four gates (v1 shape)
 
-| SDLC phase | Gate | What it verifies | Status |
+The target taxonomy is `alignment → verification → merge → release → deploy`,
+with an **operate loop** feeding observations back into the next alignment.
+In a **single-user installation** where `~/.claude/` *is* the runtime — the
+developer's environment works directly off the source tree, with no
+release/deploy step in between — release and deploy share one Gate, yielding
+the v1 shape `alignment → verification → merge → distribution`:
+
+| Trust transition | Gate | What it verifies | Status |
 |---|---|---|---|
-| Alignment | Alignment gate | The human↔agent grilling converged on a rich-enough project context | **Shipped** — `/third-party-review` |
-| Verification | Self-verification gate | The oracle behind a "tests pass" verdict was not weakened | **Designed** |
-| Pre-merge | Merge gate | An independent reviewer read the change before it reached `main` | **In progress** |
+| Alignment (ad-hoc ask → autonomous-loop context) | Alignment gate | The human↔agent grilling converged on a rich-enough project context | **Shipped** — `/third-party-review` |
+| Verification (agent self-claim → independent oracle verdict) | Self-verification gate | The oracle behind a "tests pass" verdict was not weakened | **Designed** |
+| Merge (ephemeral branch → main, visible to collaborators) | Merge gate | An independent reviewer read the change before it reached `main` | **In progress** |
+| Distribution (main → user runtime; v1 collapse of release + deploy) | Distribution gate | Deferred while user base = {developer} and `~/.claude/` *is* the runtime | **Deferred** |
+
+The distribution collapse splits back into separate **release** and **deploy**
+gates once (a) the user base extends beyond the developer, (b) versioned
+artifacts (semver, changelog, migration notes) become user-visible, or (c)
+deploy-time validation needs a different oracle than release-time.
 
 ### Alignment gate — shipped
 
-The first phase of work is a human grilling the agent until the project
-context is rich enough to execute on. The alignment gate verifies that the
-grilling actually converged. `/third-party-review` — shipped in this repo —
-reduces the session transcript deterministically, hands it to outside models
-(Codex, Gemini), and asks whether the human↔agent conversation has drifted
-far enough to cause trouble later. Resolving a divergence is the pair's work,
-so this gate is closed largely by the human.
+The first transition is the human↔agent **alignment** — turning an ad-hoc
+ask into the context the autonomous loop will rely on. The alignment gate
+verifies that the grilling actually converged. `/third-party-review` —
+shipped in this repo — reduces the session transcript deterministically,
+hands it to outside models (Codex, Gemini), and asks whether the human↔agent
+conversation has drifted far enough to cause trouble later. Resolving a
+divergence is the pair's work, so this gate is closed largely by the human.
 
 ### Self-verification gate — designed
 
@@ -71,10 +87,23 @@ change — a reviewer in a *different context* from the one that wrote the code,
 because same-context bias makes self-review irreducibly weak. This is keel's
 current build focus.
 
+### Distribution gate — deferred (v1 collapse of release + deploy)
+
+In a single-user installation where `~/.claude/` *is* the runtime, there is no
+release/deploy step between the developer and the running code. Two distinct
+verifiers / evidence sets are not warranted yet, so release and deploy share
+one **distribution** Gate, currently deferred.
+
+> **Note**: keel itself is *not* an instance of this gate. The public-mirror
+> sync from `~/.claude/` into this repo crosses an **audience** boundary
+> (private → public), not the developer-runtime boundary that distribution
+> covers. The two transitions warrant separate gates and will be designed as
+> such if and when keel-publication needs its own trustworthy signal.
+
 ## One shape, many gates
 
-The three gates are not three architectures. They share one uniform shape, so
-adding a gate is a new *instance*, not new structure:
+Every gate above is the same shape, so adding one is a new *instance*, not new
+structure:
 
 ```
 { unit, oracle / reviewer, trust signal, soft/hard policy, audited bypass lane }
@@ -93,6 +122,7 @@ a gate.
 ## Status
 
 The alignment gate is shipped. The merge gate is being built. The
-self-verification gate is designed and deferred. Design rationale and the
+self-verification gate is designed and deferred. The distribution gate is
+deferred under the v1 single-user collapse. Design rationale and the
 issue-level breakdown live in the planning repo; this document is the public
 summary of the model.
