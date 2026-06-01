@@ -40,7 +40,7 @@ transitions** an artifact crosses on its way to a wider audience, see
 
 | Kind | Items |
 |---|---|
-| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `daily-dev-log`, `daily-token-report`, `harden-issue`, `run-codex-validators`, `session-dev-log`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
+| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `consult-externals`, `daily-dev-log`, `daily-token-report`, `harden-issue`, `run-codex-validators`, `session-dev-log`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
 | Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `session_devlog`, `merge_gate_mark` · `merge_gate_scheduler` |
 | Scripts | `status.py`, `sound_complete.sh`, `sound_permission.sh`, `merge_gate_local.py` |
 | Agents | `ci-researcher`, `codex-review-validator`, `korean-context-writer` |
