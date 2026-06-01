@@ -38,7 +38,8 @@ before writing the file. None of the tokens may remain in the rendered file.
 |---|---|---|---|
 | `%%PROJECT_NAME%%` | string | `keel` | Free-form human label; surfaced in the sticky comment. |
 | `%%SOFT_MODE_DEFAULT%%` | `"true"` \| `"false"` | `"true"` | Default posture. Soft phase: `"true"` (findings reported, never block). Hard phase: `"false"` (critical/high block). Must be the string `true` or `false`. |
-| `%%DOCS_ONLY_GLOBS%%` | JSON array of globs (string) | `["**/*.md","docs/**","LICENSE","NOTICE"]` | Whole-PR docs-only short-circuit. When **every** changed file matches one of the globs, the gate skips. Pass a valid JSON array literal; the workflow parses it with `jq`/`json.loads`. `**` matches across path separators, `*` does not. |
+| `%%DOCS_ONLY_GLOBS%%` | JSON array of globs (string) | `["**/*.md","docs/**","LICENSE","NOTICE"]` | Whole-PR docs-only short-circuit. When **every** changed file matches one of the globs, the gate skips — unless a file also matches `%%TRUST_DOC_GLOBS%%` (see next row). Pass a valid JSON array literal; the workflow parses it with `jq`/`json.loads`. `**` matches across path separators, `*` does not. |
+| `%%TRUST_DOC_GLOBS%%` | JSON array of globs (string) | `["AGENTS.md","**/AGENTS.md","CLAUDE.md","**/CLAUDE.md","CONTEXT-MAP.md","**/CONTEXT.md","docs/adr/**"]` | **Negative override** on the docs-only fast path. Any changed file matching one of these forces the full gate to run even when every changed file is otherwise docs-only. These are the validator's own trust/context inputs — `AGENTS.md` and the `CLAUDE.md` files that `@import` it (including per-module ones), `CONTEXT-MAP.md`, per-module `CONTEXT.md`, ADRs — and a docs-only PR must not weaken the gate's calibration unreviewed (refs claude-harness-work#27). Same JSON-array syntax as `%%DOCS_ONLY_GLOBS%%`. An empty array (`[]`) disables the override, a project opting out at its own risk. |
 | `%%NODE_VERSION%%` | string | `"20"` | Major Node version for the Codex CLI install. |
 | `%%CODEX_INSTALL_CMD%%` | shell snippet | `npm install -g @openai/codex@latest` | Must leave a working `codex` (and any plugin script the review invocation needs) on `$PATH`. |
 | `%%CODEX_REVIEW_CMD%%` | shell snippet | `codex exec --json --output-schema .codex-review/schema.json --dangerously-bypass-approvals-and-sandbox "Run an adversarial review of the diff against origin/$BASE_REF"` | Must write a JSONL stream to stdout. Each line is a Codex conversation event; the final `item.completed[agent_message]` carries the review payload (JSON conforming to `review-output.schema.json`) inside its `.item.text` field. The workflow's "Normalize Codex JSONL" step extracts that payload to `.codex-review/codex-review.normalized.json` for downstream consumers. The installer vendors the schema to `.codex-review/schema.json` (target-local) so CI runners can satisfy `--output-schema` without the openai-codex plugin marketplace. The `--dangerously-bypass-approvals-and-sandbox` flag is required on GitHub Actions runners because Codex's `--sandbox read-only` enforcement uses `bwrap`, which needs kernel namespace capabilities the runners don't grant (refs claude-harness-work#20). Operators who want a different sandbox policy or schema can override the command in `harness.toml [merge-gate].codex_review_cmd`. |
@@ -50,9 +51,9 @@ before writing the file. None of the tokens may remain in the rendered file.
   shell-quote the values yourself. The template already places each token in
   a context that accepts the documented type (single-quoted YAML scalar,
   shell-script body, etc.).
-- For `%%DOCS_ONLY_GLOBS%%`, render a compact JSON array (e.g.
-  `["**/*.md","docs/**"]`) — the surrounding YAML is single-quoted so the
-  double quotes inside survive unchanged.
+- For `%%DOCS_ONLY_GLOBS%%` and `%%TRUST_DOC_GLOBS%%`, render a compact JSON
+  array (e.g. `["**/*.md","docs/**"]`) — the surrounding YAML is single-quoted
+  so the double quotes inside survive unchanged.
 - For multi-line shell snippets (`%%CODEX_INSTALL_CMD%%`,
   `%%CODEX_REVIEW_CMD%%`) keep the indentation matching the surrounding
   `run: |` block. The installer should emit lines indented to match the

@@ -55,6 +55,15 @@
             "command": "python3 /home/shine/.claude/hooks/tdd_mark.py"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/shine/.claude/hooks/merge_gate_mark.py"
+          }
+        ]
       }
     ],
     "SessionStart": [
@@ -89,6 +98,14 @@
           {
             "type": "command",
             "command": "python3 /home/shine/.claude/scripts/status.py"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/shine/.claude/hooks/merge_gate_scheduler.py"
           }
         ]
       }

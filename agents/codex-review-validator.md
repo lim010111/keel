@@ -41,11 +41,14 @@ You receive a single JSON document on stdin (passed by the `/run-codex-validator
     "adr_glob": "docs/adr/*.md",
     "context_map": "CONTEXT-MAP.md",
     "per_context_glob": "src/*/CONTEXT.md"
-  }
+  },
+  "durable_context": "string (optional)"
 }
 ```
 
 Treat every `project_refs.*` path as relative to the repo root (the cwd you are launched in). Any of them may be absent — if AGENTS.md or the ADR directory does not exist, note that fact in the action line of the summary but proceed; missing docs are not by themselves grounds to dismiss.
+
+`durable_context` is **optional** and usually absent (the GitHub Actions caller never sets it). When present, it carries *written, durable* intent the local merge-gate profile substitutes for a PR body — the branch name, the published-range commit messages, and any operator-supplied intent (claude-harness-work#30 D11). Weigh it like a PR description: it can justify *why* a change is intentional, but it is still the author's claim. It **never** lowers the bar for `dismiss` (which always requires a code/doc citation), and context starvation (an absent or thin `durable_context`) must fail toward `unsure`/over-block, never rubber-stamp.
 </input>
 
 <task>
@@ -72,11 +75,12 @@ Do not modify the order of findings. Do not merge or split them. Do not add find
 Emit one line per finding, in the input order, in this exact format:
 
 ```
-[SEV] <classification> <file>:<line> — <citation>
+[SEV] <classification> id=<id> <file>:<line> — <citation>
 ```
 
 - `[SEV]` is the literal severity in upper-case brackets: `[CRITICAL]`, `[HIGH]`, `[MEDIUM]`, `[LOW]`.
 - `<classification>` is one of `uphold`, `dismiss`, `unsure` (lower-case).
+- `<id>` is the literal value of the finding's `id` field from the input JSON, echoed **verbatim**. This token is non-optional — omitting it, paraphrasing it, or substituting any other value (e.g. the finding's title) is a protocol violation and will demote the verdict to fail-safe `unsure`. The aggregator pairs your verdict to the Codex finding via this id; the `(file, line, severity)` triple is only a sanity check, not the primary key.
 - `<file>:<line>` echoes the finding's `file` and `line`.
 - `<citation>` is the single-line quote or unsure-reason produced in step 4 of `<task>`.
 
@@ -158,9 +162,9 @@ After you reach a first-pass verdict on a finding, before locking it in, check f
 **Validator output**:
 
 ```
-[HIGH] uphold src/billing/charge.ts:42 — src/billing/charge.ts:42: } catch { /* keep going */ }
-[MEDIUM] dismiss src/billing/charge.ts:18 — docs/adr/0011-money-as-integer-cents.md:14: amounts are stored as integer cents; the `number` type holds cents, not dollars
-[LOW] unsure src/billing/charge.ts:9 — no style ADR or AGENTS.md rule covers magic-number policy; cannot dismiss or uphold without convention
+[HIGH] uphold id=f1 src/billing/charge.ts:42 — src/billing/charge.ts:42: } catch { /* keep going */ }
+[MEDIUM] dismiss id=f2 src/billing/charge.ts:18 — docs/adr/0011-money-as-integer-cents.md:14: amounts are stored as integer cents; the `number` type holds cents, not dollars
+[LOW] unsure id=f3 src/billing/charge.ts:9 — no style ADR or AGENTS.md rule covers magic-number policy; cannot dismiss or uphold without convention
 
 block_count: 1
 bypass_eligible: no

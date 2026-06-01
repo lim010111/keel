@@ -21,6 +21,19 @@ claude -p "/run-codex-validators --codex-json <path> --soft-mode <true|false>" \
 - Working directory is the target repo root.
 - `--codex-json` default: `./codex-review.json`.
 - `--soft-mode` is `true` or `false`; required.
+- `--out-dir` (optional) default `./.codex-review/` — the directory the two
+  output files are written to. The GitHub Actions workflow omits it, so the
+  default keeps that invocation **byte-identical**. The local merge-gate
+  producer (`merge-gate-local produce`, claude-harness-work#30) passes a
+  per-reviewer tuple sub-dir here so each reviewer's `validators.{json,md}`
+  land separately. **Use `$OUT_DIR` below wherever `.codex-review` was
+  hardcoded.**
+- `--intent-from <path>` (optional) — a file of **durable** validator context
+  (branch name / published-range commit messages / operator-supplied intent).
+  The local profile has no PR body, so the producer supplies this written
+  intent for the validator to weigh like a PR description (D11). Omitted by the
+  GHA workflow → empty → byte-identical. Pass it through to `build-input` as
+  `--durable-context-from` (step 4).
 
 ## Always exit 0
 
@@ -51,6 +64,57 @@ Map per this table — `scripts/aggregate.py build-input` implements it:
 `project_refs` is hardcoded to the validator agent's documented defaults
 (`AGENTS.md`, `docs/adr/*.md`, `CONTEXT-MAP.md`, `src/*/CONTEXT.md`).
 
+## How aggregation works — pairing on finding id
+
+The aggregator (`scripts/aggregate.py write-outputs`) takes two streams
+— Codex's `findings[]` JSON and the validator agent's line-oriented
+stdout — and writes one aggregate entry per finding. Pairing is
+**identity-based** via the finding's `id`:
+
+1. `cmd_build_input` hands each finding to the validator with an
+   explicit `id` (synthesized as `finding-{i}` when Codex omits one).
+2. The validator's `<output_contract>` requires each line to echo
+   `id=<id>` verbatim (see `~/.claude/agents/codex-review-validator.md`).
+3. `cmd_write_outputs` builds a `findings_by_id` lookup and resolves
+   every parsed validator line by id — **not by position**. Order in
+   the validator's stdout no longer matters for correctness.
+4. After id resolution, the aggregator sanity-checks
+   `(file, line, severity)` between the Codex finding and the parsed
+   line. Mismatch demotes that finding to `unsure` with an `stderr`
+   warning naming the id and the divergent fields.
+5. Failure modes fail safely:
+   - Non-unique id from Codex (two findings carrying the same `id`) →
+     id-as-identity is broken at the source, so **every** colliding
+     finding is forced to `unsure` *before* the verdict table is
+     consulted, with an `stderr` warning naming the id and the count.
+     The validator line is **not** consulted for those findings —
+     otherwise one `dismiss` line could be reused across distinct
+     findings (a hard-mode fail-open). Symmetric to the validator-side
+     duplicate guard below (refs claude-harness-work#29).
+   - Duplicate id from the validator → that finding becomes `unsure`
+     + `stderr` warning naming the id and the count.
+   - Validator line with an id matching no Codex finding → that
+     parsed line becomes an `orphan-i` aggregate entry with
+     `block=false`, regardless of the validator-supplied severity or
+     verdict. The validator's scope contract is **classify Codex
+     findings, not author new ones**; trusting an orphan's
+     severity/verdict to drive `decide_block` would give the validator
+     a side channel to invent its own blockers (refs
+     claude-harness-work#28). The unclaimed Codex finding (if any)
+     falls into the existing "validator output missing" fail-safe.
+   - Codex finding with no validator line claiming its id → the
+     existing "validator output missing" fail-safe (preserves the
+     `#22` parity-check behavior).
+
+Why identity-based: ADR-0008 records the decision. The previous
+positional pairing (`findings[i]` ↔ `parsed[i]`) silently
+mis-applied verdicts when the validator agent reordered its lines —
+a HIGH `uphold` could swap with a LOW `dismiss` and the gate would
+wave the high finding through. Identity-based pairing makes that
+class of defect structurally impossible; the sanity check catches
+the remaining failure mode (model echoes the wrong id but otherwise
+plausible attributes).
+
 ## Verdict → block table (single-model MVP)
 
 Per finding, the aggregator computes `block` from Codex severity × Claude
@@ -69,7 +133,7 @@ is `append`, not a rewrite.
 
 ## Output files
 
-Written under `./.codex-review/` (created if missing):
+Written under `$OUT_DIR` (default `./.codex-review/`, created if missing):
 
 - `validators.json`:
   ```json
@@ -98,14 +162,16 @@ whichever path resolved; `python3 "$AGG" <subcommand> …` is the call shape.
 ## Workflow you execute
 
 1. **Parse arguments.** Extract `--codex-json` (default
-   `./codex-review.json`) and `--soft-mode` from the slash-command
+   `./codex-review.json`), `--soft-mode`, `--out-dir` (default
+   `.codex-review` → call it `$OUT_DIR`), and the optional `--intent-from`
+   (call it `$INTENT_FROM`, unset if absent) from the slash-command
    invocation. If `--soft-mode` is missing or not `true|false`, run
-   `python3 "$AGG" write-fallback --reason "soft-mode flag missing or invalid" --out-dir .codex-review`
+   `python3 "$AGG" write-fallback --reason "soft-mode flag missing or invalid" --out-dir "$OUT_DIR"`
    and return.
 
 2. **Pre-flight on Codex JSON.** If the file at `--codex-json` is missing
    or `jq -e . <path>` fails, run
-   `python3 "$AGG" write-fallback --reason "<concise reason>" --out-dir .codex-review`
+   `python3 "$AGG" write-fallback --reason "<concise reason>" --out-dir "$OUT_DIR"`
    (`"codex JSON missing at <path>"` or `"codex JSON failed to parse"`),
    then return.
 
@@ -120,6 +186,10 @@ whichever path resolved; `python3 "$AGG" <subcommand> …` is the call shape.
    Derive `$ISSUE_REF` from env: prefer
    `PR #${GITHUB_PR_NUMBER}` if set; else
    `branch ${GITHUB_HEAD_REF:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)}`.
+   **If `$INTENT_FROM` was passed**, append
+   `--durable-context-from "$INTENT_FROM"` to the `build-input` call so the
+   validator receives the durable intent (D11). When absent, omit it — the
+   payload then has no `durable_context` key (GHA byte-identical).
 
 5. **Dispatch the validator subagent.** Use the Agent tool with
    `subagent_type: codex-review-validator` and pass the contents of
@@ -128,7 +198,7 @@ whichever path resolved; `python3 "$AGG" <subcommand> …` is the call shape.
    Capture its full response into `$VALIDATOR_OUT_TMP`.
 
 6. **Write outputs.** Run
-   `python3 "$AGG" write-outputs --codex-json "$CODEX_JSON" --validator-output "$VALIDATOR_OUT_TMP" --soft-mode "$SOFT_MODE" --out-dir .codex-review`.
+   `python3 "$AGG" write-outputs --codex-json "$CODEX_JSON" --validator-output "$VALIDATOR_OUT_TMP" --soft-mode "$SOFT_MODE" --out-dir "$OUT_DIR"`.
 
 7. **Report and return.** Print one line confirming the two output files
    exist. Do not return non-zero.
@@ -141,10 +211,19 @@ non-zero, JSON malformed mid-run), run the fallback path:
 ```
 python3 "$AGG" write-fallback \
   --reason "<short concrete reason>" \
-  --out-dir .codex-review
+  --out-dir "$OUT_DIR"
 ```
 
 then return success. The workflow handles the rest.
+
+The fallback writes `validators.json` with `aggregate: []` and a non-empty
+`fallback: "<reason>"` key. The workflow's `Decide check outcome` step is
+the sole gate decision-maker and inspects both: under hard mode it fails
+closed when `.fallback` is non-empty AND the normalized Codex payload
+reports critical/high findings (claude-harness-work#24). The runtime's
+"always exit 0" contract is preserved — do NOT change `write-fallback` to
+embed Codex findings into `aggregate[]`; the workflow already has the
+information it needs to decide.
 
 ## What this skill must not do
 

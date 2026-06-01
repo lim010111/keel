@@ -42,6 +42,7 @@ EMOJI = {
     "blocked": "⛔ blocked",
     "todo": "⬜ todo",
     "wontfix": "🚫 wontfix",
+    "parked": "⏸️ parked",
     "?": "❔ unknown",
 }
 
@@ -107,6 +108,11 @@ def lifecycle(issue: dict, by_num: dict, _path: frozenset = frozenset()) -> str:
     # A wontfix issue is dead by triage decision, regardless of its checkboxes.
     if issue["triage"] == "wontfix":
         return "wontfix"
+    # A parked issue is deferred until operator opt-in (ADR-0009) — not decided
+    # against, but excluded from active progress the same way and surfaced as a
+    # visible tombstone row rather than hidden.
+    if issue["triage"] == "parked":
+        return "parked"
     if issue["total"] == 0:
         return "?"
     if issue["done"] == issue["total"]:
@@ -180,9 +186,10 @@ def feature_section(feature: str, files: list[Path]) -> tuple[str, int, int, dic
     issues = [parse_issue(p) for p in sorted(files)]
     by_num = {i["num"]: i for i in issues}
 
-    # wontfix issues stay in the table but are dead work — exclude their
-    # criteria from the progress bar so they do not deflate the percentage.
-    counted = [i for i in issues if i["triage"] != "wontfix"]
+    # wontfix issues stay in the table but are dead work; parked issues stay
+    # but are deferred (ADR-0009 opt-in). Exclude both from the progress bar so
+    # neither deflates the percentage.
+    counted = [i for i in issues if i["triage"] not in ("wontfix", "parked")]
     done = sum(i["done"] for i in counted)
     total = sum(i["total"] for i in counted)
     frac = done / (total or 1)
@@ -248,7 +255,8 @@ outside the narrative block; mechanical sections are regenerated every run._{ban
 
 State is derived: all criteria checked → `done`; some → `in-progress`; none
 with an unfinished blocker → `blocked`; otherwise → `todo`. Issues triaged
-`wontfix` show as `wontfix` and are excluded from the progress bar.
+`wontfix` (decided against) or `parked` (deferred until operator opt-in) show
+that triage state and are excluded from the progress bar.
 """
     # Only write when something changed, so the Stop hook does not produce a
     # no-op diff every session. Generated content is now date-free, so an

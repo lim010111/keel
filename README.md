@@ -41,8 +41,8 @@ transitions** an artifact crosses on its way to a wider audience, see
 | Kind | Items |
 |---|---|
 | Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `daily-dev-log`, `daily-token-report`, `harden-issue`, `run-codex-validators`, `session-dev-log`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
-| Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `session_devlog` |
-| Scripts | `status.py`, `sound_complete.sh`, `sound_permission.sh` |
+| Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `session_devlog`, `merge_gate_mark` · `merge_gate_scheduler` |
+| Scripts | `status.py`, `sound_complete.sh`, `sound_permission.sh`, `merge_gate_local.py` |
 | Agents | `ci-researcher`, `codex-review-validator`, `korean-context-writer` |
 | Config | `CLAUDE.md`, `statusline.sh`, `settings.json` |
 
@@ -103,10 +103,17 @@ own documented context, and the gate blocks merge on `critical`/`high` ∩
 Claude-only; second validator returns once enough soft-mode measurement
 data is in.
 
-- `setup-merge-gate` — the installer. Renders the workflow into
-  `.github/workflows/codex-review.yml`, writes a `[merge-gate]` section in
-  the project's `harness.toml`, and **vendors** the validator agent + the
-  runtime skill into the target's `.claude/` so clean CI runners discover
+The gate ships in two **profiles**. The default is **local**: a per-repo
+`pre-push` hook runs `merge-gate-local verify` — fast, deterministic, and
+spends no Codex or Claude tokens — while a cheap Stop-time scheduler produces
+the review in the background, so there is no per-PR CI cost. The
+**github-actions** profile (the workflow above) is opt-in.
+
+- `setup-merge-gate` — the installer. Defaults to the **local** profile (a
+  `pre-push` hook + a `[merge-gate]` section in the project's `harness.toml`);
+  with `--profile github-actions` it instead renders the workflow into
+  `.github/workflows/codex-review.yml` and **vendors** the validator agent +
+  the runtime skill into the target's `.claude/` so clean CI runners discover
   them without a global `~/.claude/`. `--uninstall` reverses everything,
   leaving docs alone if the user has edited their generated marker out.
 - `run-codex-validators` — the runtime invoked by the workflow. Reads
@@ -118,6 +125,16 @@ data is in.
   finding at a time and returns `uphold`/`dismiss`/`unsure` plus a strict
   citation rule: a `dismiss` without a quoted code/doc line auto-promotes
   to `unsure`.
+- `merge_gate_local.py` — the local-profile wrapper, run outside any Claude
+  session by the `pre-push` hook. `produce` (expensive) runs the reviewer set
+  + the Claude validator and writes a cached artefact; `verify` (fast) only
+  reads that artefact's summary and exits 0 (pass) or 1 (block) — no Codex, no
+  Claude, no writes; `force` re-produces ignoring the cache.
+- `merge_gate_mark.py` / `merge_gate_scheduler.py` — the global hooks behind
+  the background `produce`: a `PostToolUse(Edit|Write)` dirty marker plus a
+  non-blocking `Stop` scheduler that enqueues `produce` only when a set of
+  cheap guards all hold (always exits 0). `test_merge_gate_hooks.py` and
+  `test_merge_gate_local.py` cover them.
 
 ### Standalone components
 

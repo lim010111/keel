@@ -31,11 +31,16 @@ hooks/tdd_verify.py
 hooks/session_devlog.py
 hooks/test_session_devlog.py
 hooks/test_tdd_hooks.py
+hooks/merge_gate_mark.py
+hooks/merge_gate_scheduler.py
+hooks/test_merge_gate_hooks.py
 
 # --- Scripts ---
 scripts/status.py
 scripts/sound_complete.sh
 scripts/sound_permission.sh
+scripts/merge_gate_local.py
+scripts/test_merge_gate_local.py
 
 # --- Agents (definitions only; agent-memory/ is intentionally excluded) ---
 agents/ci-researcher.md
@@ -52,3 +57,5 @@ settings.json
 # (see docs/adr/0002). detect-drift.sh reads these so they stop being
 # flagged as untracked drift.
 # exclude: skills/keel-update
+# exclude: skills/publish-study-notes
+# exclude: skills/weekly-dev-log

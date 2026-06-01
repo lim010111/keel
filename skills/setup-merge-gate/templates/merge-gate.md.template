@@ -32,6 +32,22 @@ apply the label, leave a PR comment with the reason, and add an
 entry to the plan repo's bypass log within one business day. See
 operations playbook §4 for the full bypass policy.
 
+## Docs-only fast path
+
+A PR whose changed files are *all* prose (every file matches
+`harness.toml [merge-gate].docs_only_globs`) skips the heavy Codex
+review — typo fixes and README polish should not pay for a full gate
+run.
+
+The fast path has one **trust-document override**: if a changed file
+also matches `[merge-gate].trust_doc_globs` — `AGENTS.md` (and the
+`CLAUDE.md` files that `@import` it, including per-module ones),
+`CONTEXT-MAP.md`, per-module `CONTEXT.md`, and `docs/adr/**` — the PR
+runs the full gate even when every file is otherwise docs-only. Those
+files are the validator's own calibration inputs, so a docs-only PR
+must not weaken them unreviewed. An empty `trust_doc_globs` disables
+the override.
+
 ## Soft → Hard promotion
 
 The gate ships in **soft mode** (`harness.toml`

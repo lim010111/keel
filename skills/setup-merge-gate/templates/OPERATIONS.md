@@ -327,9 +327,14 @@ this section when that data exists.
 
 ### Knobs that move the numbers
 
-- **`docs-only` path glob** — PRs matching the glob exit the
-  workflow early and incur near-zero cost. Keep the glob honest
-  (docs, comments, dotfiles), do not stretch it to dodge cost.
+- **`docs-only` path glob** — PRs matching `[merge-gate].docs_only_globs`
+  exit the workflow early and incur near-zero cost. Keep the glob honest
+  (docs, comments, dotfiles), do not stretch it to dodge cost. The
+  `[merge-gate].trust_doc_globs` override always wins: a PR touching the
+  validator's trust/context inputs (`AGENTS.md`, the `CLAUDE.md` files that
+  `@import` it, `CONTEXT-MAP.md`, ADRs) runs the full gate even if it is
+  otherwise docs-only — a prose-only PR cannot weaken the gate's
+  calibration unreviewed (claude-harness-work#27).
 - **Diff size** — large refactors blow up the Codex input. The gate
   does not currently chunk; if this becomes painful, open an issue
   to add chunking, do not lower coverage.

@@ -52,6 +52,7 @@ PLACEHOLDERS = (
     "PROJECT_NAME",
     "SOFT_MODE_DEFAULT",
     "DOCS_ONLY_GLOBS",
+    "TRUST_DOC_GLOBS",
     "NODE_VERSION",
     "CODEX_INSTALL_CMD",
     "CODEX_REVIEW_CMD",
@@ -315,13 +316,13 @@ def vendored_files(runtime_src: Path) -> list[tuple[Path, str]]:
 # --- Install / uninstall ------------------------------------------------------
 
 
-def parse_globs(raw: str) -> list[str]:
+def parse_globs(raw: str, flag: str = "--docs-only-globs") -> list[str]:
     try:
         v = json.loads(raw)
     except json.JSONDecodeError as exc:
-        die(f"--docs-only-globs must be a JSON array of strings; parse error: {exc}")
+        die(f"{flag} must be a JSON array of strings; parse error: {exc}")
     if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
-        die("--docs-only-globs must be a JSON array of strings")
+        die(f"{flag} must be a JSON array of strings")
     return v
 
 
@@ -533,6 +534,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--project-name", help="%%PROJECT_NAME%%")
     ap.add_argument("--soft-mode-default", choices=["true", "false"], help="%%SOFT_MODE_DEFAULT%%")
     ap.add_argument("--docs-only-globs", help="%%DOCS_ONLY_GLOBS%% (JSON array of strings)")
+    ap.add_argument("--trust-doc-globs", help="%%TRUST_DOC_GLOBS%% (JSON array of strings)")
     ap.add_argument("--node-version", help="%%NODE_VERSION%%")
     ap.add_argument("--codex-install-cmd", help="%%CODEX_INSTALL_CMD%%")
     ap.add_argument("--codex-review-cmd", help="%%CODEX_REVIEW_CMD%%")
@@ -553,6 +555,7 @@ def main(argv: list[str] | None = None) -> int:
         "project_name": args.project_name,
         "soft_mode_default": args.soft_mode_default,
         "docs_only_globs": args.docs_only_globs,
+        "trust_doc_globs": args.trust_doc_globs,
         "node_version": args.node_version,
         "codex_install_cmd": args.codex_install_cmd,
         "codex_review_cmd": args.codex_review_cmd,
@@ -566,6 +569,7 @@ def main(argv: list[str] | None = None) -> int:
         "project_name": args.project_name,
         "soft_mode_default": args.soft_mode_default,
         "docs_only_globs": parse_globs(args.docs_only_globs),
+        "trust_doc_globs": parse_globs(args.trust_doc_globs, "--trust-doc-globs"),
         "node_version": args.node_version,
         "codex_install_cmd": args.codex_install_cmd,
         "codex_review_cmd": args.codex_review_cmd,

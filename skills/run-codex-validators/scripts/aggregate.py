@@ -35,7 +35,7 @@ PROJECT_REFS = {
 ADAPTER_PASSTHROUGH = ("id", "severity", "file", "title", "body", "suggested_fix")
 
 LINE_RE = re.compile(
-    r"^\[(CRITICAL|HIGH|MEDIUM|LOW)\]\s+(uphold|dismiss|unsure)\s+(\S+):(\d+)\s+—\s+(.+)$"
+    r"^\[(CRITICAL|HIGH|MEDIUM|LOW)\]\s+(uphold|dismiss|unsure)\s+id=(\S+)\s+(\S+):(\d+)\s+—\s+(.+)$"
 )
 
 SEVERITY_ORDER = ("critical", "high", "medium", "low")
@@ -133,8 +133,22 @@ def load_codex_findings(path: str) -> list[dict]:
     return _findings_from_jsonl_stream(raw.splitlines())
 
 
-def adapt_finding(f: dict) -> dict:
+def synthesize_id(f: dict, idx: int) -> str:
+    """Canonical finding id: Codex's own id when present, else synthesized.
+
+    Used by both build-input (to populate the validator's <input>) and
+    write-outputs (to build the findings_by_id lookup). The two callers
+    MUST agree on this synthesis or pairing breaks. See ADR-0008.
+    """
+    fid = f.get("id")
+    if isinstance(fid, str) and fid:
+        return fid
+    return f"finding-{idx}"
+
+
+def adapt_finding(f: dict, idx: int) -> dict:
     out = {k: f[k] for k in ADAPTER_PASSTHROUGH if k in f}
+    out["id"] = synthesize_id(f, idx)
     if "line_start" in f:
         out["line"] = f["line_start"]
     elif "line" in f:
@@ -143,7 +157,7 @@ def adapt_finding(f: dict) -> dict:
 
 
 def cmd_build_input(args: argparse.Namespace) -> int:
-    findings = [adapt_finding(f) for f in load_codex_findings(args.codex_json)]
+    findings = [adapt_finding(f, i) for i, f in enumerate(load_codex_findings(args.codex_json))]
     changed_files: list[str] = []
     if args.changed_files_from:
         try:
@@ -157,6 +171,20 @@ def cmd_build_input(args: argparse.Namespace) -> int:
         "codex_json": {"findings": findings},
         "project_refs": PROJECT_REFS,
     }
+    # D11 (claude-harness-work#30): the local profile has no PR body, so the
+    # producer threads durable intent (published-range commit messages, branch,
+    # optional operator-supplied intent) as additional, written context. Default
+    # empty/absent so the GHA invocation stays byte-identical. The validator
+    # weighs it like a PR description; durable/written context is legitimate,
+    # session-ephemeral context is biased (ADR-0001/0010/0011).
+    durable = ""
+    if args.durable_context_from:
+        try:
+            durable = Path(args.durable_context_from).read_text(encoding="utf-8").strip()
+        except Exception as e:
+            err(f"could not read durable-context at {args.durable_context_from}: {e}")
+    if durable:
+        payload["durable_context"] = durable
     sys.stdout.write(json.dumps(payload, ensure_ascii=False))
     return 0
 
@@ -185,10 +213,11 @@ def parse_validator_output(text: str) -> list[dict]:
         m = LINE_RE.match(line)
         if not m:
             continue
-        sev, verdict, file_, line_no, citation = m.groups()
+        sev, verdict, fid, file_, line_no, citation = m.groups()
         parsed.append({
             "sev": sev.lower(),
             "verdict": verdict,
+            "id": fid,
             "file": file_,
             "line": int(line_no),
             "citation": citation,
@@ -225,46 +254,171 @@ def cmd_write_outputs(args: argparse.Namespace) -> int:
             f"codex has {len(findings)} finding(s) — fail-safe applied"
         )
 
-    n = max(len(findings), len(parsed))
+    # Build the identity-based lookup. Each finding's canonical id is what
+    # cmd_build_input handed the validator; the validator echoes it back
+    # in the `id=<id>` token of LINE_RE. Positional pairing is gone —
+    # ADR-0008.
+    findings_with_id: list[tuple[str, dict]] = [
+        (synthesize_id(f, i), f) for i, f in enumerate(findings)
+    ]
+    findings_by_id: dict[str, dict] = {fid: f for fid, f in findings_with_id}
+
+    # Count how many Codex findings carry each id. ADR-0008 keys pairing on
+    # the id, so a non-unique id breaks id-as-identity — the first pass must
+    # fail-safe every colliding finding before consulting the verdict table
+    # (#29). synthesize_id never collides for id-less findings (finding-{i}
+    # is index-unique), so collisions only arise from Codex-supplied ids.
+    id_counts: dict[str, int] = {}
+    for fid, _ in findings_with_id:
+        id_counts[fid] = id_counts.get(fid, 0) + 1
+
+    # Group parsed lines by id so the duplicate-id case is observable
+    # before we visit each finding.
+    parsed_by_id: dict[str, list[dict]] = {}
+    for p in parsed:
+        parsed_by_id.setdefault(p["id"], []).append(p)
+
     aggregate: list[dict] = []
     lines: list[str] = []
     rendered_locations: list[tuple[str, int, str]] = []  # (file, line, citation)
 
-    for i in range(n):
-        f = findings[i] if i < len(findings) else None
-        p = parsed[i] if i < len(parsed) else None
+    # First pass — Codex findings in input order. Each finding's verdict
+    # comes from parsed_by_id[<its id>]; sanity check on (file, line,
+    # severity) demotes mismatched verdicts to unsure.
+    consumed_parsed_ids: set[str] = set()
+    for fid, f in findings_with_id:
+        codex_sev = (f.get("severity") or "low").lower()
+        codex_file = f.get("file", "?")
+        codex_line_raw = f.get("line_start", f.get("line", 0))
+        try:
+            codex_line = int(codex_line_raw)
+        except (TypeError, ValueError):
+            codex_line = 0
+        matches = parsed_by_id.get(fid, [])
 
-        if f is not None and p is not None:
-            severity = (f.get("severity") or p["sev"]).lower()
-            verdict = p["verdict"]
-            finding_id = f.get("id") or f"finding-{i}"
-            lines.append(p["raw"])
-            rendered_locations.append((p["file"], p["line"], p["citation"]))
-        elif p is not None:
-            # Validator emitted a line we cannot map to a Codex finding.
-            severity = p["sev"]
-            verdict = p["verdict"]
-            finding_id = f"orphan-{i}"
-            lines.append(p["raw"])
-            rendered_locations.append((p["file"], p["line"], p["citation"]))
-        else:
-            # Codex finding with no validator verdict — fail-safe to unsure.
-            severity = (f.get("severity") or "low").lower()
+        if id_counts[fid] > 1:
+            # Non-unique Codex id — identity is ambiguous at the source, so
+            # the validator's per-id verdict can no longer be trusted for
+            # these findings: a single `dismiss` line would otherwise be
+            # reused across distinct findings (hard-mode fail-open, #29).
+            # Fail-safe to unsure WITHOUT consulting the validator line —
+            # symmetric to the validator-side duplicate guard below.
+            consumed_parsed_ids.add(fid)
+            err(
+                f"codex emitted {id_counts[fid]} findings with id={fid!r}; "
+                f"id is not unique — demoting to fail-safe unsure"
+            )
+            severity = codex_sev
             verdict = "unsure"
-            finding_id = f.get("id") or f"finding-{i}"
-            file_ = f.get("file", "?")
-            line_no = f.get("line_start", f.get("line", 0))
+            citation = f"duplicate Codex finding id (count={id_counts[fid]})"
+            sev_label = severity.upper()
+            lines.append(
+                f"[{sev_label}] {verdict} id={fid} {codex_file}:{codex_line} — {citation}"
+            )
+            rendered_locations.append((codex_file, codex_line, citation))
+        elif len(matches) > 1:
+            # Duplicate id from the validator — fail-safe demote.
+            consumed_parsed_ids.add(fid)
+            err(
+                f"validator emitted {len(matches)} lines with id={fid!r}; "
+                f"demoting to fail-safe unsure"
+            )
+            severity = codex_sev
+            verdict = "unsure"
+            citation = (
+                f"duplicate id in validator output (count={len(matches)})"
+            )
+            sev_label = severity.upper()
+            lines.append(
+                f"[{sev_label}] {verdict} id={fid} {codex_file}:{codex_line} — {citation}"
+            )
+            rendered_locations.append((codex_file, codex_line, citation))
+        elif len(matches) == 1:
+            p = matches[0]
+            consumed_parsed_ids.add(fid)
+            divergent: list[str] = []
+            if p["file"] != codex_file:
+                divergent.append("file")
+            if p["line"] != codex_line:
+                divergent.append("line")
+            if p["sev"] != codex_sev:
+                divergent.append("severity")
+            if divergent:
+                # Sanity check tripped — id matched but attributes diverged.
+                err(
+                    f"sanity check failed for id={fid!r} on "
+                    f"{','.join(divergent)} "
+                    f"(validator={p['sev']}/{p['file']}:{p['line']}, "
+                    f"codex={codex_sev}/{codex_file}:{codex_line}); "
+                    f"demoting to fail-safe unsure"
+                )
+                severity = codex_sev
+                verdict = "unsure"
+                citation = (
+                    f"sanity check failed on {','.join(divergent)} "
+                    f"(validator='{p['file']}:{p['line']}', "
+                    f"codex='{codex_file}:{codex_line}')"
+                )
+                sev_label = severity.upper()
+                lines.append(
+                    f"[{sev_label}] {verdict} id={fid} {codex_file}:{codex_line} — {citation}"
+                )
+                rendered_locations.append((codex_file, codex_line, citation))
+            else:
+                # Clean pair. Verdict from validator; severity from Codex
+                # (already verified equal to p["sev"]).
+                severity = codex_sev
+                verdict = p["verdict"]
+                lines.append(p["raw"])
+                rendered_locations.append((p["file"], p["line"], p["citation"]))
+        else:
+            # No validator verdict for this Codex finding — preserve the
+            # #22 fail-safe path.
+            severity = codex_sev
+            verdict = "unsure"
             citation = "validator output missing for this finding (fail-safe)"
             sev_label = severity.upper()
-            lines.append(f"[{sev_label}] {verdict} {file_}:{line_no} — {citation}")
-            rendered_locations.append((file_, int(line_no) if isinstance(line_no, (int, str)) and str(line_no).isdigit() else 0, citation))
+            lines.append(
+                f"[{sev_label}] {verdict} id={fid} {codex_file}:{codex_line} — {citation}"
+            )
+            rendered_locations.append((codex_file, codex_line, citation))
 
         block = decide_block(severity, verdict)
+        aggregate.append({
+            "finding_id": fid,
+            "severity": severity,
+            "verdict": verdict,
+            "block": block,
+        })
+
+    # Second pass — orphan parsed lines whose id matched no Codex finding.
+    # Orphans never block, regardless of validator-supplied severity/verdict
+    # (refs claude-harness-work#28). The validator's scope contract is
+    # `classify Codex findings`, not `author new findings`; an orphan id is
+    # a protocol violation, so trusting its severity/verdict to drive
+    # `decide_block` would give the validator a side channel to invent its
+    # own blockers. The entry is still recorded in `validators.json` as an
+    # audit trail of the protocol violation.
+    for orphan_idx, p in enumerate(parsed):
+        if p["id"] in findings_by_id and p["id"] in consumed_parsed_ids:
+            continue
+        if p["id"] in findings_by_id:
+            # Already consumed under a duplicate-id case.
+            continue
+        err(
+            f"validator emitted id={p['id']!r} with no matching Codex "
+            f"finding — recording as orphan (block forced false)"
+        )
+        severity = p["sev"]
+        verdict = p["verdict"]
+        finding_id = f"orphan-{orphan_idx}"
+        lines.append(p["raw"])
+        rendered_locations.append((p["file"], p["line"], p["citation"]))
         aggregate.append({
             "finding_id": finding_id,
             "severity": severity,
             "verdict": verdict,
-            "block": block,
+            "block": False,
         })
 
     validators_json = {
@@ -353,6 +507,10 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--issue-ref", required=True)
     b.add_argument("--changed-files-from", default=None,
                    help="file with one path per line; empty list if missing")
+    b.add_argument("--durable-context-from", default=None,
+                   help="optional file of durable validator context (branch / "
+                        "published-range commit messages / operator intent); "
+                        "default empty keeps the GHA invocation byte-identical (D11)")
     b.set_defaults(func=cmd_build_input)
 
     w = sub.add_parser("write-outputs", help="write validators.json + validators.md")
