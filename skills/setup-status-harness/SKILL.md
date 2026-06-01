@@ -1,6 +1,6 @@
 ---
 name: setup-status-harness
-description: Install and wire up the STATUS harness in two layers — global infrastructure (~/.claude status.py generator + SessionStart/Stop hooks) and per-project files (vendored scripts/status.py, .github/workflows/regen-status.yml for main-push regen, .gitignore entries for worktree state, docs/agents/issue-tracker.md agent reference for the AC-checkbox / narrative-block conventions) — then generate the initial STATUS.md. Use when a project has no STATUS.md, the status board is missing or never updates, the user asks to "set up the STATUS harness", "STATUS.md 만들어줘", "상태 보드 붙여줘", "이 프로젝트에 status harness 깔아줘", or when bootstrapping the harness on a fresh clone or a new machine.
+description: Install and wire up the STATUS harness in two layers — global infrastructure (~/.claude status.py generator + SessionStart/Stop hooks) and per-project files (vendored scripts/status.py, .github/workflows/regen-status.yml for main-push regen, .gitignore entries for worktree state, docs/agents/issue-tracker.md agent reference for the AC-checkbox / narrative-block conventions, plus a one-line session-start `STATUS.md`-read pointer wired into AGENTS.md/CLAUDE.md) — then generate the initial STATUS.md. Use when a project has no STATUS.md, the status board is missing or never updates, the user asks to "set up the STATUS harness", "STATUS.md 만들어줘", "상태 보드 붙여줘", "이 프로젝트에 status harness 깔아줘", or when bootstrapping the harness on a fresh clone or a new machine.
 ---
 
 # Set up the STATUS harness
@@ -52,19 +52,32 @@ to sync manually.
 
 **3 — Apply.** Re-run the script without `--dry-run`. Report what changed.
 
-**4 — Wire the doc into agent guidance.** If step 3 created (or already had)
-`docs/agents/issue-tracker.md`, agents need a pointer to it from the repo's
-canonical guidance file. Check what exists at the repo root:
-- **`AGENTS.md` exists** → suggest the user add `@docs/agents/issue-tracker.md`
-  to it (one line, near the issue-tracker / process section).
-- **Only `CLAUDE.md` exists** → suggest adding `@docs/agents/issue-tracker.md`
-  there.
-- **Neither exists** → suggest running `/setup-agents-md` first, then adding
-  the `@` line.
+**4 — Wire the harness into agent guidance.** Agents need two harness pointers
+in the repo's canonical guidance file. Resolve the target file once: **`AGENTS.md`**
+if it exists, else **`CLAUDE.md`**, else suggest `/setup-agents-md` first (then
+proceed). Both pointers are idempotent — skip either if an equivalent line is
+already present.
 
-Do **not** mutate AGENTS.md / CLAUDE.md from this skill — those files belong
-to the user (and to `setup-agents-md`). Print the suggested line; let the
-user paste.
+   a. **`STATUS.md` session-start pointer** — the harness's payoff: the board is
+      worthless if agents never read it. Offer to add a one-liner telling agents
+      to read `STATUS.md` before starting work; on the user's go-ahead, append it
+      near the top / process section, matching the file's language and tone, e.g.:
+      > **작업 시작 시 먼저 `STATUS.md` 를 읽을 것** — 현재 능동 트랙, 다음 행동
+      > (*Start here next session*), 열린 결정이 거기 정리돼 있다.
+
+      (English: "**Read `STATUS.md` first when starting work** — current active
+      track, next action (*Start here next session*), and open decisions live
+      there.")
+   b. **Issue-tracker conventions import** — if step 3 created (or already had)
+      `docs/agents/issue-tracker.md`, the AC-checkbox / narrative conventions
+      should be reachable: suggest `@docs/agents/issue-tracker.md` in the same
+      file (one line, near the issue-tracker / process section).
+
+These two are the only AGENTS.md / CLAUDE.md edits this skill makes, and (a) is
+written **only after the user's go-ahead**. Beyond them do **not** author
+guidance content — that belongs to the user and `setup-agents-md`. For (b),
+print the suggested `@` line and let the user paste (an import the user may want
+to place deliberately).
 
 **5 — Handle project content.** Check for issue files:
 ```
@@ -93,7 +106,8 @@ Tell the user to enable, in GitHub → repo Settings → Actions → General →
 workflow cannot push regenerated STATUS.md back to main.
 
 **8 — Report.** One short summary: what was installed vs. already present,
-the AGENTS.md wiring suggestion from step 4, whether the harness is now live
+the step-4 guidance wiring (the `STATUS.md`-read pointer added or already
+present; the issue-tracker `@import` suggested), whether the harness is now live
 (STATUS.md generated) or inert (awaiting first issue), and the suggested next
 step.
 
