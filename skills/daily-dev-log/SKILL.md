@@ -65,8 +65,8 @@ python3 ~/.claude/skills/daily-dev-log/scripts/collect_today.py --date 2026-05-1
 - **첫 줄은 `#dev-log` 태그**. Obsidian에서 데일리 노트 그래프/검색에 묶이도록 본문 맨 위(제목 위)에 빈 줄과 함께 둔다.
 - **사용자 프롬프트는 한 줄로 요약**. 원문을 그대로 붙여 넣지 말 것 — 길고 노이즈가 많다. 단, 의미가 압축되지 않는 짧은 프롬프트는 그대로 인용해도 OK.
 - **시간은 KST**. JSON의 `first_ts_local`/`last_ts_local`이 이미 로컬 타임존 변환된 값이라 그대로 사용. UTC인 `*_utc` 필드 쓰지 말 것.
-- **프로젝트 별명**: `/home/shine/projects/autocolor_for_calendar` → `autocolor`, `/home/shine` → `home`, `.claude/skills` → `skills` 식으로 짧게. 첫 등장 시 풀 경로 함께 표기.
-- **파일 경로는 프로젝트 루트 기준 상대 경로**로 줄여 표시 (`/home/shine/projects/autocolor_for_calendar/src/foo.ts` → `src/foo.ts`).
+- **프로젝트 별명**: `/home/shine/projects/my-long-project` → `myproj`, `/home/shine` → `home`, `.claude/skills` → `skills` 식으로 짧게. 첫 등장 시 풀 경로 함께 표기.
+- **파일 경로는 프로젝트 루트 기준 상대 경로**로 줄여 표시 (`/home/shine/projects/my-long-project/src/foo.ts` → `src/foo.ts`).
 - **파일이 3개 초과**면 처음 3개 + `… +N more` 형태로.
 - **의미 있는 prompt가 없는 세션** (예: `/clear`만 누르고 끝) 은 "탐색/리셋만" 한 줄로 묶거나 생략.
 - **노이즈 제외**: `<system-reminder>`, `<command-name>` 같은 메타는 스크립트가 이미 걸러냄. 그래도 prompts에 명령어성 텍스트(`/foo`)가 남아 있으면 묶어서 처리.

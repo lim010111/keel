@@ -72,7 +72,7 @@ python3 ~/.claude/skills/session-dev-log/scripts/collect_session.py --session <s
 - **자명한 명령은 묶거나 생략**. `kind: "command"`이고 `/clear` 처럼 의미 없는 건 본문에서 빼거나 "세션 시작/리셋" 한 줄로. 단 `/write-a-skill ...`처럼 인자가 실제 요청인 명령은 사용자 턴으로 원문 인용.
 - **시간은 KST**. `first_ts_local`/`last_ts_local` 그대로 사용 (UTC인 `ts` 필드 변환 금지 — 헤더 시각은 `*_local` 값). 본문/헤더의 HH:MM은 실제 벽시계 시각 그대로 (`13:54`, `01:30`); 24+ 표기는 파일명에서만 쓴다.
 - **새벽 세션 표시**: `late_night: true`면 헤더에 "(전날 이어서)" 같은 짧은 표기를 붙여도 좋다.
-- **프로젝트 별명**: `/home/shine` → `home`, `.../autocolor_for_calendar` → `autocolor` 식으로 짧게. 헤더에 풀 경로 함께 표기.
+- **프로젝트 별명**: `/home/shine` → `home`, `.../my-long-project` → `myproj` 식으로 짧게. 헤더에 풀 경로 함께 표기.
 - **파일 경로는 프로젝트 루트 기준 상대 경로**로 줄여 표시.
 - **마지막 턴이 이 스킬 호출(`/session-dev-log` 등) 자체**라면 "(이 세션 정리 스킬 실행)" 한 줄로만 적거나 생략.
 

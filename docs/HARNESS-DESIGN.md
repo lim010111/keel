@@ -94,11 +94,15 @@ release/deploy step between the developer and the running code. Two distinct
 verifiers / evidence sets are not warranted yet, so release and deploy share
 one **distribution** Gate, currently deferred.
 
-> **Note**: keel itself is *not* an instance of this gate. The public-mirror
-> sync from `~/.claude/` into this repo crosses an **audience** boundary
+> **Note**: keel itself is *not* an instance of the distribution gate. The push
+> from `~/.claude/` into this public mirror crosses an **audience** boundary
 > (private → public), not the developer-runtime boundary that distribution
-> covers. The two transitions warrant separate gates and will be designed as
-> such if and when keel-publication needs its own trustworthy signal.
+> covers — so it is gated by a separate **publication gate**, a sibling sink off
+> `main` on the audience axis. keel going public made that crossing
+> operationally live, so the gate is now recognized and named: its unit is the
+> keel push itself (covering both the `sync.sh` mirror *and* commits authored
+> directly here), reviewed by the operator with a leak-scan before push, with a
+> mechanical leak-scan as the strengthening path.
 
 ## One shape, many gates
 
