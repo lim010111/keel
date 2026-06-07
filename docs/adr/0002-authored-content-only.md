@@ -8,6 +8,7 @@ themselves.
 We rejected mirroring everything because (1) the symlinks point outside the
 repo and break on a fresh clone, (2) dereferencing them into real files is
 redistribution of others' code under licenses we have not cleared — a repo with
-no LICENSE defaults to all-rights-reserved, (3) it would reproduce exactly the
-"too heavy" bundle keel exists to avoid. Referencing instead of vendoring keeps
-keel light and legally clean.
+no LICENSE defaults to all-rights-reserved, and (3) it would blur what keel is:
+a curated record of the author's own work, not an undifferentiated copy of the
+whole `~/.claude` setup. Referencing instead of vendoring keeps keel authored
+and legally clean.
