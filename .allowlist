@@ -1,8 +1,8 @@
 # keel/.allowlist — what sync.sh mirrors from ~/.claude.
 #
-# Only the user's own authored content goes here. Third-party skills,
-# the gstack submodule, and plugins are referenced in docs/DEPENDENCIES.md
-# — never copied into this repo (see docs/adr/0002).
+# Only the user's own authored content goes here. Third-party skills and
+# plugins are referenced in docs/DEPENDENCIES.md — never copied into this
+# repo (see docs/adr/0002).
 #
 # Paths are relative to $CLAUDE_DIR (default: ~/.claude).
 

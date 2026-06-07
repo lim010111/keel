@@ -5,15 +5,6 @@ The rest of the author's `~/.claude` setup is third-party. It is **not copied
 into this repo** — it is listed here so the setup can be reproduced from its
 upstream sources.
 
-## gstack
-
-A submodule in `~/.claude/skills/gstack` providing ~46 skills (`ship`,
-`autoplan`, `review`, `qa`, `land-and-deploy`, the `plan-*` and `design-*`
-families, …).
-
-- Source: <https://github.com/garrytan/gstack.git>
-- Installed as a git submodule at `~/.claude/skills/gstack`.
-
 ## Skill-manager skills
 
 Installed into `~/.agents/skills/` by a skill manager (lockfile:

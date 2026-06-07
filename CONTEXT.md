@@ -31,8 +31,8 @@ Skills, hooks, scripts, and config the author wrote. Only this enters keel.
 _Avoid_: my stuff, original code
 
 **Third-party content**:
-Skills and plugins from other authors (gstack, skill-manager skills,
-Claude Code plugins). Referenced in `docs/DEPENDENCIES.md`, never copied in.
+Skills and plugins from other authors (skill-manager skills, Claude Code
+plugins). Referenced in `docs/DEPENDENCIES.md`, never copied in.
 _Avoid_: external, vendored, deps
 
 **sync**:
