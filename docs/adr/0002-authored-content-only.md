@@ -1,9 +1,9 @@
 # keel ships only authored content; third-party skills are referenced, not vendored
 
-Most of `~/.claude/skills/` is third-party — 14 skills symlinked from a skill
-manager. keel contains only content the author wrote; everything else is listed
-in `docs/DEPENDENCIES.md` with its upstream source so a reader installs it
-themselves.
+`~/.claude/skills/` is a mix of the author's own skills and third-party ones —
+15 are symlinked from a skill manager. keel contains only what the author
+wrote; everything else is listed in `docs/DEPENDENCIES.md` with its upstream
+source so a reader installs it themselves.
 
 We rejected mirroring everything because (1) the symlinks point outside the
 repo and break on a fresh clone, (2) dereferencing them into real files is
