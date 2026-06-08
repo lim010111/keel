@@ -3408,5 +3408,179 @@ class TestProducerAssetHermeticForeignCheckout(unittest.TestCase):
         self.assertIn("review_scope_hash", summary)
 
 
+def fake_validator_uphold_with_citation(name, findings_json, sub_dir, cwd, intent_file):
+    """Like uphold_all but writes a real validators.json `lines[]` citation per
+    finding (`[sev] verdict id=<fid> file:line — <citation>`), so the archive's
+    disk-read citation snapshot has something to join on (the empty-lines fakes
+    above exercise only the no-citation path)."""
+    doc = json.loads(Path(findings_json).read_text())
+    agg, lines = [], []
+    for f in doc["result"]["findings"]:
+        sev = (f.get("severity") or "low").lower()
+        fid = f["id"]
+        agg.append({"finding_id": fid, "severity": sev, "verdict": "uphold",
+                    "block": sev in ("critical", "high")})
+        lines.append(f"[{sev}] uphold id={fid} {f.get('file')}:{f.get('line_start')} "
+                     f"— cited because {sev} matters")
+    vj = {"validators": [{"name": "claude", "lines": lines}], "aggregate": agg}
+    Path(sub_dir, "validators.json").write_text(json.dumps(vj))
+    Path(sub_dir, "validators.md").write_text("# validator\n")
+    return vj
+
+
+class FindingsArchive(ProduceFixture):
+    """#40 — per-review findings archive: a produce-time, gitignored, light,
+    dedup'd, behaviour-neutral findings log (Layer-1, decoupled from Layer-2
+    measurement). Auto path = `cmd_produce(coalesce=True)` → `_produce_coalesce`
+    → `_produce_one` (the post-commit producer's real route)."""
+
+    def _coalesce_args(self, base):
+        ns = type("NS", (), {})()
+        ns.cwd = str(self.root); ns.base_ref = base; ns.tip_sha = None
+        ns.coalesce = True; ns.force = False; ns.intent = None; ns.intent_from = None
+        return ns
+
+    def _ar(self):
+        return self.root / mg.DEFAULT_CONFIG["artifact_root"]
+
+    def _commit_change(self, body="c1 = 1\n"):
+        self.repo.write("a.py", body)
+        return self.repo.commit_all("C1")
+
+    # -- path / placement -------------------------------------------------
+    def test_log_path_is_under_artifact_root(self):
+        ar = self._ar()
+        self.assertEqual(mg.findings_log_path(ar), ar / "findings-log.md")
+        # inside .codex-review/** → inherits the existing ignore_glob + .gitignore
+        self.assertTrue(str(mg.findings_log_path(ar))
+                        .startswith(str(self.root / ".codex-review")))
+
+    # -- auto-path writes a row ------------------------------------------
+    def test_auto_produce_writes_archive_entry(self):
+        base = self.base
+        self._commit_change()
+        mg.cmd_produce(self._coalesce_args(base),
+                       reviewer_runner=make_fake_reviewer({"codex": [_finding("high")]}),
+                       validator_runner=fake_validator_uphold_all)
+        log = mg.findings_log_path(self._ar())
+        self.assertTrue(log.exists(), "auto-path produce must write the findings archive")
+        text = log.read_text()
+        self.assertIn("a.py:1", text)   # finding file:line
+        self.assertIn("codex", text)    # reviewer
+        self.assertIn("high", text)     # severity
+        self.assertIn("uphold", text)   # validator verdict
+
+    def test_archive_records_pass_with_no_findings(self):
+        base = self.base
+        self._commit_change()
+        mg.cmd_produce(self._coalesce_args(base),
+                       reviewer_runner=make_fake_reviewer({"codex": []}),
+                       validator_runner=fake_validator_uphold_all)
+        text = mg.findings_log_path(self._ar()).read_text()
+        self.assertIn("<!-- mg-archive", text)
+        self.assertIn("pass", text)
+
+    # -- citation snapshot (read from disk) ------------------------------
+    def test_archive_carries_citation_snapshot(self):
+        base = self.base
+        self._commit_change()
+        mg.cmd_produce(self._coalesce_args(base),
+                       reviewer_runner=make_fake_reviewer({"codex": [_finding("high")]}),
+                       validator_runner=fake_validator_uphold_with_citation)
+        self.assertIn("cited because high matters",
+                      mg.findings_log_path(self._ar()).read_text())
+
+    def test_archive_citation_on_cache_hit_reads_from_disk(self):
+        """On a cache hit `produce()` returns the cached summary and `_produce_one`
+        has NO in-memory per_reviewer — the citation must come from the tuple's
+        validators.json on disk."""
+        base = self.base
+        c1 = self._commit_change()
+        cfg = mg.load_config(self.root)
+        cd = mg.canonical_diff_at_commit(self.root, base, c1, cfg.review_globs, cfg.ignore_globs)
+        # Populate the tuple artefacts WITHOUT the archive (produce() never archives).
+        mg.produce(self.root, cfg, base, cd,
+                   reviewer_runner=make_fake_reviewer({"codex": [_finding("high")]}),
+                   validator_runner=fake_validator_uphold_with_citation)
+        self.assertFalse(mg.findings_log_path(self._ar()).exists())
+        # Now the auto path re-enters _produce_one on a CACHE HIT.
+        mg.cmd_produce(self._coalesce_args(base),
+                       reviewer_runner=make_fake_reviewer({"codex": [_finding("high")]}),
+                       validator_runner=fake_validator_uphold_with_citation)
+        self.assertIn("cited because high matters",
+                      mg.findings_log_path(self._ar()).read_text())
+
+    # -- dedup ------------------------------------------------------------
+    def test_dedup_same_tuple_appends_once(self):
+        base = self.base
+        self._commit_change()
+        for _ in range(2):  # 2nd run = cache-hit re-entry of _produce_one
+            mg.cmd_produce(self._coalesce_args(base),
+                           reviewer_runner=make_fake_reviewer({"codex": [_finding("high")]}),
+                           validator_runner=fake_validator_uphold_all)
+        text = mg.findings_log_path(self._ar()).read_text()
+        self.assertEqual(text.count("<!-- mg-archive"), 1,
+                         "same (base,diff_hash) must append exactly once")
+
+    # -- lightness (no Layer-2 columns) ----------------------------------
+    def test_archive_omits_measurement_columns(self):
+        base = self.base
+        self._commit_change()
+        mg.cmd_produce(self._coalesce_args(base),
+                       reviewer_runner=make_fake_reviewer({"codex": [_finding("high")]}),
+                       validator_runner=fake_validator_uphold_all)
+        text = mg.findings_log_path(self._ar()).read_text().lower()
+        for forbidden in ("human:", "should-block", "conc", "rconf",
+                          "organic", "same-as"):
+            self.assertNotIn(forbidden, text,
+                             f"light archive must not carry {forbidden!r}")
+
+    # -- renderer (pure) --------------------------------------------------
+    def test_render_entry_is_keyed_and_light(self):
+        summary = {
+            "base_sha": "b" * 40, "diff_hash": "d" * 40, "head_sha": "h" * 40,
+            "produced_at_iso": "2026-06-08T00:00:00Z",
+            "verdict": "block", "block_count": 1,
+            "findings": [{"id": "codex:0", "producing_reviewers": ["codex"],
+                          "file": "x.py", "line_start": 7, "severity": "high",
+                          "validator_verdict": "uphold", "block": True}],
+        }
+        entry = mg._render_archive_entry(summary, {"codex:0": "because reasons"})
+        self.assertIn("<!-- mg-archive base=" + "b" * 40 + " diff=" + "d" * 40 + " -->", entry)
+        self.assertIn("x.py:7", entry)
+        self.assertIn("because reasons", entry)
+        self.assertIn("h" * 10, entry)  # short head_sha
+
+    # -- D1: verify writes nothing ---------------------------------------
+    def test_verify_writes_no_archive(self):
+        base = self.base
+        self.repo.write("a.py", "c = 1\n")
+        tip = self.repo.commit_all("c")
+        rc = mg.cmd_verify(_verify_ns(self.root, base_sha=base, tip_sha=tip))
+        self.assertFalse(mg.findings_log_path(self._ar()).exists(),
+                         "verify must never write the findings archive (D1)")
+
+    # -- behaviour-neutral on failure ------------------------------------
+    def test_archive_failure_leaves_gate_byte_identical(self):
+        base = self.base
+        c1 = self._commit_change()
+        orig = mg._render_archive_entry
+
+        def boom(*a, **k):
+            raise RuntimeError("archive boom")
+        mg._render_archive_entry = boom
+        try:
+            rc = mg.cmd_produce(self._coalesce_args(base),
+                                reviewer_runner=make_fake_reviewer({"codex": [_finding("high")]}),
+                                validator_runner=fake_validator_uphold_all)
+        finally:
+            mg._render_archive_entry = orig
+        self.assertEqual(rc, 0)  # gate exit unaffected by the archive failure
+        cfg = mg.load_config(self.root)
+        cd = mg.canonical_diff_at_commit(self.root, base, c1, cfg.review_globs, cfg.ignore_globs)
+        self.assertTrue((mg.tuple_dir(self._ar(), base, cd["diff_hash"]) / "summary.json").exists(),
+                        "the real artefact must still be written when the archive fails")
+
+
 if __name__ == "__main__":
     unittest.main()

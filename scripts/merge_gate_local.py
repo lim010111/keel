@@ -1650,6 +1650,153 @@ def _concordance(all_findings: list[dict]) -> dict:
     return {f["id"]: len(buckets[(f.get("file"), f.get("line_start"))]) for f in all_findings}
 
 
+# --------------------------------------------------------------------------
+# Per-review findings archive (#40) — a produce-time, gitignored, advisory
+# findings log (Layer-1). The citation snapshot/parse below is the ONE owner of
+# the `[SEV] verdict id=<fid> file:line — citation` grammar; the Layer-2
+# measurement wrapper (merge_gate_measure.py) imports these rather than
+# duplicating them (and so the logic auto-mirrors to keel with this module). The
+# archive itself is best-effort + behaviour-neutral: a failure never changes the
+# gate verdict/exit, and it is written at PRODUCE time only — verify writes
+# nothing (D1).
+# --------------------------------------------------------------------------
+
+# The validators.json line grammar (design §8 citation-preservation). Each string
+# in validators[*].lines[] is:  [SEV] verdict id=<fid> <file>:<line> — <citation>
+# (the separator before the citation is space, U+2014 EM DASH, space). The
+# aggregate[] array has no citation, so the text is parsed out of lines[].
+_CITATION_SEP = " — "  # space, EM DASH, space
+
+
+def _parse_citation_line(line: str) -> tuple[str | None, str | None]:
+    """Pull (fid, citation) out of one validators.json line. Returns (None, None)
+    if the line lacks an `id=` token or the em-dash separator. Em-dash-in-citation
+    safe — anchors on the FIRST separator after `id=`."""
+    if not isinstance(line, str):
+        return None, None
+    marker = line.find("id=")
+    if marker < 0:
+        return None, None
+    sep = line.find(_CITATION_SEP, marker)
+    if sep < 0:
+        return None, None
+    fid = line[marker + 3:].split(None, 1)[0]
+    if not fid:
+        return None, None
+    citation = line[sep + len(_CITATION_SEP):].strip()
+    return fid, citation
+
+
+def read_citations(tdir: Path) -> dict:
+    """Snapshot {fid: citation} from the per-reviewer validators.json under tdir.
+    Iterate every reviewer subdir, parse each validators[*].lines[] string: take
+    the fid after `id=` and the text after the first em-dash separator. Lines that
+    do not match are skipped. Best-effort: a missing dir, missing file, or bad json
+    contributes nothing and never raises — return what was collected. fids are
+    reviewer-namespaced, so there is no cross-subdir collision."""
+    out: dict = {}
+    try:
+        subdirs = sorted(p for p in tdir.iterdir() if p.is_dir())
+    except Exception:
+        return out
+    for sub in subdirs:
+        try:
+            data = json.loads((sub / "validators.json").read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for v in data.get("validators", []):
+            for line in v.get("lines", []):
+                fid, citation = _parse_citation_line(line)
+                if fid is not None:
+                    out[fid] = citation
+    return out
+
+
+def locate_citations(root: Path, base: str | None, diff_hash: str | None) -> dict:
+    """Recompute the tuple dir from (base, diff_hash) and snapshot its validator
+    citations. Best-effort + behaviour-neutral: any failure (falsy base/diff_hash,
+    missing artefacts) degrades to {}."""
+    if not base or not diff_hash:
+        return {}
+    try:
+        cfg = load_config(root)
+        tdir = tuple_dir(root / cfg.artifact_root, base, diff_hash)
+        return read_citations(tdir)
+    except Exception:
+        return {}
+
+
+def findings_log_path(artifact_root: Path) -> Path:
+    """The per-review findings archive lives beside the tuple dirs and the
+    producer lock in artifact_root — a stable sibling never clobbered by a tuple
+    re-produce, and covered by whatever .gitignore / ignore_globs already cover
+    artifact_root (the installer default `.codex-review/**`)."""
+    return artifact_root / "findings-log.md"
+
+
+def _archive_marker(base_sha: str, diff_hash: str) -> str:
+    """The idempotency key line — artefact identity (base, diff_hash). One entry
+    per reviewed tuple; a re-produce of the same tuple is skipped-if-present."""
+    return f"<!-- mg-archive base={base_sha} diff={diff_hash} -->"
+
+
+def _render_archive_entry(summary: dict, citations: dict) -> str:
+    """Render ONE light per-review entry: a key marker, a header
+    (iso · commit · verdict · block_count), and one line per finding (reviewers ·
+    severity · validator verdict · file:line · block) with its validator citation
+    snapshot when present. Deliberately omits the Layer-2 measurement columns
+    (human:* / conc / conf / rconf / organic-N) — this is the advisory archive,
+    not the promotion ledger."""
+    base_sha = str(summary.get("base_sha", "?"))
+    diff_hash = str(summary.get("diff_hash", "?"))
+    head = str(summary.get("head_sha") or "?")[:10]
+    when = summary.get("produced_at_iso") or "?"
+    verdict = summary.get("verdict", "?")
+    block_count = summary.get("block_count", 0)
+    lines = [
+        _archive_marker(base_sha, diff_hash),
+        f"## {when} · commit {head} · {verdict} · block_count={block_count}",
+    ]
+    findings = summary.get("findings", []) or []
+    if not findings:
+        lines.append("- (no findings)")
+    for f in findings:
+        revs = "+".join(f.get("producing_reviewers") or []) or "?"
+        loc = f"{f.get('file')}:{f.get('line_start')}"
+        flag = " ✓block" if f.get("block") else ""
+        lines.append(f"- [{revs}] {f.get('severity')} {f.get('validator_verdict')} "
+                     f"{loc}{flag}")
+        citation = citations.get(f.get("id"))
+        if citation:
+            lines.append(f"  ↳ {citation}")
+    return "\n".join(lines) + "\n\n"
+
+
+def append_findings_archive(artifact_root: Path, tdir: Path, summary: dict) -> None:
+    """Append a per-review entry to the findings archive. Best-effort and
+    behaviour-neutral: any failure is swallowed so the gate verdict/exit is never
+    affected (the archive is a side-record, not the gate). Idempotent on
+    (base_sha, diff_hash): skip-if-present, keep the first entry — coalesce
+    revisits, cache hits, and diff-preserving amends all converge on the same
+    tuple and must not duplicate. Citations are read from the tuple's
+    validators.json ON DISK, so it works on the cache-hit path too (where
+    `_produce_one` has no in-memory per_reviewer)."""
+    try:
+        base_sha = str(summary.get("base_sha", ""))
+        diff_hash = str(summary.get("diff_hash", ""))
+        log = findings_log_path(artifact_root)
+        marker = _archive_marker(base_sha, diff_hash)
+        if log.exists() and marker in log.read_text(encoding="utf-8"):
+            return  # dedup — this (base, diff_hash) is already archived
+        citations = read_citations(tdir)
+        entry = _render_archive_entry(summary, citations)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(entry)
+    except Exception:
+        pass  # behaviour-neutral: the archive never breaks the gate
+
+
 def produce(cwd: Path, cfg: Config, base_sha: str, cd: dict, *,
             reviewer_runner=default_reviewer_runner,
             validator_runner=default_validator_runner,
@@ -2178,6 +2325,14 @@ def _produce_one(root: Path, cfg: Config, base: str, tip_sha: str | None, args,
     if tip:
         summary["head_sha"] = tip
         write_summary_atomic(tuple_dir(root / cfg.artifact_root, base, cd["diff_hash"]), summary)
+    # Per-review findings archive (#40): append this review's findings + validator
+    # citations to a produce-time, gitignored, advisory log. Both the auto path
+    # (post-commit coalesce) and the manual path reach here; best-effort and
+    # behaviour-neutral (a failure never changes the verdict/exit), produce-time
+    # only (D1 — verify writes nothing).
+    append_findings_archive(root / cfg.artifact_root,
+                            tuple_dir(root / cfg.artifact_root, base, cd["diff_hash"]),
+                            summary)
     # Pending hand-off for the pre-push verify (G2/G3): tip_sha is the
     # verify-match key, base_sha lets verify trust THIS producer's base (a stale
     # local origin would otherwise diverge it), pid keys the bounded wait off
