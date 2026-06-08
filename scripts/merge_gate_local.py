@@ -38,10 +38,12 @@ lives under ``main``.
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -60,7 +62,61 @@ VALIDATOR_CONTRACT_VERSION = "1"   # codex-review-validator <output_contract>
 ADVERSARIAL_PROMPT_VERSION = "1"   # the vendored adversarial-review prompt
 
 HOME = Path.home()
-CLAUDE_DIR = HOME / ".claude"
+
+# --------------------------------------------------------------------------
+# Producer runtime root — #36 import-closure + #37 producer-asset hermeticity.
+#
+# The producer's runtime is FOUR co-located files: the import closure (this
+# module in scripts/, merge_gate_scheduler in hooks/) PLUS its vendored assets
+# (the adversarial-review prompt + the review-output schema). In a checkout
+# OUTSIDE ~/.claude (CI, `git worktree`) the producer must run its OWN code AND
+# read its OWN assets, or the two decouple: #36 pinned imports to the checkout,
+# but assets still resolving from $HOME meant a checkout with the .py closure but
+# missing/different assets would PIN imports yet FALL BACK assets (empty $HOME →
+# the SILENT produce-trigger stop reading a non-existent prompt, ADR-0014;
+# populated $HOME → review-asset version skew). f60c84a claude:finding-0.
+#
+# UNIFIED gate (the fix): pin to the checkout ONLY when the COMPLETE runtime set
+# is co-located; otherwise EVERY layer falls back to $HOME/.claude together —
+# never a partial pin. resolve_import_roots in merge_gate_post_commit.py gates on
+# this SAME set (it must decide which merge_gate_local to import BEFORE it can
+# import this module, so it evaluates the predicate independently from a
+# duplicated relpath list; test_unified_gate_predicates_agree pins the two
+# equal). A real $HOME/.claude install has all four under $HOME → byte-identical
+# to the pre-#37 hardcoded paths.
+# --------------------------------------------------------------------------
+# The producer's complete runtime set, as path components relative to CLAUDE_DIR.
+# The canonical contract resolve_import_roots (in the post-commit hook) mirrors.
+RUNTIME_SET_RELPATHS = (
+    ("scripts", "merge_gate_local.py"),
+    ("hooks", "merge_gate_scheduler.py"),
+    ("scripts", "merge-gate-assets", "adversarial-review.md"),
+    ("skills", "setup-merge-gate", "templates", "review-output.schema.json"),
+)
+
+
+def runtime_set_complete(claude_dir: Path) -> bool:
+    """True iff the COMPLETE producer runtime set (import closure + assets) is
+    co-located under `claude_dir`. The single predicate shared by the asset gate
+    (resolve_claude_dir) and the import gate (resolve_import_roots in the
+    post-commit hook) so imports and assets never decouple (#37 unified gate)."""
+    return all(claude_dir.joinpath(*rel).is_file() for rel in RUNTIME_SET_RELPATHS)
+
+
+def resolve_claude_dir(module_file: Path, home: Path) -> Path:
+    """The CLAUDE_DIR this producer roots its assets at: its OWN checkout
+    (module_file is <root>/scripts/merge_gate_local.py, so the root is its
+    grandparent) iff the complete runtime set is co-located there, else
+    $HOME/.claude. `.resolve()` follows a symlinked install to the real repo, so
+    a symlinked module reads the assets next to its REAL location — matching the
+    hook's `Path(__file__).resolve()` (f60c84a claude:finding-1)."""
+    checkout = module_file.resolve().parent.parent      # <root>/scripts/<this> → <root>
+    if runtime_set_complete(checkout):
+        return checkout
+    return home / ".claude"
+
+
+CLAUDE_DIR = resolve_claude_dir(Path(__file__), HOME)
 ASSETS_DIR = CLAUDE_DIR / "scripts" / "merge-gate-assets"
 ADVERSARIAL_PROMPT_PATH = ASSETS_DIR / "adversarial-review.md"
 # The schema is reused (not re-vendored) from the byte-identical template copy
@@ -535,6 +591,22 @@ def _hash(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
+def _asset_sha(path: Path) -> str:
+    """Content hash of a producer asset for review_scope_hash (#37 codex:finding-0).
+    CONTENT, not path: a checkout-vs-$HOME location difference must NOT churn the
+    cache, but DIFFERENT asset content MUST (a `pass` produced under one
+    prompt/schema is invalid under another). Stable across tool bumps (D4 — the
+    asset file does not change when the codex/claude binary bumps). A missing asset
+    hashes to a sentinel rather than raising, so verify stays deterministic (the
+    sentinel never matches a real produce → scope-mismatch → stale → fail toward
+    re-review, the safe direction) instead of crashing the fast path on a broken
+    install."""
+    try:
+        return _hash(path.read_bytes())
+    except OSError:
+        return "missing"
+
+
 def review_scope_hash(cfg: Config) -> str:
     """Compose review_scope_hash (D8). A different reviewer set, glob set,
     severity set, diff algorithm, validator/prompt contract, or per-reviewer
@@ -548,6 +620,16 @@ def review_scope_hash(cfg: Config) -> str:
         "canonical_diff_algo": CANONICAL_DIFF_ALGO_VERSION,
         "validator_contract": VALIDATOR_CONTRACT_VERSION,
         "adversarial_prompt": ADVERSARIAL_PROMPT_VERSION,
+        # #37 codex:finding-0 — producer-asset CONTENT identity. Now that assets
+        # resolve from the producer's own checkout (resolve_claude_dir), a `pass`
+        # cached under one checkout's prompt/schema must NOT be reused under
+        # different assets. Content (not path) so a checkout-vs-$HOME relocation
+        # does not churn the cache, and a tool bump (asset content unchanged) stays
+        # D4-clean. Complements the manual `adversarial_prompt` version above
+        # (manual = force a bump without editing the file; sha = auto-bust on any
+        # content change, incl. the schema, which has no manual version).
+        "adversarial_prompt_sha": _asset_sha(ADVERSARIAL_PROMPT_PATH),
+        "schema_sha": _asset_sha(SCHEMA_PATH),
         "reviewer_args": {r: cfg.reviewer_args(r) for r in cfg.reviewers},
         # A different reviewer binary or custom command is a different reviewer
         # implementation and MUST invalidate the cache (one-time bust on upgrade).
@@ -958,6 +1040,67 @@ def write_summary_atomic(tdir: Path, summary: dict) -> None:
 
 
 # --------------------------------------------------------------------------
+# Pending-tuple persistence (#33, ADR-0014) — the post-commit producer ↔
+# pre-push verify hand-off. The auto-producer hashes its LOCAL base while verify
+# resolves the pre-push REMOTE base, so a stale local origin would diverge the
+# diff_hash and verify would re-log `missing` (G2); and a push immediately after
+# commit can beat the backgrounded produce (G3). The pending tuple
+# {base_sha, diff_hash, tip_sha, pid} lets verify (a) trust the producer's base
+# for the matched tip and (b) key a bounded wait off the producer's liveness.
+# Lives next to the producer lock in artifact_root (gitignored). `(base,
+# diff_hash)` is the artefact dedup key; `tip_sha` is verify-match metadata only
+# (N1: an amend preserving the diff still matches the wait).
+# --------------------------------------------------------------------------
+def pending_path(artifact_root: Path) -> Path:
+    return artifact_root / ".pending.json"
+
+
+def read_pending(artifact_root: Path) -> dict | None:
+    """The latest pending-produce tuple, or None when absent/unreadable. Never
+    raises — a missing or corrupt file just means 'no known in-flight produce'."""
+    try:
+        return json.loads(pending_path(artifact_root).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def write_pending(artifact_root: Path, tuple_: dict) -> None:
+    """Record the latest pending-produce tuple atomically. The post-commit hook
+    writes it at launch (with the detached child's pid); the producer rewrites it
+    as it coalesces to a newer committed tip. Best-effort: a write failure must
+    never break a commit or a produce."""
+    try:
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        tmp = artifact_root / f".pending.json.tmp-{os.getpid()}"
+        tmp.write_text(json.dumps(tuple_) + "\n", encoding="utf-8")
+        os.replace(tmp, pending_path(artifact_root))
+    except Exception:
+        pass
+
+
+def pid_alive(pid) -> bool:
+    """True iff `pid` is a live process this user can signal. `os.kill(pid, 0)`
+    raises ProcessLookupError when the pid is dead and PermissionError when it is
+    alive but owned by another user (treated as alive — fail toward 'wait', not a
+    premature `missing`). A None/garbage pid is dead by construction."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+# --------------------------------------------------------------------------
 # Adversarial prompt rendering (inline-pinned diff — ADR-0012).
 # --------------------------------------------------------------------------
 def render_adversarial_prompt(cd: dict, user_focus: str) -> str:
@@ -1057,12 +1200,85 @@ def _unsafe_claude_reviewer_arg(extra: list[str]) -> str | None:
     return None
 
 
+def _killpg(pid: int) -> None:
+    """SIGKILL the whole process group led by `pid`; tolerate an already-dead
+    child/group. `start_new_session=True` makes pgid == pid, and the group
+    outlives a dead leader as long as any descendant remains — so this reaps the
+    orphans even after the direct child is gone."""
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _run_reaped(*popenargs, input=None, capture_output=False, timeout=None,
+                **kwargs) -> subprocess.CompletedProcess:
+    """`subprocess.run`-equivalent that reaps the child's WHOLE process group on
+    timeout. The headless `claude -p` reviewer/validator spawns descendants (tool
+    Bash, MCP servers, a wedged turn's hung child). Plain `subprocess.run(timeout=)`
+    SIGKILLs only the DIRECT child; descendants are reparented to init and leak —
+    and on the very timeout that fires (a genuine wedge) the hung descendant leaks
+    INDEFINITELY rather than self-completing. `start_new_session=True` puts the
+    child in its own process group; on timeout we `killpg` the group so nothing
+    outlives the bound. Same fail-closed contract as run(): returns
+    CompletedProcess, re-raises TimeoutExpired (callers' `except TimeoutExpired`
+    handlers are unchanged)."""
+    if input is not None:
+        kwargs["stdin"] = subprocess.PIPE
+    if capture_output:
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.PIPE
+    with subprocess.Popen(*popenargs, start_new_session=True, **kwargs) as proc:
+        try:
+            stdout, stderr = proc.communicate(input, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _killpg(proc.pid)
+            proc.communicate()  # group is dead → pipes hit EOF, drains promptly
+            raise
+        except BaseException:  # incl. KeyboardInterrupt — don't leak the group
+            _killpg(proc.pid)
+            raise
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
+def _clear_stale_reviewer_artefacts(sub_dir: Path) -> None:
+    """Pre-clear the reviewer's raw-output sinks (`reviewer.stdout`/`.stderr`)
+    before a (re)run, mirroring default_validator_runner's validators.{json,md}
+    clear (#15/C1, L1440). #34 made reviewer.stdout the #31 reviewer-reliability
+    evidence sink, but BOTH sinks are written ONLY on the subprocess-return path:
+    the unsafe-arg refusal / timeout / exception early returns write neither, and
+    produce mkdir's sub_dir with exist_ok and never clears it. So without this,
+    a same-tuple re-produce whose rerun fails early would leave the PRIOR
+    successful run's bytes in sub_dir, and an auditor reading a codex-failed /
+    timeout row would mis-attribute stale evidence from a different, successful
+    run (#38). Called at the TOP of each runner — strictly upstream of every
+    early return, so even an unsafe-arg refusal clears first. After the clear,
+    any sink present afterward was written THIS run; a MISSING file is the
+    unambiguous "no output captured this run" signal.
+
+    `unlink(missing_ok=True)`: the ONLY benign failure is "already absent" (the
+    desired post-state). Any OTHER OSError (e.g. EPERM on a read-only sub_dir)
+    must PROPAGATE — a stale file we failed to remove must never be silently
+    presented as this-run evidence (the very invariant this clear upholds). The
+    raise aborts the runner → produce errors → next verify sees `missing`, never a
+    stale artefact read as fresh (claude:finding-1, #38 dogfood — stricter than the
+    `default_validator_runner` precedent's swallow-all `except OSError`)."""
+    for stale in (sub_dir / "reviewer.stdout", sub_dir / "reviewer.stderr"):
+        stale.unlink(missing_ok=True)
+
+
 def default_reviewer_runner(name: str, cfg: Config, cd: dict, sub_dir: Path,
                             cwd: Path, user_focus: str) -> tuple[str, int]:
     """Invoke one reviewer; return (jsonl_stdout, exit_code). The Codex reviewer
     is `codex exec --json --output-schema <schema> --sandbox read-only` with the
     canonical diff fed INLINE via stdin (ADR-0012) — never `codex review`, never
     model self-collection of the diff."""
+    # #38: pre-clear the raw sinks at the TOP so EVERY early return below (the
+    # codex unsafe-arg refusal, the custom-cmd RuntimeError, timeout, exception)
+    # is downstream of it — a failed rerun then leaves no stale stdout/stderr.
+    # Covers the claude path too: this runs before the `name == "claude"`
+    # delegation, so _run_claude_reviewer's own clear is a defensive no-op there.
+    _clear_stale_reviewer_artefacts(sub_dir)
     prompt = render_adversarial_prompt(cd, user_focus)
     if name == "codex":
         extra = cfg.reviewer_args("codex") or []
@@ -1087,11 +1303,27 @@ def default_reviewer_runner(name: str, cfg: Config, cd: dict, sub_dir: Path,
                 f"reviewer {name!r} has no Codex builtin and no `cmd` in "
                 f"[merge-gate.local.producer.{name}]")
     try:
-        p = subprocess.run(cmd, cwd=str(cwd), input=prompt.encode("utf-8"),
-                           capture_output=True)
+        # _run_reaped (not bare subprocess.run) with a hard timeout so a wedged
+        # `codex exec` (or a custom reviewer) fails closed and its whole process
+        # group is reaped, never hanging produce indefinitely (#30 follow-up,
+        # parity with the claude reviewer/validator sites).
+        p = _run_reaped(cmd, cwd=str(cwd), input=prompt.encode("utf-8"),
+                        capture_output=True, timeout=_CODEX_REVIEWER_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return (f"{name} reviewer timed out after {_CODEX_REVIEWER_TIMEOUT_S}s "
+                "(fail-closed)", 124)
     except Exception as e:
         return f"reviewer invocation failed: {e}", 127
     (sub_dir / "reviewer.stderr").write_bytes(p.stderr)
+    # #34: persist the RAW reviewer stdout (bytes, before normalize) so a
+    # malformed-payload / codex-failed row stays auditable — the normalized
+    # _fallback summary alone can't tell prose from prose-preamble-then-JSON.
+    # #38: written only HERE, on the subprocess-return path; the unsafe-arg
+    # refusal / timeout / exception early returns above write NEITHER sink. The
+    # top-of-runner pre-clear is what makes a MISSING file mean "no output
+    # captured this run" (not stale bytes from a prior produce of the same tuple);
+    # an empty-but-present file means the subprocess returned empty stdout.
+    (sub_dir / "reviewer.stdout").write_bytes(p.stdout)
     return p.stdout.decode("utf-8", "replace"), p.returncode
 
 
@@ -1152,6 +1384,19 @@ _CLAUDE_REVIEWER_DENIED_TOOLS = ",".join([
 # never a silent pass or an indefinitely-wedged produce.
 _CLAUDE_REVIEWER_TIMEOUT_S = 600
 
+# Hard wall-clock bound for the VALIDATOR subprocess (#31 seed finding). The validator
+# runs a full subagent (heavier than the reviewer's single turn), so a more generous
+# bound; on timeout it fails CLOSED (default_validator_runner returns None →
+# build_summary F2 over-blocks), never a silent pass or an indefinitely-wedged produce.
+_CLAUDE_VALIDATOR_TIMEOUT_S = 900
+
+# Hard wall-clock bound for the codex (and any custom-`cmd`) reviewer subprocess
+# (#30 follow-up — the codex reviewer had NO timeout while the claude sites do; a
+# wedged `codex exec` could hang produce indefinitely). Mirrors the claude reviewer
+# bound (a single adversarial turn). On timeout the run fails CLOSED (exit 124 →
+# reviewer failure → produce verdict error), never a silent pass or wedged produce.
+_CODEX_REVIEWER_TIMEOUT_S = 600
+
 # JSON-only directive. On claude 2.1.x `--json-schema` is a SOFT steer (no
 # constrained-decoding `structured_output` field; verified — AC#2), so this
 # system prompt is what practically forces a parseable JSON object into the
@@ -1168,6 +1413,24 @@ _CLAUDE_REVIEWER_JSON_DIRECTIVE = (
     "`recommendation`), and `next_steps`. The JSON object is your entire reply.")
 
 
+# CLAUDE_CODE_* vars that are auth/provider config, NOT nested-session markers, and
+# must survive the strip below — else auth fails and reintroduces the auth-failure
+# over-block the strip exists to prevent (#31 seed findings). The strip stays a broad
+# prefix match because the session markers are open-ended (CLAUDECODE, _ENTRYPOINT,
+# _EXECPATH, _TMPDIR, _SESSION_ID, _SSE_PORT, …); a denylist would miss one and the
+# child would no-op again. So auth/provider vars are preserved by ALLOWLIST instead:
+#   OAUTH_TOKEN              — headless/CI auth token
+#   USE_BEDROCK / USE_VERTEX — provider selection; stripping makes the child fall back
+#                              to the direct Anthropic API → auth failure → over-block
+#                              for Bedrock/Vertex operators (#31 seed finding :1196).
+# Extend here when a new auth/provider var is added.
+_PRESERVE_CLAUDE_ENV = {
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+}
+
+
 def _fresh_claude_session_env(extra: dict) -> dict:
     """Child env for a headless `claude -p` spawned by produce. produce may run
     INSIDE a Claude session (the Stop scheduler launches it from one), and a
@@ -1178,9 +1441,12 @@ def _fresh_claude_session_env(extra: dict) -> dict:
     — which is exactly why the recursion guard (`extra`'s
     MERGE_GATE_PRODUCER_RUNNING=1) is mandatory: the hook reads it and no-ops
     instead of scheduling a nested produce (#24/#26/#28/#29 runaway). Auth/config
-    env (ANTHROPIC_*, PATH, HOME, …) is preserved."""
+    env (ANTHROPIC_*, PATH, HOME, …) is preserved — INCLUDING CLAUDE_CODE_OAUTH_TOKEN
+    (see _PRESERVE_CLAUDE_ENV): it matches the CLAUDE_CODE_ prefix but is auth, not a
+    session marker, so stripping it would break token-auth (CI) → over-block."""
     base = {k: v for k, v in os.environ.items()
-            if k != "CLAUDECODE" and not k.startswith("CLAUDE_CODE_")}
+            if k != "CLAUDECODE"
+            and (not k.startswith("CLAUDE_CODE_") or k in _PRESERVE_CLAUDE_ENV)}
     base.update(extra)
     return base
 
@@ -1202,6 +1468,12 @@ def _run_claude_reviewer(name: str, cfg: Config, prompt: str, sub_dir: Path,
     layer; `--permission-mode dontAsk` only suppresses prompts (it does NOT deny —
     verified live); `--setting-sources ""` (no hooks/plugins) + `--strict-mcp-config`
     (no MCP) isolate the session. All verified on 2.1.159."""
+    # #38: pre-clear the raw sinks at the TOP so the unsafe-arg refusal / timeout
+    # / exception early returns below leave no stale stdout/stderr. On the normal
+    # claude path this is reached via default_reviewer_runner, which already
+    # cleared, so this is a defensive no-op there; it makes a DIRECT call (or a
+    # future caller) self-sufficient — parity with default_validator_runner.
+    _clear_stale_reviewer_artefacts(sub_dir)
     extra = cfg.reviewer_args("claude") or []
     # M1 parity (#32 review C2): refuse any reviewer_arg that is not provably
     # read-only-neutral BEFORE invoking. The tool allowlist + isolation below cannot
@@ -1257,19 +1529,28 @@ def _run_claude_reviewer(name: str, cfg: Config, prompt: str, sub_dir: Path,
     try:
         # Prompt on stdin (C3); claude -p with no positional reads it. Hard timeout
         # so a wedged turn (e.g. a tool that blocks) fails closed, never hangs produce.
-        p = subprocess.run(cmd, cwd=str(cwd), input=prompt.encode("utf-8"),
-                           env=env, capture_output=True,
-                           timeout=_CLAUDE_REVIEWER_TIMEOUT_S)
+        # _run_reaped (not bare subprocess.run) so a timeout SIGKILLs the whole
+        # process group — `claude -p` descendants must not outlive the bound.
+        p = _run_reaped(cmd, cwd=str(cwd), input=prompt.encode("utf-8"),
+                        env=env, capture_output=True,
+                        timeout=_CLAUDE_REVIEWER_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         return (f"claude reviewer timed out after {_CLAUDE_REVIEWER_TIMEOUT_S}s "
                 "(fail-closed)", 124)
     except Exception as e:
         return f"claude reviewer invocation failed: {e}", 127
     (sub_dir / "reviewer.stderr").write_bytes(p.stderr)
+    # #34: persist the RAW `claude -p` envelope (bytes, before normalize) so a
+    # malformed-payload row — e.g. the reviewer drifting to prose in `.result` —
+    # stays auditable from disk. #38: written only HERE, on the subprocess-return
+    # path; the unsafe-arg refusal / timeout / exception early returns above write
+    # NEITHER sink. The top-of-runner pre-clear makes a MISSING file mean "no
+    # output captured this run"; an empty-but-present file means empty stdout.
+    (sub_dir / "reviewer.stdout").write_bytes(p.stdout)
     return p.stdout.decode("utf-8", "replace"), p.returncode
 
 
-def default_validator_runner(name: str, codex_json: Path, sub_dir: Path,
+def default_validator_runner(name: str, findings_json: Path, sub_dir: Path,
                              cwd: Path, intent_file: Path | None) -> dict | None:
     """Run the validator in its OWN headless context (#24/#26/#29). Returns the
     parsed validators.json (with `aggregate`) or None on failure."""
@@ -1285,14 +1566,40 @@ def default_validator_runner(name: str, codex_json: Path, sub_dir: Path,
             stale.unlink()
         except OSError:
             pass
-    slash = (f"/run-codex-validators --codex-json {codex_json} "
+    slash = (f"/run-codex-validators --codex-json {findings_json} "
              f"--soft-mode false --out-dir {sub_dir}")
     if intent_file is not None:
         slash += f" --intent-from {intent_file}"
-    env = {"MERGE_GATE_PRODUCER_RUNNING": "1"}
+    # Strip nested-session markers so the validator's headless `claude -p` runs as a
+    # FRESH top-level session and actually executes. produce may run INSIDE a Claude
+    # session (the Stop scheduler), and a child inheriting CLAUDECODE / CLAUDE_CODE_*
+    # no-ops to EMPTY output (verified — see _fresh_claude_session_env), which
+    # build_summary's F2 fail-safe then turns into blanket over-block — silently
+    # poisoning #31's validator-discernment/composition measurement. Mirrors the #32
+    # reviewer fix. UNLIKE the reviewer we CANNOT isolate settings: the validator
+    # dispatches the `/run-codex-validators` SKILL (+ its subagent), loaded FROM the
+    # ~/.claude settings sources. `--setting-sources ""` makes the slash command
+    # undiscoverable (verified: "Unknown command: /run-codex-validators"); `--bare`
+    # skips hooks but "never reads the OAuth keychain" (verified) → breaks this
+    # OAuth-only operator's auth. So the validator runs WITH settings, and that fresh
+    # session's hooks fire. The runaway path is contained (the Stop scheduler reads
+    # MERGE_GATE_PRODUCER_RUNNING=1 and no-ops), but other operator session hooks
+    # (status regen / devlog) still run — a residual accepted under the local-profile
+    # trust model (self-authored diffs only, ADR-0009), tracked as a #31 seed finding.
+    env = _fresh_claude_session_env({"MERGE_GATE_PRODUCER_RUNNING": "1"})
     try:
-        proc = subprocess.run(["claude", "-p", slash, "--permission-mode", "bypassPermissions"],
-                              cwd=str(cwd), env={**os.environ, **env}, capture_output=True)
+        # Hard timeout (#31 seed finding): the validator now does real long-running
+        # work (a full subagent run, ~175s observed) instead of the prior no-op, so an
+        # unbounded subprocess could wedge produce indefinitely. Fail CLOSED on timeout
+        # (return None → F2 over-blocks), parity with the reviewer's bound. _run_reaped
+        # so the timeout SIGKILLs the whole process group, not just the direct child.
+        proc = _run_reaped(["claude", "-p", slash, "--permission-mode", "bypassPermissions"],
+                           cwd=str(cwd), env=env, capture_output=True,
+                           timeout=_CLAUDE_VALIDATOR_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        err(f"validator headless run for {name} timed out after "
+            f"{_CLAUDE_VALIDATOR_TIMEOUT_S}s; not trusting any artefact (fail-safe)")
+        return None
     except Exception as e:
         err(f"validator headless run failed for {name}: {e}")
         return None
@@ -1398,11 +1705,11 @@ def produce(cwd: Path, cfg: Config, base_sha: str, cd: dict, *,
         findings = _namespace_findings(reviewer, normalized["result"].get("findings", []))
         normalized["result"]["findings"] = findings
         all_namespaced.extend(findings)
-        (sub_dir / "codex.json").write_text(
+        (sub_dir / "findings.json").write_text(
             json.dumps(normalized, ensure_ascii=False), encoding="utf-8")
         reviewer_elapsed = time.time() - t0
         t_v = time.time()
-        validators = validator_runner(reviewer, sub_dir / "codex.json", sub_dir,
+        validators = validator_runner(reviewer, sub_dir / "findings.json", sub_dir,
                                       cwd, intent_file)
         validator_elapsed = time.time() - t_v
         per_reviewer.append({
@@ -1501,6 +1808,7 @@ def build_summary(cfg: Config, base_sha: str, cd: dict, scope_hash: str,
         verdict = "block"
     else:
         verdict = "pass"
+    produced_ts = int(time.time())
     return {
         # hard-gating fields (mismatch ⇒ re-review)
         "schema_version": SCHEMA_VERSION,
@@ -1511,7 +1819,11 @@ def build_summary(cfg: Config, base_sha: str, cd: dict, scope_hash: str,
         "verdict": verdict,
         "block_count": block_count,
         "reviewer_failures": reviewer_failures,
-        "produced_at": int(time.time()),
+        "produced_at": produced_ts,
+        # #31 readability: human-legible UTC mirror of produced_at, so the
+        # gitignored cache artefact is browsable without epoch conversion.
+        "produced_at_iso": datetime.datetime.fromtimestamp(
+            produced_ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "head_sha": None,  # filled by caller (cmd_produce) which knows cwd
         "base_ref": cfg.base_ref,
         "enforcement_policy_at_produce": cfg.enforcement_policy,
@@ -1566,6 +1878,121 @@ def _published_range_messages(cwd: Path, base_sha: str, tip_sha: str) -> str:
     """Commit messages of the published range — durable validator context (D11)."""
     rc, out = git(cwd, ["log", "--format=%s%n%b", f"{base_sha}..{tip_sha}"])
     return out.strip() if rc == 0 else ""
+
+
+def _is_ancestor(root: Path, anc: str, desc: str) -> bool:
+    """True iff `anc` is an ancestor of (or equal to) `desc`
+    (`git merge-base --is-ancestor`, which returns 0 for equal shas too)."""
+    rc, _ = git(root, ["merge-base", "--is-ancestor", anc, desc])
+    return rc == 0
+
+
+def _pending_artefact(root: Path, cfg: Config, tip_sha: str,
+                      remote_base: str | None = None):
+    """Re-derive the artefact the pending producer wrote (or is writing) for the
+    pushed tip, trusting the producer's recorded base (#33 G2). Returns
+    (summary_or_None, base, diff_hash, pending), or None when there is no pending
+    tuple matching this tip OR the producer's base is not trustworthy for this
+    push. `summary` is None when the producer has not yet written the artefact
+    (still spinning up, or mid-review) — the signal the wait path polls on. The
+    diff is ALWAYS re-derived from the COMMITTED tip against the producer's base —
+    never the working tree — so a found artefact is provably the pushed commit's
+    (Finding-1).
+
+    Base-trust guard (ADR-0014): the producer's base (A) is accepted only when it
+    is an ANCESTOR of the push's resolved base (`remote_base`, B). Then the review
+    range A..T is a SUPERSET of the pushed range B..T, so everything published was
+    reviewed. A divergent base (multi-pusher / force-push — neither an ancestor)
+    is a documented `missing` residual, NOT a pass: trusting it would report
+    `fresh` for a range the artefact never covered (Finding-1 lineage)."""
+    artifact_root = root / cfg.artifact_root
+    pending = read_pending(artifact_root)
+    if not pending or pending.get("tip_sha") != tip_sha:
+        return None
+    base2 = pending.get("base_sha")
+    if not base2:
+        # Spin-up window: the producer launched but has not computed its diff yet
+        # (the hook wrote only {tip_sha, pid}). No artefact yet — poll on (G3).
+        return (None, None, None, pending)
+    # Reject a divergent producer base (ADR-0014 multi-pusher residual → missing).
+    if remote_base and not _is_ancestor(root, base2, remote_base):
+        return None
+    cd2 = canonical_diff_at_commit(root, base2, tip_sha, cfg.review_globs, cfg.ignore_globs)
+    if cd2.get("diff_error") or not cd2["changed_files"]:
+        return (None, base2, None, pending)
+    summary2 = load_summary(tuple_dir(artifact_root, base2, cd2["diff_hash"]))
+    return (summary2, base2, cd2["diff_hash"], pending)
+
+
+# Bounded verify-wait budget (#33 4c). Sized off the OBSERVED produce-latency
+# p95, not a guessed 8 min: a real produce hit 543s (≈9 min), so the default
+# leaves headroom above that. Read from the environment per-call (not at import)
+# so the operator/tests can tune it. The wait closes the commit→produce→push race
+# WITHOUT verify ever running Codex/Claude or writing an artefact (#30 D1): it
+# only polls an INDEPENDENTLY-launched producer's tuple. Escape: git push --no-verify.
+def _wait_param(env_key: str, default: float) -> float:
+    try:
+        return float(os.environ.get(env_key, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _await_pending_artefact(root: Path, cfg: Config, scope: str, tip_sha: str,
+                            current_tools: dict | None, remote_base: str | None = None):
+    """G2 + G3 — resolve the pushed tip's review via the matched pending tuple,
+    waiting for an in-flight producer when necessary. Returns
+    {summary, base, diff_hash, state, waited, did_wait} for any TERMINAL artefact —
+    `state` is its freshness ('fresh' → verify passes; 'failing'/other non-fresh →
+    verify reports that state's block against the producer's base, #39) — else None
+    when the artefact is GENUINELY absent (no matching tuple, divergent producer
+    base, dead/orphaned producer, or wait budget exhausted → verify reports
+    `missing`). A non-matching/absent tuple or a dead producer returns None
+    IMMEDIATELY (no wait); a terminal artefact also returns IMMEDIATELY (it never
+    waits on a failing review to "become" fresh). While waiting it runs NO Codex/Claude and
+    writes NO artefact — it only re-reads the tuple and the producer's
+    summary.json (D1 asymmetric-privilege preserved); the diff is always
+    re-derived from the COMMITTED tip (Finding-1)."""
+    budget = _wait_param("MERGE_GATE_VERIFY_WAIT_SECONDS", 900)
+    poll = _wait_param("MERGE_GATE_VERIFY_WAIT_POLL_SECONDS", 2)
+    hb_every = _wait_param("MERGE_GATE_VERIFY_WAIT_HEARTBEAT_SECONDS", 15)
+    start = time.monotonic()
+    last_hb = 0.0
+    did_wait = False
+    while True:
+        res = _pending_artefact(root, cfg, tip_sha, remote_base)
+        if res is None:
+            return None  # no pending tuple for this tip (or divergent base) → missing
+        summary2, base2, dh2, pending = res
+        elapsed = time.monotonic() - start
+        if summary2 is not None:
+            # The producer has FINISHED this tip (terminal) — NEVER wait on it (a
+            # failing/scope-mismatch review will not "become" fresh, so we return
+            # promptly). Hand the artefact's ACTUAL freshness state + summary back
+            # so verify reports the in-flight produce's real outcome against the
+            # producer's base: a `fresh` artefact passes, a `failing` one is
+            # reported as `review BLOCKED N finding(s)` — not the misleading
+            # remote-base `missing` (#39). A genuinely-absent artefact (summary2 is
+            # None below: spin-up/dead/timeout) still falls through to `missing`.
+            st = freshness_state(summary2, scope, cfg.freshness_policy, current_tools)
+            return {"summary": summary2, "base": base2, "diff_hash": dh2, "state": st,
+                    "waited": int(round(elapsed)), "did_wait": did_wait}
+        # Artefact not yet written — wait only while THIS producer is alive and
+        # budget remains.
+        if not pid_alive(pending.get("pid")):
+            return None  # dead/orphaned producer + no artefact → missing
+        if elapsed >= budget:
+            err(f"in-flight produce did not finish within {int(budget)}s; "
+                "reporting missing (escape: git push --no-verify)")
+            return None
+        if elapsed - last_hb >= hb_every:
+            # Heartbeat to stderr so a multi-minute wait does not look hung; the
+            # measurement wrapper streams these live (G4).
+            sys.stderr.write(f"merge-gate: waiting for in-flight produce… "
+                             f"{int(elapsed)}s elapsed (pid {pending.get('pid')})\n")
+            sys.stderr.flush()
+            last_hb = elapsed
+        did_wait = True
+        time.sleep(poll)
 
 
 def cmd_verify(args) -> int:
@@ -1623,6 +2050,36 @@ def cmd_verify(args) -> int:
         print(f"merge-gate: fresh passing review for {base[:10]}..{cd['diff_hash'][:10]} — PASS")
         return 0
 
+    # #33 G2/G3 — before declaring `missing`, consult the pending-produce tuple.
+    # The auto-producer hashes its LOCAL base while verify resolved the REMOTE
+    # base; if a stale local origin diverged them the artefact sits at the
+    # producer's base (G2), and a push immediately after commit may still be
+    # in flight (G3). Only on `missing` (no artefact at the remote base) and only
+    # for a real pushed tip — never overrides a `failing`/`scope-mismatch` artefact
+    # that DOES exist at the remote base.
+    if state == "missing" and args.tip_sha:
+        hit = _await_pending_artefact(root, cfg, scope, args.tip_sha, current_tools,
+                                      remote_base=base)
+        if hit is not None:
+            if hit["did_wait"]:
+                # G1: a stable stdout token the measurement wrapper parses into
+                # verify_wait_seconds (never recomputed wrapper-side). Emitted for
+                # ANY waited-on outcome (pass OR fail) — it records the wall-clock
+                # the push waited on the in-flight produce, independent of verdict.
+                print(f"merge-gate: waited {hit['waited']}s for in-flight produce")
+            if hit["state"] == "fresh":
+                print(f"merge-gate: fresh passing review for "
+                      f"{hit['base'][:10]}..{hit['diff_hash'][:10]} — PASS")
+                return 0
+            # #39: the in-flight produce finished NON-fresh (e.g. failing findings)
+            # at the producer's base. Adopt its state + summary so the tail below
+            # reports the real outcome (`review BLOCKED N finding(s)`) instead of
+            # the remote-base `missing`. The block DECISION is unchanged — both
+            # paths exit non-zero under enforcement; only the printed state/detail
+            # changes (a reporting/label fix, not an Axis-A reset).
+            state = hit["state"]
+            summary = hit["summary"]
+
     if state == "failing" and summary and summary.get("reviewer_failures"):
         failing_detail = ("reviewer(s) failed: "
                           + ", ".join(summary["reviewer_failures"])
@@ -1659,33 +2116,16 @@ def cmd_verify(args) -> int:
     return 1
 
 
-def cmd_produce(args) -> int:
-    cwd = Path(args.cwd or os.getcwd())
-    root = repo_root(cwd)
-    if root is None:
-        err("not a git repository")
-        return 1
-    cfg = load_config(root)
-    base = resolve_base_sha(root, args.base_ref or cfg.base_ref)
-    if base is None:
-        err("could not resolve base ref; pass --base-ref or set up an upstream")
-        return 1
-    cd = canonical_diff(root, base, cfg.review_globs, cfg.ignore_globs)
-    if cd.get("diff_error"):
-        err("could not compute the review diff (base/tip object missing or git "
-            "error); refusing to write a clean artefact")
-        return 1
-    if not cd["changed_files"]:
-        print("merge-gate produce: no in-scope changes — nothing to review")
-        return 0
-
-    # Durable validator context (D11): published-range commit messages +
-    # branch + optional operator intent. Default empty keeps GHA byte-identical.
+def _build_intent_file(root: Path, cfg: Config, base: str, tip: str | None,
+                       args) -> Path | None:
+    """Durable validator context (D11): published-range commit messages + branch
+    + optional operator intent, written to artifact_root/.intent.txt. Returns the
+    path, or None when there is no intent to record. Default empty keeps GHA
+    byte-identical."""
     intent_parts = []
     branch = current_branch(root)
     if branch and branch != "HEAD":
         intent_parts.append(f"Branch: {branch}")
-    tip = rev_parse(root, "HEAD")
     if tip:
         msgs = _published_range_messages(root, base, tip)
         if msgs:
@@ -1697,32 +2137,121 @@ def cmd_produce(args) -> int:
             intent_parts.append("Operator intent:\n" + Path(args.intent_from).read_text(encoding="utf-8"))
         except Exception as e:
             err(f"could not read --intent-from {args.intent_from}: {e}")
-    intent_file = None
-    if intent_parts:
-        artifact_root = root / cfg.artifact_root
-        artifact_root.mkdir(parents=True, exist_ok=True)
-        intent_file = artifact_root / ".intent.txt"
-        intent_file.write_text("\n\n".join(intent_parts), encoding="utf-8")
+    if not intent_parts:
+        return None
+    artifact_root = root / cfg.artifact_root
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    intent_file = artifact_root / ".intent.txt"
+    intent_file.write_text("\n\n".join(intent_parts), encoding="utf-8")
+    return intent_file
 
-    # Explicit operator intent must reach the reviewer+validator, so an
-    # EXPLICIT --intent / --intent-from bypasses the cache (C4). The Stop
-    # scheduler launches produce WITHOUT these flags, so auto-derived
-    # branch/commit-message intent does not bust the cache (and does not churn
-    # it — intent is deliberately kept out of review_scope_hash to protect D4).
+
+def _produce_one(root: Path, cfg: Config, base: str, tip_sha: str | None, args,
+                 reviewer_runner, validator_runner) -> dict | None:
+    """Produce ONE tuple and record its pending hand-off. With `tip_sha` the
+    review is COMMIT-PINNED (canonical_diff_at_commit — the committed tip, robust
+    on a dirty tree, #33 4b); without it the working tree is reviewed (manual
+    produce, unchanged). Returns the canonical-diff dict on a real produce (so the
+    coalescing caller can dedup on diff_hash) or None on no-in-scope / diff-error.
+    Must be called while holding the ProducerLock."""
+    if tip_sha:
+        cd = canonical_diff_at_commit(root, base, tip_sha, cfg.review_globs, cfg.ignore_globs)
+    else:
+        cd = canonical_diff(root, base, cfg.review_globs, cfg.ignore_globs)
+    if cd.get("diff_error"):
+        err("could not compute the review diff (base/tip object missing or git "
+            "error); refusing to write a clean artefact")
+        return None
+    if not cd["changed_files"]:
+        print("merge-gate produce: no in-scope changes — nothing to review")
+        return None
+    tip = rev_parse(root, tip_sha) if tip_sha else rev_parse(root, "HEAD")
+    intent_file = _build_intent_file(root, cfg, base, tip, args)
+    # EXPLICIT --intent / --intent-from bypasses the cache (C4) so the operator's
+    # durable intent reaches the reviewer+validator; the auto-producer passes
+    # neither, so auto-derived branch/commit-message intent does not bust the
+    # cache (intent is kept out of review_scope_hash to protect D4).
     effective_force = bool(getattr(args, "force", False)) or bool(args.intent or args.intent_from)
+    summary = produce(root, cfg, base, cd, user_focus=args.intent or "",
+                      intent_file=intent_file, force=effective_force,
+                      reviewer_runner=reviewer_runner, validator_runner=validator_runner)
+    if tip:
+        summary["head_sha"] = tip
+        write_summary_atomic(tuple_dir(root / cfg.artifact_root, base, cd["diff_hash"]), summary)
+    # Pending hand-off for the pre-push verify (G2/G3): tip_sha is the
+    # verify-match key, base_sha lets verify trust THIS producer's base (a stale
+    # local origin would otherwise diverge it), pid keys the bounded wait off
+    # this producer's liveness.
+    write_pending(root / cfg.artifact_root,
+                  {"base_sha": base, "diff_hash": cd["diff_hash"],
+                   "tip_sha": tip, "pid": os.getpid()})
+    # G5: ⓑ counts this literal line in produce.log — keep the wording stable.
+    # flush=True is load-bearing under coalescing: the post-commit producer
+    # redirects stdout to produce.log (a FILE → block-buffered), and a coalescing
+    # run is one long-lived process emitting several verdict lines. Without the
+    # flush they would all sit in the buffer until process exit, so ⓑ (read at the
+    # next push) would undercount produces that completed mid-run. Flush makes each
+    # completed produce visible to ⓑ immediately.
+    print(f"merge-gate produce: verdict={summary['verdict']} "
+          f"block_count={summary['block_count']} "
+          f"({len(cfg.reviewers)} reviewer(s))", flush=True)
+    return cd
+
+
+def _produce_coalesce(root: Path, cfg: Config, base: str, args,
+                      reviewer_runner, validator_runner) -> None:
+    """Auto-produce coalescing loop (#33 B1). Holding the lock, produce the
+    current committed tip, then re-evaluate HEAD; if HEAD's committed diff moved
+    (a commit landed while the prior review was in flight) produce the new tip
+    too. Converges when HEAD's committed diff is one already produced this run.
+    `base` is resolved ONCE by the caller and held fixed — for the auto path it
+    is the (lagging) local origin tip, stable until the operator pushes. The
+    LockBusy producers from concurrent commits skip and trust THIS holder to
+    coalesce to the latest tip."""
+    produced: set[str] = set()
+    while True:
+        tip = rev_parse(root, "HEAD")
+        if tip is None:
+            break
+        # Peek the committed-tip diff cheaply to dedup before the expensive
+        # produce — so a converged HEAD does not re-run reviewers or double-print
+        # the verdict line (which ⓑ counts, G5).
+        cd_peek = canonical_diff_at_commit(root, base, tip, cfg.review_globs, cfg.ignore_globs)
+        if cd_peek.get("diff_error") or not cd_peek["changed_files"]:
+            if not produced:
+                print("merge-gate produce: no in-scope changes — nothing to review")
+            break
+        if cd_peek["diff_hash"] in produced:
+            break  # converged — HEAD's committed diff is already fresh
+        _produce_one(root, cfg, base, tip, args, reviewer_runner, validator_runner)
+        produced.add(cd_peek["diff_hash"])
+
+
+def cmd_produce(args, *, reviewer_runner=default_reviewer_runner,
+                validator_runner=default_validator_runner) -> int:
+    cwd = Path(args.cwd or os.getcwd())
+    root = repo_root(cwd)
+    if root is None:
+        err("not a git repository")
+        return 1
+    cfg = load_config(root)
+    base = resolve_base_sha(root, args.base_ref or cfg.base_ref)
+    if base is None:
+        err("could not resolve base ref; pass --base-ref or set up an upstream")
+        return 1
+    tip_sha = getattr(args, "tip_sha", None)
+    coalesce = bool(getattr(args, "coalesce", False))
     try:
         with ProducerLock(root / cfg.artifact_root):
-            summary = produce(root, cfg, base, cd, user_focus=args.intent or "",
-                              intent_file=intent_file, force=effective_force)
-            if tip:
-                summary["head_sha"] = tip
-                write_summary_atomic(tuple_dir(root / cfg.artifact_root, base, cd["diff_hash"]), summary)
+            if coalesce:
+                _produce_coalesce(root, cfg, base, args,
+                                  reviewer_runner, validator_runner)
+            else:
+                _produce_one(root, cfg, base, tip_sha, args,
+                             reviewer_runner, validator_runner)
     except LockBusy:
         err("another produce holds the lock; skipping")
         return 0
-    print(f"merge-gate produce: verdict={summary['verdict']} "
-          f"block_count={summary['block_count']} "
-          f"({len(cfg.reviewers)} reviewer(s))")
     return 0
 
 
@@ -1743,6 +2272,13 @@ def main(argv=None) -> int:
 
     pp = sub.add_parser("produce", help="run the reviewer set and write the artefact (expensive)")
     pp.add_argument("--base-ref", default=None)
+    pp.add_argument("--tip-sha", default=None,
+                    help="commit-pin the review to this tip (canonical_diff_at_commit) "
+                         "instead of the working tree (#33 4b)")
+    pp.add_argument("--coalesce", action="store_true",
+                    help="auto-produce mode: pin to HEAD and re-evaluate HEAD after "
+                         "each produce so a batch of commits converges to a fresh "
+                         "artefact for the latest tip (#33 B1)")
     pp.add_argument("--intent", default=None, help="operator intent text (durable validator context)")
     pp.add_argument("--intent-from", default=None, help="file with operator intent")
     pp.add_argument("--force", action="store_true", help="ignore cache and re-produce")
@@ -1750,6 +2286,8 @@ def main(argv=None) -> int:
 
     pf = sub.add_parser("force", help="alias for `produce --force`")
     pf.add_argument("--base-ref", default=None)
+    pf.add_argument("--tip-sha", default=None,
+                    help="commit-pin the forced re-produce to this tip (#33 4b)")
     pf.add_argument("--intent", default=None)
     pf.add_argument("--intent-from", default=None)
     pf.set_defaults(func=lambda a: cmd_produce(_with_force(a)))

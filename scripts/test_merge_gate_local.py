@@ -16,12 +16,16 @@ Focus, per #30's tracer-bullet order and the "highest-risk" callouts:
 from __future__ import annotations
 
 import contextlib
+import datetime
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -445,10 +449,10 @@ def make_fake_reviewer(findings_by_name):
     return runner
 
 
-def fake_validator_uphold_all(name, codex_json, sub_dir, cwd, intent_file):
-    """Validator stand-in: reads the namespaced codex.json, upholds every
+def fake_validator_uphold_all(name, findings_json, sub_dir, cwd, intent_file):
+    """Validator stand-in: reads the namespaced findings.json, upholds every
     finding, blocks crit/high — what /run-codex-validators would write."""
-    doc = json.loads(Path(codex_json).read_text())
+    doc = json.loads(Path(findings_json).read_text())
     agg = []
     for f in doc["result"]["findings"]:
         sev = (f.get("severity") or "low").lower()
@@ -460,11 +464,11 @@ def fake_validator_uphold_all(name, codex_json, sub_dir, cwd, intent_file):
     return vj
 
 
-def fake_validator_dismiss_all(name, codex_json, sub_dir, cwd, intent_file):
+def fake_validator_dismiss_all(name, findings_json, sub_dir, cwd, intent_file):
     """Validator stand-in that DISMISSES every finding (even critical). A genuine
     validator dismiss must un-block — the block decision is
     (severity in blocking) AND (verdict in uphold/unsure), so dismiss → no block."""
-    doc = json.loads(Path(codex_json).read_text())
+    doc = json.loads(Path(findings_json).read_text())
     agg = []
     for f in doc["result"]["findings"]:
         sev = (f.get("severity") or "low").lower()
@@ -512,7 +516,7 @@ class TestProduceSeam(ProduceFixture):
             validator_runner=fake_validator_uphold_all)
         tdir = mg.tuple_dir(self.root / cfg.artifact_root, base, cd["diff_hash"])
         self.assertTrue((tdir / "summary.json").exists())
-        self.assertTrue((tdir / "codex" / "codex.json").exists())
+        self.assertTrue((tdir / "codex" / "findings.json").exists())
         self.assertTrue((tdir / "codex" / "validators.json").exists())
         self.assertEqual(summary["verdict"], "block")  # upheld high → union block
         self.assertEqual(summary["block_count"], 1)
@@ -529,6 +533,22 @@ class TestProduceSeam(ProduceFixture):
         self.assertEqual(summary["verdict"], "pass")
         self.assertEqual(summary["block_count"], 0)
 
+    def test_produced_at_iso_mirrors_epoch(self):
+        # #31 readability: summary.json carries a human-legible UTC timestamp
+        # next to the raw epoch, so the gitignored cache artefact is browsable
+        # without converting produced_at by hand.
+        cfg = self._cfg(reviewers=["codex"])
+        base, cd = self._cd(cfg)
+        summary = mg.produce(
+            self.root, cfg, base, cd,
+            reviewer_runner=make_fake_reviewer({"codex": []}),
+            validator_runner=fake_validator_uphold_all)
+        iso = summary["produced_at_iso"]
+        self.assertRegex(iso, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.assertEqual(iso, datetime.datetime.fromtimestamp(
+            summary["produced_at"], datetime.timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ"))
+
     def test_two_reviewer_union_block_and_subdirs(self):
         """Fake 2-reviewer: alpha surfaces a low (no block), beta a high (block).
         Union must block; each reviewer gets its own sub-dir + namespaced ids."""
@@ -543,8 +563,8 @@ class TestProduceSeam(ProduceFixture):
                 "beta": [_finding("high")]}),
             validator_runner=fake_validator_uphold_all)
         tdir = mg.tuple_dir(self.root / cfg.artifact_root, base, cd["diff_hash"])
-        self.assertTrue((tdir / "alpha" / "codex.json").exists())
-        self.assertTrue((tdir / "beta" / "codex.json").exists())
+        self.assertTrue((tdir / "alpha" / "findings.json").exists())
+        self.assertTrue((tdir / "beta" / "findings.json").exists())
         ids = {f["id"] for f in summary["findings"]}
         self.assertEqual(ids, {"alpha:finding-0", "beta:finding-0"})
         # union: beta's high blocks even though alpha's low does not
@@ -679,7 +699,7 @@ def _verify_ns(root, *, base_sha=None, tip_sha=None, base_ref=None, enforcement=
     return ns
 
 
-def fake_validator_none(name, codex_json, sub_dir, cwd, intent_file):
+def fake_validator_none(name, findings_json, sub_dir, cwd, intent_file):
     """Validator stand-in for a WHOLESALE failure: writes nothing and returns
     None (default_validator_runner's failure path). The wrapper must then treat
     every finding as fail-safe unsure (Finding 2), not silently un-block."""
@@ -736,6 +756,476 @@ class TestFinding1TipPinning(ProduceFixture):
             self.root, base_sha=base, tip_sha=tip_T,
             enforcement="client-side-blocking"))
         self.assertEqual(rc, 0)
+
+
+class TestCmdProduceCommitPinned(ProduceFixture):
+    """#33 4b — `produce --tip-sha` hashes the COMMITTED tip
+    (canonical_diff_at_commit), not the working tree, so the auto-producer and
+    the pre-push verify agree on diff_hash for the same base even on a dirty
+    tree. Manual `produce` with no --tip-sha keeps the working-tree behaviour."""
+
+    def _produce_args(self, *, base_ref=None, tip_sha=None, coalesce=False,
+                      force=False, intent=None, intent_from=None):
+        ns = type("NS", (), {})()
+        ns.cwd = str(self.root)
+        ns.base_ref = base_ref
+        ns.tip_sha = tip_sha
+        ns.coalesce = coalesce
+        ns.force = force
+        ns.intent = intent
+        ns.intent_from = intent_from
+        return ns
+
+    def _ar(self):
+        return self.root / mg.DEFAULT_CONFIG["artifact_root"]
+
+    def test_tip_sha_hashes_committed_tip_not_worktree(self):
+        base = self.base
+        self.repo.write("a.py", "tip_content = 1\n")
+        tip_T1 = self.repo.commit_all("commit a.py as the pushed tip")
+        # Now dirty the worktree to DIFFERENT content — produce must IGNORE it.
+        self.repo.write("a.py", "worktree_content = 2\n")
+        rc = mg.cmd_produce(
+            self._produce_args(base_ref=base, tip_sha=tip_T1),
+            reviewer_runner=make_fake_reviewer({"codex": []}),
+            validator_runner=fake_validator_uphold_all)
+        self.assertEqual(rc, 0)
+        cd_T1 = mg.canonical_diff_at_commit(self.root, base, tip_T1, RG, IG)
+        cd_wt = mg.canonical_diff(self.root, base, RG, IG)
+        self.assertNotEqual(cd_T1["diff_hash"], cd_wt["diff_hash"])  # sanity: differ
+        # Artefact sits at the COMMITTED-tip tuple, not the working-tree tuple.
+        self.assertTrue((mg.tuple_dir(self._ar(), base, cd_T1["diff_hash"]) / "summary.json").exists())
+        self.assertFalse((mg.tuple_dir(self._ar(), base, cd_wt["diff_hash"]) / "summary.json").exists())
+
+    def test_tip_sha_records_pending_tuple(self):
+        base = self.base
+        self.repo.write("a.py", "tip_content = 1\n")
+        tip_T1 = self.repo.commit_all("commit tip")
+        mg.cmd_produce(
+            self._produce_args(base_ref=base, tip_sha=tip_T1),
+            reviewer_runner=make_fake_reviewer({"codex": []}),
+            validator_runner=fake_validator_uphold_all)
+        cd_T1 = mg.canonical_diff_at_commit(self.root, base, tip_T1, RG, IG)
+        pending = mg.read_pending(self._ar())
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["tip_sha"], tip_T1)
+        self.assertEqual(pending["base_sha"], base)
+        self.assertEqual(pending["diff_hash"], cd_T1["diff_hash"])
+        self.assertEqual(pending["pid"], os.getpid())  # this process produced it
+
+    def test_no_tip_sha_uses_working_tree(self):
+        # Manual produce (no --tip-sha): the working tree is reviewed, as before.
+        base = self.base  # a.py is dirty (uncommitted) from setUp
+        rc = mg.cmd_produce(
+            self._produce_args(base_ref=base),
+            reviewer_runner=make_fake_reviewer({"codex": []}),
+            validator_runner=fake_validator_uphold_all)
+        self.assertEqual(rc, 0)
+        cd_wt = mg.canonical_diff(self.root, base, RG, IG)
+        self.assertTrue((mg.tuple_dir(self._ar(), base, cd_wt["diff_hash"]) / "summary.json").exists())
+
+    def test_lock_busy_skips(self):
+        base = self.base
+        (self._ar()).mkdir(parents=True, exist_ok=True)
+        with mg.ProducerLock(self._ar()):
+            rc = mg.cmd_produce(
+                self._produce_args(base_ref=base),
+                reviewer_runner=make_fake_reviewer({"codex": []}),
+                validator_runner=fake_validator_uphold_all)
+        self.assertEqual(rc, 0)  # skip, never crash
+
+    def test_e2e_inscope_commit_produces_then_verify_is_fresh_with_findings(self):
+        # #33 4f-(a) done-bar: an in-scope commit → commit-pinned produce against
+        # the tip → the next push verifies the matching artefact → `fresh` WITH
+        # findings (not `missing`). The medium finding is non-blocking, so the
+        # verdict is pass (fresh) yet the findings table is populated.
+        base = self.base
+        self.repo.write("a.py", "x = 1\n")
+        T = self.repo.commit_all("ship in-scope work")
+        mg.cmd_produce(self._produce_args(base_ref=base, tip_sha=T),
+                       reviewer_runner=make_fake_reviewer({"codex": [_finding("medium")]}),
+                       validator_runner=fake_validator_uphold_all)
+        cd = mg.canonical_diff_at_commit(self.root, base, T, RG, IG)
+        summary = mg.load_summary(mg.tuple_dir(self._ar(), base, cd["diff_hash"]))
+        self.assertEqual(summary["verdict"], "pass")        # medium does not block
+        self.assertEqual(len(summary["findings"]), 1)       # fresh WITH a finding
+        rc = mg.cmd_verify(_verify_ns(self.root, base_sha=base, tip_sha=T,
+                                      enforcement="client-side-blocking"))
+        self.assertEqual(rc, 0)                              # fresh PASS, not missing
+
+
+class TestCmdProduceCoalesce(ProduceFixture):
+    """#33 B1 — the producer coalesces: on finishing it re-evaluates HEAD and
+    produces the current tip if its diff_hash moved, so a batch of commits then a
+    single push lands the LATEST tip fresh despite the single producer lock. (The
+    batch-then-push case re-logged `missing` pre-#33: only base..C1 was ever
+    produced while verify wanted base..C2.)"""
+
+    def _produce_args(self, *, base_ref=None, coalesce=False):
+        ns = type("NS", (), {})()
+        ns.cwd = str(self.root)
+        ns.base_ref = base_ref
+        ns.tip_sha = None
+        ns.coalesce = coalesce
+        ns.force = False
+        ns.intent = None
+        ns.intent_from = None
+        return ns
+
+    def _ar(self):
+        return self.root / mg.DEFAULT_CONFIG["artifact_root"]
+
+    def test_coalesce_single_commit_produces_once(self):
+        base = self.base
+        self.repo.write("a.py", "c1 = 1\n")
+        c1 = self.repo.commit_all("C1")
+        calls = {"n": 0}
+
+        def r(name, cfg, cd, sub, cwd, uf):
+            calls["n"] += 1
+            return _agent_msg_jsonl([]), 0
+        mg.cmd_produce(self._produce_args(base_ref=base, coalesce=True),
+                       reviewer_runner=r, validator_runner=fake_validator_uphold_all)
+        # Exactly one produce, then converge — the verdict line (ⓑ) is not double-counted.
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(mg.read_pending(self._ar())["tip_sha"], c1)
+
+    def test_coalesce_produces_latest_tip_when_head_advances_mid_produce(self):
+        base = self.base
+        self.repo.write("a.py", "c1 = 1\n")
+        c1 = self.repo.commit_all("C1")
+        state = {"calls": 0}
+
+        def advancing_reviewer(name, cfg, cd, sub_dir, cwd, user_focus):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                # A new in-scope commit lands WHILE the C1 review is in flight.
+                self.repo.write("a.py", "c1 = 1\nc2 = 2\n")
+                self.repo.commit_all("C2")
+            return _agent_msg_jsonl([]), 0
+        rc = mg.cmd_produce(self._produce_args(base_ref=base, coalesce=True),
+                            reviewer_runner=advancing_reviewer,
+                            validator_runner=fake_validator_uphold_all)
+        self.assertEqual(rc, 0)
+        c2 = self.repo.git("rev-parse", "HEAD").stdout.strip()
+        self.assertNotEqual(c1, c2)  # sanity: HEAD advanced during the C1 produce
+        # The LATEST committed tip (C2) — exactly what the next push verifies —
+        # has a fresh artefact (coalescing converged to it).
+        cd_c2 = mg.canonical_diff_at_commit(self.root, base, c2, RG, IG)
+        self.assertTrue((mg.tuple_dir(self._ar(), base, cd_c2["diff_hash"]) / "summary.json").exists())
+        self.assertEqual(mg.read_pending(self._ar())["tip_sha"], c2)  # tracks latest
+        self.assertGreaterEqual(state["calls"], 2)  # C1 then C2 both reviewed
+
+    def test_coalesce_out_of_scope_commit_produces_nothing(self):
+        base = self.base
+        (self.root / ".codex-review").mkdir(exist_ok=True)
+        (self.root / ".codex-review" / "junk").write_text("z\n")
+        self.repo.git("add", ".codex-review/junk")
+        self.repo.git("commit", "-q", "-m", "ignored-path only")
+        calls = {"n": 0}
+
+        def r(name, cfg, cd, sub, cwd, uf):
+            calls["n"] += 1
+            return _agent_msg_jsonl([]), 0
+        rc = mg.cmd_produce(self._produce_args(base_ref=base, coalesce=True),
+                            reviewer_runner=r, validator_runner=fake_validator_uphold_all)
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls["n"], 0)  # nothing in scope → the gate reviews nothing
+
+
+class TestVerifyPendingBaseAgreement(ProduceFixture):
+    """#33 G2 — the auto-producer hashes its LOCAL base while pre-push verify
+    resolves the REMOTE base; a stale local `origin/<default>` diverges them and
+    verify would re-log `missing`. Fix: on a miss at the remote base, verify
+    consults the pending tuple, trusts the producer's recorded base, and
+    RE-DERIVES the diff from the COMMITTED tip against it (Finding-1 preserved)."""
+
+    def _produce_args(self, *, base_ref=None, tip_sha=None):
+        ns = type("NS", (), {})()
+        ns.cwd = str(self.root)
+        ns.base_ref = base_ref
+        ns.tip_sha = tip_sha
+        ns.coalesce = False
+        ns.force = False
+        ns.intent = None
+        ns.intent_from = None
+        return ns
+
+    def _ar(self):
+        return self.root / mg.DEFAULT_CONFIG["artifact_root"]
+
+    def _produce_pinned(self, base, tip, findings=None):
+        mg.cmd_produce(
+            self._produce_args(base_ref=base, tip_sha=tip),
+            reviewer_runner=make_fake_reviewer({"codex": findings or []}),
+            validator_runner=fake_validator_uphold_all)
+
+    def test_g2_stale_remote_base_resolves_via_pending(self):
+        B0 = self.base
+        self.repo.write("a.py", "tip = 1\n")
+        T = self.repo.commit_all("pushed tip T")
+        self._produce_pinned(B0, T)  # artefact at (B0, diff(B0..T)) + pending{base B0, tip T}
+        # The remote default advanced to a divergent commit Y (≠ B0) — exactly the
+        # stale-local-origin case where verify's resolved base diverges from the
+        # producer's. A push then verifies the OLD tip T against the new base Y.
+        # Stage README.md explicitly (NOT `add -A`): in production `.codex-review/`
+        # is gitignored, so the artefact cache is never committed; the fixture has
+        # no .gitignore, so `add -A` would commit (then `checkout` would delete) it.
+        self.repo.git("checkout", "-q", "-b", "remote-sim", B0)
+        self.repo.write("README.md", "remote moved on\n")
+        self.repo.git("add", "README.md")
+        self.repo.git("commit", "-q", "-m", "Y (remote advanced)")
+        Y = self.repo.git("rev-parse", "HEAD").stdout.strip()
+        self.repo.git("checkout", "-q", "main")
+        # Sanity: no artefact at the remote-base tuple.
+        cd_YT = mg.canonical_diff_at_commit(self.root, Y, T, RG, IG)
+        self.assertFalse((mg.tuple_dir(self._ar(), Y, cd_YT["diff_hash"]) / "summary.json").exists())
+        # verify still PASSES — found via the producer's recorded base B0.
+        rc = mg.cmd_verify(_verify_ns(self.root, base_sha=Y, tip_sha=T,
+                                      enforcement="client-side-blocking"))
+        self.assertEqual(rc, 0)
+
+    def test_g2_pending_for_a_different_tip_does_not_pass_unreviewed_tip(self):
+        # Security pin (Finding-1 lineage): a pending tuple for tip T1 must NOT
+        # let an UNREVIEWED tip T2 pass. verify matches pending by tip_sha.
+        B0 = self.base
+        self.repo.write("a.py", "t1 = 1\n")
+        T1 = self.repo.commit_all("T1 (reviewed)")
+        self._produce_pinned(B0, T1)  # pending tip = T1
+        self.repo.write("a.py", "t2 = 2\n")
+        self.repo.git("add", "a.py")  # explicit (see G2 note above re: add -A)
+        self.repo.git("commit", "-q", "-m", "T2 (NOT reviewed)")
+        T2 = self.repo.git("rev-parse", "HEAD").stdout.strip()
+        rc = mg.cmd_verify(_verify_ns(self.root, base_sha=B0, tip_sha=T2,
+                                      enforcement="client-side-blocking"))
+        self.assertEqual(rc, 1)  # T2 has no artefact and no matching pending → BLOCK
+
+    def test_g2_divergent_producer_base_does_not_pass(self):
+        # ADR-0014 multi-pusher/divergent residual → `missing`, NOT a pass. The
+        # producer's base (B0) must be an ANCESTOR of the push's resolved base for
+        # the review (B0..T) to cover the pushed range; a divergent base (no shared
+        # history) means the review covers a different range → do not trust it.
+        B0 = self.base
+        self.repo.write("a.py", "t = 1\n")
+        T = self.repo.commit_all("T")
+        self._produce_pinned(B0, T)  # pending base = B0
+        # An orphan base O with NO shared history with B0 (the remote diverged).
+        self.repo.git("checkout", "-q", "--orphan", "orphan")
+        self.repo.write("README.md", "divergent root\n")
+        self.repo.git("add", "README.md")
+        self.repo.git("commit", "-q", "-m", "O (divergent remote)")
+        O = self.repo.git("rev-parse", "HEAD").stdout.strip()
+        self.repo.git("checkout", "-q", "main")
+        self.assertFalse(mg._is_ancestor(self.root, B0, O))  # sanity: divergent
+        rc = mg.cmd_verify(_verify_ns(self.root, base_sha=O, tip_sha=T,
+                                      enforcement="client-side-blocking"))
+        self.assertEqual(rc, 1)  # divergent producer base → missing → BLOCK
+
+    def test_g2_does_not_pass_a_failing_artefact(self):
+        # If the producer's artefact at the pending base is a BLOCK (verdict≠pass),
+        # the consult must not manufacture a pass — freshness_state≠fresh. #39: the
+        # terminal failing artefact is reported as `review BLOCKED N finding(s)`
+        # (the producer's outcome), NOT `missing`, and the rescue does NOT wait on
+        # it (terminal on the first poll → no wait token). Block decision unchanged.
+        B0 = self.base
+        self.repo.write("a.py", "vuln = 1\n")
+        T = self.repo.commit_all("T")
+        self._produce_pinned(B0, T, findings=[_finding("high")])  # blocking artefact
+        self.repo.git("checkout", "-q", "-b", "remote-sim", B0)
+        self.repo.write("README.md", "x\n")
+        self.repo.git("add", "README.md")  # explicit (see G2 note above re: add -A)
+        self.repo.git("commit", "-q", "-m", "Y")
+        Y = self.repo.git("rev-parse", "HEAD").stdout.strip()
+        self.repo.git("checkout", "-q", "main")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = mg.cmd_verify(_verify_ns(self.root, base_sha=Y, tip_sha=T,
+                                          enforcement="client-side-blocking"))
+        out = buf.getvalue()
+        self.assertEqual(rc, 1)  # blocking artefact stays a block, not a forged pass
+        self.assertIn("review BLOCKED 1 finding(s)", out)  # #39: real detail, not missing
+        self.assertNotIn("no review artefact", out)
+        self.assertNotIn("waited", out)  # never waits on a terminal failing artefact
+
+
+class TestVerifyBoundedWait(ProduceFixture):
+    """#33 G3 / 4c — pre-push verify, finding no fresh artefact but a MATCHING
+    pending tuple with a LIVE producer, polls until summary.json appears (bounded
+    by the produce-latency budget), then emits the `waited Ns` token. A dead/
+    orphaned producer or non-matching tuple → `missing` immediately. The wait runs
+    no Codex/Claude and writes no artefact (#30 D1)."""
+
+    def setUp(self):
+        super().setUp()
+        self.B0 = self.base
+        self.repo.write("a.py", "tip = 1\n")
+        self.T = self.repo.commit_all("pushed tip T")
+        self.cfg = self._cfg()
+        self.ar = self.root / self.cfg.artifact_root
+        self.scope = mg.review_scope_hash(self.cfg)
+        self.dh = mg.canonical_diff_at_commit(self.root, self.B0, self.T, RG, IG)["diff_hash"]
+        self._keys = ["MERGE_GATE_VERIFY_WAIT_POLL_SECONDS",
+                      "MERGE_GATE_VERIFY_WAIT_SECONDS",
+                      "MERGE_GATE_VERIFY_WAIT_HEARTBEAT_SECONDS"]
+        self._saved = {k: os.environ.get(k) for k in self._keys}
+        os.environ["MERGE_GATE_VERIFY_WAIT_POLL_SECONDS"] = "0.05"
+        os.environ["MERGE_GATE_VERIFY_WAIT_HEARTBEAT_SECONDS"] = "0.1"
+        os.environ["MERGE_GATE_VERIFY_WAIT_SECONDS"] = "30"
+
+    def tearDown(self):
+        for k in self._keys:
+            if self._saved[k] is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = self._saved[k]
+        super().tearDown()
+
+    def _fresh_summary(self):
+        return {"schema_version": 1, "base_sha": self.B0, "diff_hash": self.dh,
+                "review_scope_hash": self.scope, "verdict": "pass", "block_count": 0,
+                "reviewers": ["codex"], "findings": []}
+
+    def _failing_summary(self, block_count=2):
+        # A terminal BLOCKING artefact (verdict≠pass) the producer wrote — what an
+        # in-flight produce yields when it finds blocking issues. freshness_state →
+        # "failing" (#39 fixture).
+        return {"schema_version": 1, "base_sha": self.B0, "diff_hash": self.dh,
+                "review_scope_hash": self.scope, "verdict": "block",
+                "block_count": block_count, "reviewers": ["codex"], "findings": []}
+
+    def _write_pending(self, **over):
+        tup = {"base_sha": self.B0, "diff_hash": self.dh, "tip_sha": self.T,
+               "pid": os.getpid()}
+        tup.update(over)
+        mg.write_pending(self.ar, tup)
+
+    def _verify(self, enforcement="client-side-blocking"):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = mg.cmd_verify(_verify_ns(self.root, base_sha=self.B0,
+                                          tip_sha=self.T, enforcement=enforcement))
+        return rc, buf.getvalue()
+
+    def test_waits_for_inflight_producer_then_passes(self):
+        self._write_pending()  # live pid (this process), artefact not yet written
+
+        def writer():
+            time.sleep(0.5)
+            mg.write_summary_atomic(mg.tuple_dir(self.ar, self.B0, self.dh),
+                                    self._fresh_summary())
+        th = threading.Thread(target=writer)
+        th.start()
+        self.addCleanup(th.join)
+        rc, out = self._verify()
+        self.assertEqual(rc, 0)
+        self.assertIn("waited", out)
+        self.assertIn("for in-flight produce", out)
+        self.assertIn("PASS", out)
+
+    def test_dead_producer_no_artefact_is_missing_immediately(self):
+        self._write_pending(pid=999_999_999)  # not a live process
+        rc, out = self._verify()
+        self.assertEqual(rc, 1)
+        self.assertNotIn("waited", out)  # never waited on a dead producer
+
+    def test_budget_exhausted_reports_missing_and_writes_no_artefact(self):
+        os.environ["MERGE_GATE_VERIFY_WAIT_SECONDS"] = "0"  # zero budget
+        self._write_pending()  # live pid, but the artefact never appears
+        rc, out = self._verify()
+        self.assertEqual(rc, 1)
+        # D1: verify must not have written an artefact itself.
+        self.assertFalse((mg.tuple_dir(self.ar, self.B0, self.dh) / "summary.json").exists())
+
+    def test_no_matching_pending_no_wait(self):
+        # no pending tuple at all → missing immediately, no wait.
+        rc, out = self._verify()
+        self.assertEqual(rc, 1)
+        self.assertNotIn("waited", out)
+
+    def test_spinup_window_base_null_then_resolves(self):
+        # The hook wrote {tip_sha, pid} before the producer computed its diff
+        # (base/diff null). verify must wait, not declare missing, until the
+        # producer fills the tuple and writes the artefact.
+        self._write_pending(base_sha=None, diff_hash=None)
+
+        def producer():
+            time.sleep(0.4)
+            self._write_pending()  # producer fills base + diff
+            mg.write_summary_atomic(mg.tuple_dir(self.ar, self.B0, self.dh),
+                                    self._fresh_summary())
+        th = threading.Thread(target=producer)
+        th.start()
+        self.addCleanup(th.join)
+        rc, out = self._verify()
+        self.assertEqual(rc, 0)
+        self.assertIn("waited", out)
+
+    def test_advisory_waits_then_passes(self):
+        # Same wait under advisory enforcement (the live measurement venue).
+        self._write_pending()
+
+        def writer():
+            time.sleep(0.4)
+            mg.write_summary_atomic(mg.tuple_dir(self.ar, self.B0, self.dh),
+                                    self._fresh_summary())
+        th = threading.Thread(target=writer)
+        th.start()
+        self.addCleanup(th.join)
+        rc, out = self._verify(enforcement="advisory")
+        self.assertEqual(rc, 0)
+        self.assertIn("waited", out)
+        self.assertIn("PASS", out)
+
+    # ---- #39: an in-flight produce that finishes FAILING during the bounded wait
+    # must be reported as `failing` / `review BLOCKED N finding(s)` against the
+    # producer's base, NOT `missing` / `no review artefact`. The block DECISION is
+    # unchanged (both still exit non-zero under enforcement); only the printed
+    # state/detail changes (no Axis-A reset). The genuinely-absent paths above stay
+    # `missing` (the staleness signal is preserved, not collapsed into findings).
+
+    def test_failing_inflight_during_wait_reports_blocked_not_missing(self):
+        self._write_pending()  # live pid, artefact not yet written
+
+        def writer():
+            time.sleep(0.5)
+            mg.write_summary_atomic(mg.tuple_dir(self.ar, self.B0, self.dh),
+                                    self._failing_summary(block_count=2))
+        th = threading.Thread(target=writer)
+        th.start()
+        self.addCleanup(th.join)
+        rc, out = self._verify()  # client-side-blocking
+        self.assertEqual(rc, 1)                          # block decision unchanged
+        self.assertIn("review BLOCKED 2 finding(s)", out)
+        self.assertNotIn("no review artefact", out)      # NOT the `missing` detail
+        self.assertIn("waited", out)                     # it waited during the race
+
+    def test_failing_inflight_advisory_reports_blocked_findings(self):
+        # The live measurement venue is advisory. The same in-flight failing produce
+        # must surface `review BLOCKED N finding(s)` (exit 0, not blocking) so the
+        # measurement wrapper parses `failing-findings` (intervention=no) instead of
+        # `missing` — #39 AC 6, with no wrapper change.
+        self._write_pending()
+
+        def writer():
+            time.sleep(0.4)
+            mg.write_summary_atomic(mg.tuple_dir(self.ar, self.B0, self.dh),
+                                    self._failing_summary(block_count=1))
+        th = threading.Thread(target=writer)
+        th.start()
+        self.addCleanup(th.join)
+        rc, out = self._verify(enforcement="advisory")
+        self.assertEqual(rc, 0)                           # advisory never blocks
+        self.assertIn("review BLOCKED 1 finding(s)", out)
+        self.assertIn("not blocking (advisory profile)", out)
+        self.assertNotIn("no review artefact", out)
+
+    def test_genuine_missing_still_reports_missing_detail(self):
+        # No pending tuple at all → genuinely absent → still `missing` /
+        # `no review artefact`, never collapsed into a findings-block (AC 2).
+        rc, out = self._verify(enforcement="advisory")
+        self.assertEqual(rc, 0)
+        self.assertIn("no review artefact for this base+diff", out)
+        self.assertNotIn("review BLOCKED", out)
 
 
 class TestFinding4DiffReadFailsClosed(ProduceFixture):
@@ -993,8 +1483,8 @@ class TestC1StaleValidatorArtifact(ProduceFixture):
 
     def test_c1_failed_rerun_ignores_stale_and_unlinks(self):
         sub = self._sub_dir()
-        codex_json = sub / "codex.json"
-        codex_json.write_text(json.dumps({"result": {"findings": []}}))
+        findings_json = sub / "findings.json"
+        findings_json.write_text(json.dumps({"result": {"findings": []}}))
         # Seed a STALE artefact from a "prior run" (an all-dismiss aggregate that,
         # if trusted, would silently un-block).
         stale = sub / "validators.json"
@@ -1008,12 +1498,12 @@ class TestC1StaleValidatorArtifact(ProduceFixture):
         def fake_run(cmd, **kw):
             return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"boom")
 
-        orig = mg.subprocess.run
+        orig = mg._run_reaped
         try:
-            mg.subprocess.run = fake_run
-            out = mg.default_validator_runner("codex", codex_json, sub, self.root, None)
+            mg._run_reaped = fake_run
+            out = mg.default_validator_runner("codex", findings_json, sub, self.root, None)
         finally:
-            mg.subprocess.run = orig
+            mg._run_reaped = orig
         # Pre-fix: returns the stale all-dismiss dict (no unlink, no rc check).
         self.assertIsNone(out)
         self.assertFalse(stale.exists())  # stale file was cleared
@@ -1025,8 +1515,8 @@ class TestC1StaleValidatorArtifact(ProduceFixture):
         # trivially (nothing to unlink), so only the rc-check can return None.
         # Pre-rc-check (or if the rc-check block were removed): returns the dict.
         sub = self._sub_dir()
-        codex_json = sub / "codex.json"
-        codex_json.write_text(json.dumps({"result": {"findings": []}}))
+        findings_json = sub / "findings.json"
+        findings_json.write_text(json.dumps({"result": {"findings": []}}))
         written = {"validators": [],
                    "aggregate": [{"finding_id": "codex:finding-0",
                                   "severity": "critical", "verdict": "dismiss"}]}
@@ -1035,18 +1525,18 @@ class TestC1StaleValidatorArtifact(ProduceFixture):
             (sub / "validators.json").write_text(json.dumps(written))
             return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"warn")
 
-        orig = mg.subprocess.run
+        orig = mg._run_reaped
         try:
-            mg.subprocess.run = fake_run
-            out = mg.default_validator_runner("codex", codex_json, sub, self.root, None)
+            mg._run_reaped = fake_run
+            out = mg.default_validator_runner("codex", findings_json, sub, self.root, None)
         finally:
-            mg.subprocess.run = orig
+            mg._run_reaped = orig
         self.assertIsNone(out)  # rc!=0 → distrust the written artefact (fail-safe)
 
     def test_c1_successful_run_returns_fresh(self):
         sub = self._sub_dir()
-        codex_json = sub / "codex.json"
-        codex_json.write_text(json.dumps({"result": {"findings": []}}))
+        findings_json = sub / "findings.json"
+        findings_json.write_text(json.dumps({"result": {"findings": []}}))
         fresh = {"validators": [{"name": "claude", "lines": []}],
                  "aggregate": [{"finding_id": "codex:finding-0",
                                 "severity": "high", "verdict": "uphold"}]}
@@ -1056,12 +1546,12 @@ class TestC1StaleValidatorArtifact(ProduceFixture):
             (sub / "validators.json").write_text(json.dumps(fresh))
             return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
 
-        orig = mg.subprocess.run
+        orig = mg._run_reaped
         try:
-            mg.subprocess.run = fake_run
-            out = mg.default_validator_runner("codex", codex_json, sub, self.root, None)
+            mg._run_reaped = fake_run
+            out = mg.default_validator_runner("codex", findings_json, sub, self.root, None)
         finally:
-            mg.subprocess.run = orig
+            mg._run_reaped = orig
         self.assertEqual(out, fresh)
 
 
@@ -1200,6 +1690,61 @@ class TestProducerLock(ProduceFixture):
         # released → can re-acquire
         with mg.ProducerLock(ar):
             pass
+
+
+# --------------------------------------------------------------------------
+# #33 — pending-tuple persistence (the post-commit producer ↔ verify hand-off).
+# Shape {base_sha, diff_hash, tip_sha, pid}; lives in artifact_root/.pending.json
+# (co-located with the producer lock, gitignored). verify reads it to (G2) trust
+# the matched tuple's base and (G3) key liveness off the producer PID.
+# --------------------------------------------------------------------------
+class TestPendingTuple(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.ar = Path(self._tmp.name) / ".codex-review" / "local"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_path_under_artifact_root(self):
+        self.assertEqual(mg.pending_path(self.ar), self.ar / ".pending.json")
+
+    def test_read_absent_is_none(self):
+        self.assertIsNone(mg.read_pending(self.ar))
+
+    def test_write_then_read_roundtrip(self):
+        tup = {"base_sha": "b" * 40, "diff_hash": "d" * 64,
+               "tip_sha": "t" * 40, "pid": 12345}
+        mg.write_pending(self.ar, tup)
+        self.assertEqual(mg.read_pending(self.ar), tup)
+
+    def test_write_creates_parent_dir(self):
+        # artifact_root may not exist yet when the post-commit hook fires.
+        self.assertFalse(self.ar.exists())
+        mg.write_pending(self.ar, {"tip_sha": "x", "pid": 1})
+        self.assertTrue(mg.pending_path(self.ar).exists())
+
+    def test_overwrite_tracks_latest(self):
+        # the coalescing producer rewrites the tuple to the latest committed tip.
+        mg.write_pending(self.ar, {"tip_sha": "old", "pid": 1})
+        mg.write_pending(self.ar, {"tip_sha": "new", "pid": 2})
+        self.assertEqual(mg.read_pending(self.ar)["tip_sha"], "new")
+
+    def test_read_corrupt_is_none(self):
+        mg.pending_path(self.ar).parent.mkdir(parents=True, exist_ok=True)
+        mg.pending_path(self.ar).write_text("{not json", encoding="utf-8")
+        self.assertIsNone(mg.read_pending(self.ar))
+
+    def test_pid_alive_self_true(self):
+        self.assertTrue(mg.pid_alive(os.getpid()))
+
+    def test_pid_alive_dead_false(self):
+        # A PID that is almost certainly not a live process.
+        self.assertFalse(mg.pid_alive(999_999_999))
+
+    def test_pid_alive_none_or_garbage_false(self):
+        self.assertFalse(mg.pid_alive(None))
+        self.assertFalse(mg.pid_alive("notapid"))
 
 
 # --------------------------------------------------------------------------
@@ -1352,15 +1897,282 @@ class TestM1SandboxInvariant(ProduceFixture):
             rec["cmd"] = cmd
             return subprocess.CompletedProcess(cmd, 0, stdout=b"{}", stderr=b"")
 
-        orig = mg.subprocess.run
+        # codex now routes through _run_reaped (bounded), not bare subprocess.run.
+        orig = mg._run_reaped
         try:
-            mg.subprocess.run = fake_run
+            mg._run_reaped = fake_run
             mg.default_reviewer_runner("codex", cfg, cd, sub, self.root, "")
         finally:
-            mg.subprocess.run = orig
+            mg._run_reaped = orig
         cmd = rec["cmd"]
         self.assertEqual(cmd[cmd.index("--sandbox") + 1], "read-only")
         self.assertIn("--model", cmd)        # benign arg appended
+
+    def test_codex_reviewer_passes_subprocess_timeout(self):
+        # #30 follow-up: the codex reviewer subprocess MUST carry a hard wall-clock
+        # bound (parity with the claude reviewer/validator) so a wedged `codex exec`
+        # fails closed rather than hanging produce indefinitely.
+        cfg, cd, sub = self._ctx([])
+        rec = {}
+
+        def fake_run(cmd, **kw):
+            rec["timeout"] = kw.get("timeout")
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"{}", stderr=b"")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            mg.default_reviewer_runner("codex", cfg, cd, sub, self.root, "")
+        finally:
+            mg._run_reaped = orig
+        self.assertEqual(rec["timeout"], mg._CODEX_REVIEWER_TIMEOUT_S)
+        self.assertIsInstance(mg._CODEX_REVIEWER_TIMEOUT_S, int)
+
+    def test_codex_reviewer_timeout_fails_closed(self):
+        # On TimeoutExpired the runner returns a non-zero exit → reviewer failure →
+        # produce blocks (fail-closed), never a silent pass with no review.
+        cfg, cd, sub = self._ctx([])
+
+        def fake_run(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            out, rc = mg.default_reviewer_runner("codex", cfg, cd, sub, self.root, "")
+        finally:
+            mg._run_reaped = orig
+        self.assertEqual(rc, 124)
+        self.assertIn("timed out", out.lower())
+
+
+class TestReviewerRawStdoutPersisted(ProduceFixture):
+    """#34 — both reviewer runners must persist the RAW reviewer stdout to
+    <sub_dir>/reviewer.stdout (bytes, before normalize), alongside the existing
+    reviewer.stderr. Without this sink a malformed-payload / codex-failed row is
+    forensically unrecoverable — only the normalized _fallback summary survives,
+    so prose vs prose-preamble-then-JSON vs wrong-envelope can't be told apart
+    from disk. Mirrors #15 (validator raw_stdout)."""
+
+    def _codex_ctx(self):
+        cfg = self._cfg(reviewers=["codex"])
+        base, cd = self._cd(cfg)
+        sub = self.root / ".codex-review" / "local" / "x" / "codex"
+        sub.mkdir(parents=True, exist_ok=True)
+        return cfg, cd, sub
+
+    def test_codex_runner_persists_raw_stdout(self):
+        cfg, cd, sub = self._codex_ctx()
+        raw = b'{"type":"item","x":1}\n{"type":"done"}\n'
+
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout=raw, stderr=b"warn\n")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            mg.default_reviewer_runner("codex", cfg, cd, sub, self.root, "")
+        finally:
+            mg._run_reaped = orig
+        self.assertEqual((sub / "reviewer.stdout").read_bytes(), raw)
+
+    def _claude_ctx(self):
+        cfg = self._cfg(reviewers=["claude"],
+                        reviewer_config={"claude": {"bin": "claude"}})
+        base, cd = self._cd(cfg)
+        sub = self.root / ".codex-review" / "local" / "t" / "claude"
+        sub.mkdir(parents=True, exist_ok=True)
+        return cfg, cd, sub
+
+    def _run_claude(self, stdout, stderr=b""):
+        cfg, cd, sub = self._claude_ctx()
+
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=stderr)
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            out, rc = mg.default_reviewer_runner("claude", cfg, cd, sub, self.root, "")
+        finally:
+            mg._run_reaped = orig
+        return sub, out, rc
+
+    def test_claude_malformed_payload_raw_envelope_survives(self):
+        # The #34 trigger: a clean run whose `.result` drifted to PROSE classifies
+        # as malformed-payload, yet the full unparsed envelope must survive on disk
+        # so prose vs prose-preamble-then-JSON is distinguishable post-hoc.
+        envelope = (b'{"type":"result","subtype":"success","is_error":false,'
+                    b'"result":"Sure! Overall the diff looks fine to me."}')
+        sub, out, rc = self._run_claude(envelope)
+        self.assertEqual((sub / "reviewer.stdout").read_bytes(), envelope)
+        self.assertEqual(
+            mg.normalize_claude_json(out, rc)["codex"]["status"],
+            "malformed-payload")
+
+    def test_empty_stdout_preserved_as_empty_file(self):
+        # #15 empty-string rule: empty stdout means "no review happened"
+        # (normalize → missing-result) and is ITSELF an audit signal, so the file
+        # must exist and be empty — never be skipped. Guards against a future
+        # "write only if p.stdout" optimization that would erase that signal.
+        sub, out, rc = self._run_claude(b"")
+        f = sub / "reviewer.stdout"
+        self.assertTrue(f.exists())
+        self.assertEqual(f.read_bytes(), b"")
+        self.assertEqual(
+            mg.normalize_claude_json(out, rc)["codex"]["status"], "missing-result")
+
+
+class TestReviewerArtefactStaleClear(ProduceFixture):
+    """#38 — reviewer.stdout/.stderr must be PRE-CLEARED before each (re)run, so a
+    same-tuple re-produce whose rerun fails EARLY (timeout→124 / exception→127 /
+    unsafe-arg refusal→2 — all of which return BEFORE the writes) leaves NO stale
+    artefact from a prior successful run. Mirrors default_validator_runner's
+    validators.{json,md} clear (#15/C1, see TestC1StaleValidatorArtifact). After
+    the clear a MISSING file is the unambiguous "no output captured this run"
+    signal; an auditor reading a codex-failed/timeout row never mis-attributes
+    stale bytes from a different, successful run."""
+
+    def _seed(self, sub):
+        # A prior SUCCESSFUL run's bytes that must NOT survive a failed rerun.
+        (sub / "reviewer.stdout").write_bytes(b"PRIOR STDOUT")
+        (sub / "reviewer.stderr").write_bytes(b"PRIOR STDERR")
+
+    def _codex_ctx(self, **rc):
+        cfg = self._cfg(reviewers=["codex"],
+                        reviewer_config={"codex": {"bin": "codex", **rc}})
+        base, cd = self._cd(cfg)
+        sub = self.root / ".codex-review" / "local" / "x" / "codex"
+        sub.mkdir(parents=True, exist_ok=True)
+        return cfg, cd, sub
+
+    def _claude_ctx(self, **rc):
+        cfg = self._cfg(reviewers=["claude"],
+                        reviewer_config={"claude": {"bin": "claude", **rc}})
+        base, cd = self._cd(cfg)
+        sub = self.root / ".codex-review" / "local" / "t" / "claude"
+        sub.mkdir(parents=True, exist_ok=True)
+        return cfg, cd, sub
+
+    def _assert_cleared(self, sub):
+        self.assertFalse((sub / "reviewer.stdout").exists(),
+                         "stale reviewer.stdout survived a failed rerun")
+        self.assertFalse((sub / "reviewer.stderr").exists(),
+                         "stale reviewer.stderr survived a failed rerun")
+
+    def _run_with(self, name, cfg, cd, sub, fake):
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake
+            return mg.default_reviewer_runner(name, cfg, cd, sub, self.root, "")
+        finally:
+            mg._run_reaped = orig
+
+    def test_codex_timeout_clears_stale(self):
+        cfg, cd, sub = self._codex_ctx()
+        self._seed(sub)
+
+        def fake(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, 1)
+
+        _, rc = self._run_with("codex", cfg, cd, sub, fake)
+        self.assertEqual(rc, 124)          # fail-closed timeout
+        self._assert_cleared(sub)
+
+    def test_codex_exception_clears_stale(self):
+        cfg, cd, sub = self._codex_ctx()
+        self._seed(sub)
+
+        def fake(cmd, **kw):
+            raise OSError("boom")
+
+        _, rc = self._run_with("codex", cfg, cd, sub, fake)
+        self.assertEqual(rc, 127)
+        self._assert_cleared(sub)
+
+    def test_codex_unsafe_arg_refusal_clears_stale(self):
+        # The unsafe-arg refusal returns (msg, 2) BEFORE _run_reaped — the path
+        # AC#2 singles out. Patch _run_reaped to PROVE it is never reached.
+        cfg, cd, sub = self._codex_ctx(args=["--add-dir", "/tmp"])  # not sandbox-neutral
+        self._seed(sub)
+
+        def must_not_run(cmd, **kw):
+            raise AssertionError("reviewer ran despite an unsafe-arg refusal")
+
+        _, rc = self._run_with("codex", cfg, cd, sub, must_not_run)
+        self.assertEqual(rc, 2)            # refusal, no subprocess
+        self._assert_cleared(sub)
+
+    def test_claude_timeout_clears_stale(self):
+        cfg, cd, sub = self._claude_ctx()
+        self._seed(sub)
+
+        def fake(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, 1)
+
+        _, rc = self._run_with("claude", cfg, cd, sub, fake)
+        self.assertEqual(rc, 124)
+        self._assert_cleared(sub)
+
+    def test_claude_exception_clears_stale(self):
+        cfg, cd, sub = self._claude_ctx()
+        self._seed(sub)
+
+        def fake(cmd, **kw):
+            raise OSError("boom")
+
+        _, rc = self._run_with("claude", cfg, cd, sub, fake)
+        self.assertEqual(rc, 127)          # claude `except Exception → 127` path
+        self._assert_cleared(sub)
+
+    def test_claude_unsafe_arg_refusal_clears_stale(self):
+        cfg, cd, sub = self._claude_ctx(args=["--add-dir", "/tmp"])
+        self._seed(sub)
+
+        def must_not_run(cmd, **kw):
+            raise AssertionError("claude reviewer ran despite an unsafe-arg refusal")
+
+        _, rc = self._run_with("claude", cfg, cd, sub, must_not_run)
+        self.assertEqual(rc, 2)
+        self._assert_cleared(sub)
+
+    def test_happy_path_overwrites_prior_with_this_run(self):
+        # A successful rerun REPLACES the prior bytes (clear + write), never leaves
+        # the prior content — and the #34 sinks stay populated this run.
+        cfg, cd, sub = self._codex_ctx()
+        self._seed(sub)
+        raw = b'{"type":"item.completed","item":{"type":"agent_message","text":"{}"}}\n'
+
+        def fake(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout=raw, stderr=b"new err")
+
+        self._run_with("codex", cfg, cd, sub, fake)
+        self.assertEqual((sub / "reviewer.stdout").read_bytes(), raw)
+        self.assertEqual((sub / "reviewer.stderr").read_bytes(), b"new err")
+
+    def test_unlink_failure_propagates_fail_closed(self):
+        # claude:finding-1 (#38 dogfood): a real (non-absent) unlink failure must
+        # PROPAGATE, not be swallowed — else a stale file we could not remove would
+        # be silently presented as this-run evidence. `unlink(missing_ok=True)`
+        # ignores only "already absent"; an EPERM-style failure raises, aborting the
+        # runner before it can run (fail-closed → produce errors → verify `missing`).
+        cfg, cd, sub = self._codex_ctx()
+        self._seed(sub)
+        orig_unlink, orig_run = mg.Path.unlink, mg._run_reaped
+
+        def boom(self, *a, **k):
+            raise PermissionError("read-only sub_dir")
+
+        def must_not_run(*a, **k):
+            raise AssertionError("reviewer ran despite a non-absent unlink failure")
+
+        try:
+            mg.Path.unlink = boom
+            mg._run_reaped = must_not_run
+            with self.assertRaises(PermissionError):
+                mg.default_reviewer_runner("codex", cfg, cd, sub, self.root, "")
+        finally:
+            mg.Path.unlink, mg._run_reaped = orig_unlink, orig_run
 
 
 class TestM1SeverityFailsClosed(ProduceFixture):
@@ -1451,8 +2263,8 @@ class TestM3ValidatorInvocationContract(ProduceFixture):
     def test_m3_headless_invocation_contract(self):
         sub = self.root / ".codex-review" / "local" / "t" / "codex"
         sub.mkdir(parents=True, exist_ok=True)
-        codex_json = sub / "codex.json"
-        codex_json.write_text(json.dumps({"result": {"findings": []}}))
+        findings_json = sub / "findings.json"
+        findings_json.write_text(json.dumps({"result": {"findings": []}}))
         intent = self.root / ".intent.txt"
         intent.write_text("ctx", encoding="utf-8")
         rec = {}
@@ -1463,23 +2275,108 @@ class TestM3ValidatorInvocationContract(ProduceFixture):
             (sub / "validators.json").write_text(json.dumps({"aggregate": []}))
             return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
 
-        orig = mg.subprocess.run
+        orig = mg._run_reaped
         try:
-            mg.subprocess.run = fake_run
-            mg.default_validator_runner("codex", codex_json, sub, self.root, intent)
+            mg._run_reaped = fake_run
+            mg.default_validator_runner("codex", findings_json, sub, self.root, intent)
         finally:
-            mg.subprocess.run = orig
+            mg._run_reaped = orig
         cmd = rec["cmd"]
         self.assertEqual(cmd[:2], ["claude", "-p"])
         self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "bypassPermissions")
         slash = cmd[2]
         self.assertIn("/run-codex-validators", slash)
         self.assertIn("--soft-mode false", slash)
-        self.assertIn(f"--codex-json {codex_json}", slash)
+        self.assertIn(f"--codex-json {findings_json}", slash)
         self.assertIn(f"--out-dir {sub}", slash)
         self.assertIn(f"--intent-from {intent}", slash)
         # recursion guard set CHILD-only with value "1" (never in produce's own env)
         self.assertEqual(rec["env"].get("MERGE_GATE_PRODUCER_RUNNING"), "1")
+
+    def test_m3_strips_nested_session_markers(self):
+        # The validator child must run as a FRESH session: a `claude -p` inheriting
+        # CLAUDECODE / CLAUDE_CODE_* no-ops to EMPTY output, which F2 then turns into
+        # blanket over-block (poisoning #31's discernment metric). Mirrors the #32
+        # reviewer fix. We must NOT add `--setting-sources ""` (the validator needs
+        # the /run-codex-validators skill from a settings source), only strip markers.
+        sub = self.root / ".codex-review" / "local" / "t" / "codex"
+        sub.mkdir(parents=True, exist_ok=True)
+        findings_json = sub / "findings.json"
+        findings_json.write_text(json.dumps({"result": {"findings": []}}))
+        rec = {}
+
+        def fake_run(cmd, **kw):
+            rec["cmd"] = cmd
+            rec["env"] = kw.get("env", {})
+            (sub / "validators.json").write_text(json.dumps({"aggregate": []}))
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        saved = {k: os.environ.get(k) for k in
+                 ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT")}
+        os.environ["CLAUDECODE"] = "1"
+        os.environ["CLAUDE_CODE_ENTRYPOINT"] = "cli"
+        os.environ["CLAUDE_CODE_SSE_PORT"] = "1234"
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            mg.default_validator_runner("codex", findings_json, sub, self.root, None)
+        finally:
+            mg._run_reaped = orig
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.assertNotIn("CLAUDECODE", rec["env"])
+        self.assertNotIn("CLAUDE_CODE_ENTRYPOINT", rec["env"])
+        self.assertNotIn("CLAUDE_CODE_SSE_PORT", rec["env"])
+        self.assertEqual(rec["env"].get("MERGE_GATE_PRODUCER_RUNNING"), "1")
+        self.assertIn("PATH", rec["env"])  # auth/config env preserved
+        # the validator must NOT isolate settings sources (it needs the skill)
+        self.assertNotIn("--setting-sources", rec["cmd"])
+
+    def test_m3_passes_subprocess_timeout(self):
+        # #31 seed finding: the validator now does real long-running work (a full
+        # subagent run), so its subprocess MUST carry a hard timeout (fail-closed on
+        # wedge), parity with the reviewer — an unbounded run could hang produce.
+        sub = self.root / ".codex-review" / "local" / "t" / "codex"
+        sub.mkdir(parents=True, exist_ok=True)
+        findings_json = sub / "findings.json"
+        findings_json.write_text(json.dumps({"result": {"findings": []}}))
+        rec = {}
+
+        def fake_run(cmd, **kw):
+            rec["timeout"] = kw.get("timeout")
+            (sub / "validators.json").write_text(json.dumps({"aggregate": []}))
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            mg.default_validator_runner("codex", findings_json, sub, self.root, None)
+        finally:
+            mg._run_reaped = orig
+        self.assertEqual(rec["timeout"], mg._CLAUDE_VALIDATOR_TIMEOUT_S)
+        self.assertIsInstance(mg._CLAUDE_VALIDATOR_TIMEOUT_S, int)
+
+    def test_m3_timeout_fails_closed(self):
+        # On TimeoutExpired the runner returns None (fail-safe) so F2 over-blocks,
+        # never a silent pass with a stale/absent artefact.
+        sub = self.root / ".codex-review" / "local" / "t" / "codex"
+        sub.mkdir(parents=True, exist_ok=True)
+        findings_json = sub / "findings.json"
+        findings_json.write_text(json.dumps({"result": {"findings": []}}))
+
+        def fake_run(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            out = mg.default_validator_runner("codex", findings_json, sub, self.root, None)
+        finally:
+            mg._run_reaped = orig
+        self.assertIsNone(out)
 
 
 # --------------------------------------------------------------------------
@@ -1666,12 +2563,12 @@ class TestNormalizeClaude(unittest.TestCase):
         self.assertEqual(mg._reviewer_model("claude", env), "claude-opus-4-8[1m]")
 
 
-def fake_validator_uphold_no_severity(name, codex_json, sub_dir, cwd, intent_file):
+def fake_validator_uphold_no_severity(name, findings_json, sub_dir, cwd, intent_file):
     """A validator that UPHOLDS every finding but cannot determine severity (the
     finding omitted it, as a soft-schema Claude reviewer can) — so its aggregate
     entry carries NO severity. build_summary must then treat the finding as
     fail-safe 'unknown' and OVER-block, never default to 'low' and un-block."""
-    doc = json.loads(Path(codex_json).read_text())
+    doc = json.loads(Path(findings_json).read_text())
     agg = [{"finding_id": f["id"], "verdict": "uphold"}  # NOTE: no 'severity'
            for f in doc["result"]["findings"]]
     vj = {"validators": [{"name": "claude", "lines": []}], "aggregate": agg}
@@ -1774,12 +2671,12 @@ class TestClaudeReviewerRecursionGuard(ProduceFixture):
             rec["timeout"] = kw.get("timeout")
             return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=b"")
 
-        orig = mg.subprocess.run
+        orig = mg._run_reaped
         try:
-            mg.subprocess.run = fake_run
+            mg._run_reaped = fake_run
             out, rc = mg.default_reviewer_runner("claude", cfg, cd, sub, self.root, "")
         finally:
-            mg.subprocess.run = orig
+            mg._run_reaped = orig
         return rec, cd, out, rc
 
     def test_child_env_carries_recursion_guard(self):
@@ -1823,6 +2720,31 @@ class TestClaudeReviewerRecursionGuard(ProduceFixture):
                 os.environ["CLAUDECODE"] = saved
         self.assertNotIn("CLAUDECODE", env)
         self.assertEqual(env["MERGE_GATE_PRODUCER_RUNNING"], "1")
+
+    def test_fresh_session_env_preserves_oauth_token(self):
+        # #31 seed finding: CLAUDE_CODE_OAUTH_TOKEN matches the CLAUDE_CODE_ prefix but
+        # is AUTH, not a session marker — it MUST survive the strip, else token-auth
+        # (CI) breaks and the reviewer/validator fail -> over-block. Session markers
+        # (CLAUDE_CODE_ENTRYPOINT) are still stripped.
+        saved = {k: os.environ.get(k) for k in
+                 ("CLAUDECODE", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK",
+                  "CLAUDE_CODE_ENTRYPOINT")}
+        os.environ["CLAUDECODE"] = "1"
+        os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = "tok-xyz"
+        os.environ["CLAUDE_CODE_USE_BEDROCK"] = "1"
+        os.environ["CLAUDE_CODE_ENTRYPOINT"] = "cli"
+        try:
+            env = mg._fresh_claude_session_env({"MERGE_GATE_PRODUCER_RUNNING": "1"})
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.assertNotIn("CLAUDECODE", env)
+        self.assertNotIn("CLAUDE_CODE_ENTRYPOINT", env)        # session marker stripped
+        self.assertEqual(env.get("CLAUDE_CODE_OAUTH_TOKEN"), "tok-xyz")  # auth preserved
+        self.assertEqual(env.get("CLAUDE_CODE_USE_BEDROCK"), "1")        # provider preserved
 
     def test_invocation_contract(self):
         rec, cd, _out, _rc = self._run()
@@ -1911,12 +2833,12 @@ class TestClaudeReviewerRecursionGuard(ProduceFixture):
 
         def fake_run(cmd, **kw):
             raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
-        orig = mg.subprocess.run
+        orig = mg._run_reaped
         try:
-            mg.subprocess.run = fake_run
+            mg._run_reaped = fake_run
             out, rc = mg.default_reviewer_runner("claude", cfg, cd, sub, self.root, "")
         finally:
-            mg.subprocess.run = orig
+            mg._run_reaped = orig
         self.assertNotEqual(rc, 0)
         self.assertIn("timed out", out)
         self.assertEqual(mg.normalize_claude_json(out, rc)["codex"]["status"],
@@ -2042,12 +2964,12 @@ class TestClaudeReviewerArgGuard(ProduceFixture):
                 cmd, 0, stdout=b'{"type":"result","subtype":"success",'
                               b'"result":"{\\"findings\\":[]}"}', stderr=b"")
 
-        orig = mg.subprocess.run
+        orig = mg._run_reaped
         try:
-            mg.subprocess.run = fake_run
+            mg._run_reaped = fake_run
             out, rc = mg.default_reviewer_runner("claude", cfg, cd, sub, self.root, "")
         finally:
-            mg.subprocess.run = orig
+            mg._run_reaped = orig
         self.assertEqual(rc, 0)
         self.assertIn("--model", rec["cmd"])
         self.assertEqual(rec["cmd"][rec["cmd"].index("--model") + 1],
@@ -2078,7 +3000,7 @@ class TestTwoRealReviewersE2E(ProduceFixture):
         tdir = mg.tuple_dir(self.root / cfg.artifact_root, base, cd["diff_hash"])
         # per-reviewer independent validation into its own sub-dir
         for r in ("codex", "claude"):
-            self.assertTrue((tdir / r / "codex.json").exists(), r)
+            self.assertTrue((tdir / r / "findings.json").exists(), r)
             self.assertTrue((tdir / r / "validators.json").exists(), r)
         ids = {f["id"] for f in summary["findings"]}
         self.assertEqual(ids, {"codex:finding-0", "claude:finding-0"})
@@ -2087,7 +3009,7 @@ class TestTwoRealReviewersE2E(ProduceFixture):
         self.assertEqual(summary["block_count"], 1)
         # the claude finding genuinely came through the CLAUDE adapter (its
         # envelope is not codex JSONL) and reached the shared contract
-        claude_doc = json.loads((tdir / "claude" / "codex.json").read_text())
+        claude_doc = json.loads((tdir / "claude" / "findings.json").read_text())
         self.assertEqual(claude_doc["codex"]["status"], "ok")
         self.assertEqual(claude_doc["result"]["findings"][0]["id"], "claude:finding-0")
         self.assertEqual(claude_doc["result"]["findings"][0]["severity"], "critical")
@@ -2188,6 +3110,302 @@ class TestReviewerSetOptIn(unittest.TestCase):
         a = mg.Config(mg._merge_defaults(mg.DEFAULT_CONFIG, {"reviewers": ["codex"]}))
         b = mg.Config(mg._merge_defaults(mg.DEFAULT_CONFIG, {"reviewers": ["codex", "claude"]}))
         self.assertNotEqual(mg.review_scope_hash(a), mg.review_scope_hash(b))
+
+
+class RunReapedProcessGroupReap(unittest.TestCase):
+    """_run_reaped (#30 follow-up — orphan reap): plain subprocess.run(timeout=)
+    SIGKILLs only the DIRECT child, so the headless `claude -p` reviewer/validator's
+    descendants (tool Bash, MCP, a wedged turn) get reparented to init and leak —
+    indefinitely on the very wedge that fires the timeout. _run_reaped runs the
+    child in its own session and SIGKILLs the whole group on timeout, preserving
+    run()'s contract (returns CompletedProcess / re-raises TimeoutExpired)."""
+
+    def _install_popen(self, communicate):
+        recorded = {}
+
+        class FakePopen:
+            def __init__(self, *args, **kwargs):
+                self.pid = 4242
+                self.args = args[0] if args else None
+                self.returncode = None
+                recorded["args"] = self.args
+                recorded["kwargs"] = kwargs
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def communicate(self, input=None, timeout=None):
+                return communicate(self, input, timeout)
+
+        orig = mg.subprocess.Popen
+        mg.subprocess.Popen = FakePopen
+        self.addCleanup(lambda: setattr(mg.subprocess, "Popen", orig))
+        return recorded
+
+    def test_starts_new_session_and_translates_capture(self):
+        def comm(proc, input, timeout):
+            proc.returncode = 0
+            return (b"out", b"err")
+
+        rec = self._install_popen(comm)
+        cp = mg._run_reaped(["claude", "-p"], input=b"x",
+                            capture_output=True, timeout=5)
+        self.assertTrue(rec["kwargs"]["start_new_session"])  # own process group
+        self.assertEqual(rec["kwargs"]["stdin"], mg.subprocess.PIPE)
+        self.assertEqual(rec["kwargs"]["stdout"], mg.subprocess.PIPE)
+        self.assertEqual(rec["kwargs"]["stderr"], mg.subprocess.PIPE)
+        self.assertEqual((cp.returncode, cp.stdout, cp.stderr), (0, b"out", b"err"))
+
+    def test_timeout_killpgs_whole_group_and_reraises(self):
+        calls = {"comm": 0}
+
+        def comm(proc, input, timeout):
+            calls["comm"] += 1
+            if timeout is not None:      # the bounded call wedges
+                raise subprocess.TimeoutExpired(proc.args, timeout)
+            proc.returncode = -9         # the post-kill drain
+            return (b"", b"")
+
+        self._install_popen(comm)
+        killed = {}
+        orig = mg.os.killpg
+        mg.os.killpg = lambda pgid, sig: killed.update(pgid=pgid, sig=sig)
+        self.addCleanup(lambda: setattr(mg.os, "killpg", orig))
+        with self.assertRaises(subprocess.TimeoutExpired):
+            mg._run_reaped(["claude", "-p"], capture_output=True, timeout=1)
+        self.assertEqual(killed["pgid"], 4242)            # child pid == pgid
+        self.assertEqual(killed["sig"], mg.signal.SIGKILL)
+        self.assertEqual(calls["comm"], 2)                # bounded wait + drain
+
+    def test_killpg_tolerates_dead_group(self):
+        # An already-exited child/group → ProcessLookupError must be swallowed,
+        # else the reap itself would crash produce on a benign race.
+        orig = mg.os.killpg
+
+        def boom(*a):
+            raise ProcessLookupError()
+
+        mg.os.killpg = boom
+        self.addCleanup(lambda: setattr(mg.os, "killpg", orig))
+        mg._killpg(999999)  # must not raise
+
+
+# --------------------------------------------------------------------------
+# #37 — producer-asset hermeticity (asset resolution, unified gate, freshness key)
+# --------------------------------------------------------------------------
+class TestResolveClaudeDir(unittest.TestCase):
+    """#37 — the producer roots its assets at its OWN checkout (resolve_claude_dir)
+    iff the COMPLETE runtime set is co-located there, else $HOME/.claude; the asset
+    paths derive from that root. A real $HOME/.claude install resolves to $HOME →
+    byte-identical to the pre-#37 hardcoded paths."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _lay_out(self, root, *, drop=None):
+        for i, rel in enumerate(mg.RUNTIME_SET_RELPATHS):
+            if i == drop:
+                continue
+            p = root.joinpath(*rel)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x")
+
+    def test_pins_checkout_when_complete(self):
+        root = (self.tmp / "co").resolve()
+        self._lay_out(root)
+        mf = root / "scripts" / "merge_gate_local.py"
+        self.assertEqual(mg.resolve_claude_dir(mf, self.tmp / "home"), root)
+
+    def test_falls_back_when_any_member_absent(self):
+        home = self.tmp / "home"
+        for drop in range(len(mg.RUNTIME_SET_RELPATHS)):
+            with self.subTest(drop=drop):
+                root = (self.tmp / f"co_{drop}").resolve()
+                self._lay_out(root, drop=drop)
+                mf = root / "scripts" / "merge_gate_local.py"
+                self.assertEqual(mg.resolve_claude_dir(mf, home), home / ".claude")
+
+    def test_installed_resolves_to_home_byte_identical(self):
+        home = self.tmp / "home"
+        cdir = home / ".claude"
+        self._lay_out(cdir)
+        mf = cdir / "scripts" / "merge_gate_local.py"
+        self.assertEqual(mg.resolve_claude_dir(mf, home), cdir)
+
+    def test_runtime_set_complete_predicate(self):
+        root = (self.tmp / "rc").resolve()
+        self._lay_out(root)
+        self.assertTrue(mg.runtime_set_complete(root))
+        root.joinpath(*mg.RUNTIME_SET_RELPATHS[2]).unlink()   # drop an asset
+        self.assertFalse(mg.runtime_set_complete(root))
+
+    def test_symlinked_module_resolves_to_real_repo(self):
+        # f60c84a claude:finding-1: a symlinked install reads assets next to the REAL
+        # module location. resolve_claude_dir's .resolve() follows a symlink to
+        # <repo>/scripts/merge_gate_local.py and roots assets at <repo>.
+        repo = (self.tmp / "repo").resolve()
+        self._lay_out(repo)
+        link_dir = self.tmp / "link" / "scripts"
+        link_dir.mkdir(parents=True)
+        link = link_dir / "merge_gate_local.py"
+        try:
+            link.symlink_to(repo / "scripts" / "merge_gate_local.py")
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unsupported on this platform")
+        self.assertEqual(mg.resolve_claude_dir(link, self.tmp / "home"), repo)
+
+
+class TestAssetIdentityInScopeHash(unittest.TestCase):
+    """#37 codex:finding-0 — asset CONTENT enters review_scope_hash so a `pass`
+    cached under one checkout's prompt/schema is not reused under different assets,
+    WITHOUT churning on a no-op relocation/tool bump (D4: hash CONTENT, not path)."""
+
+    def _cfg(self):
+        return mg.Config(mg._merge_defaults(mg.DEFAULT_CONFIG, {}))
+
+    @contextlib.contextmanager
+    def _assets(self, prompt_bytes, schema_bytes):
+        op, os_ = mg.ADVERSARIAL_PROMPT_PATH, mg.SCHEMA_PATH
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "adversarial-review.md"; p.write_bytes(prompt_bytes)
+            s = Path(d) / "review-output.schema.json"; s.write_bytes(schema_bytes)
+            mg.ADVERSARIAL_PROMPT_PATH, mg.SCHEMA_PATH = p, s
+            try:
+                yield
+            finally:
+                mg.ADVERSARIAL_PROMPT_PATH, mg.SCHEMA_PATH = op, os_
+
+    def test_prompt_content_change_busts_hash(self):
+        cfg = self._cfg()
+        with self._assets(b"PROMPT A", b"{}"):
+            ha = mg.review_scope_hash(cfg)
+        with self._assets(b"PROMPT B", b"{}"):
+            hb = mg.review_scope_hash(cfg)
+        self.assertNotEqual(ha, hb)
+
+    def test_schema_content_change_busts_hash(self):
+        cfg = self._cfg()
+        with self._assets(b"P", b'{"v":1}'):
+            ha = mg.review_scope_hash(cfg)
+        with self._assets(b"P", b'{"v":2}'):
+            hb = mg.review_scope_hash(cfg)
+        self.assertNotEqual(ha, hb)
+
+    def test_relocation_same_content_does_not_churn(self):
+        # The D4 property: SAME asset CONTENT at a DIFFERENT path (checkout vs $HOME)
+        # → SAME hash. A tool bump leaves asset content unchanged, so it too is
+        # content-stable here (binary versions never enter review_scope_hash anyway).
+        cfg = self._cfg()
+        with self._assets(b"SAME PROMPT", b'{"same":"schema"}'):
+            h1 = mg.review_scope_hash(cfg)
+        with self._assets(b"SAME PROMPT", b'{"same":"schema"}'):
+            h2 = mg.review_scope_hash(cfg)
+        self.assertEqual(h1, h2)
+
+    def test_missing_asset_hashes_to_sentinel_not_raise(self):
+        # verify must stay deterministic on a broken install: a missing asset hashes
+        # to a sentinel (never matches a real produce → stale), not a traceback.
+        self.assertEqual(mg._asset_sha(Path("/nonexistent/asset")), "missing")
+
+
+class TestProducerAssetHermeticForeignCheckout(unittest.TestCase):
+    """#37 AC#5 — a REAL `produce` from a foreign checkout with $HOME emptied loads
+    the producer's OWN prompt + schema (not just its imports) and writes a real
+    summary artefact. The CLAUDE reviewer is used precisely because it HARD-reads
+    BOTH assets before running: render_adversarial_prompt reads the prompt, and
+    _run_claude_reviewer reads SCHEMA_PATH (`--json-schema <inline content>`). Zero
+    API: a fake `claude` on PATH serves BOTH roles — as the reviewer it prints a
+    zero-finding envelope; as the validator it writes no validators.json → None →
+    moot at 0 findings. PRE-FIX (assets hardcoded to $HOME) + empty $HOME → those
+    reads hit non-existent files → crash → NO summary; this test would fail there."""
+
+    # Zero-finding `claude -p --output-format json` envelope (reviewer role). The
+    # validator role ignores stdout and reads validators.json (absent → None).
+    _FAKE_ENVELOPE = ('{"type":"result","subtype":"success","is_error":false,'
+                      '"result":"{\\"verdict\\":\\"pass\\",\\"summary\\":\\"ok\\",'
+                      '\\"findings\\":[]}"}')
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        # 1. Foreign checkout OUTSIDE ~/.claude with the COMPLETE runtime set (real
+        #    files): the import closure + both producer assets.
+        co = self.tmp / "checkout"
+        (co / "hooks").mkdir(parents=True)
+        (co / "scripts").mkdir(parents=True)
+        hooks_src = SCRIPTS.parent / "hooks"
+        shutil.copy(mg.__file__, co / "scripts" / "merge_gate_local.py")
+        shutil.copy(hooks_src / "merge_gate_scheduler.py",
+                    co / "hooks" / "merge_gate_scheduler.py")
+        prompt_dst = co / "scripts" / "merge-gate-assets" / "adversarial-review.md"
+        schema_dst = co / "skills" / "setup-merge-gate" / "templates" / "review-output.schema.json"
+        prompt_dst.parent.mkdir(parents=True, exist_ok=True)
+        schema_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(mg.ADVERSARIAL_PROMPT_PATH, prompt_dst)
+        shutil.copy(mg.SCHEMA_PATH, schema_dst)
+        self.co_mgl = co / "scripts" / "merge_gate_local.py"
+
+        # 2. A repo (origin/main lagging so base..work-tree is a real range) whose
+        #    harness.toml selects the claude reviewer (which hard-reads both assets).
+        toml = (
+            '[merge-gate]\n'
+            'profile = "local"\n'
+            '[merge-gate.local.producer]\n'
+            'reviewers = ["claude"]\n'
+        )
+        repo_dir = self.tmp / "repo"
+        repo_dir.mkdir()
+        self.repo = GitRepo(repo_dir)
+        self.repo.write("harness.toml", toml)
+        self.repo.write("base.txt", "hello\n")
+        base = self.repo.commit_all("base")
+        self.repo.git("update-ref", "refs/remotes/origin/main", base)
+        self.repo.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        self.repo.write("a.py", "x = 1\n")   # in-scope untracked change to review
+
+        # 3. Empty $HOME + a fake `claude` shadowing the real one on PATH. As reviewer
+        #    it prints the zero-finding envelope; as validator it writes no
+        #    validators.json (→ None → moot). reviewer_bin defaults to "claude", so
+        #    both the reviewer and the hardcoded validator invocation hit this fake.
+        emptyhome = self.tmp / "emptyhome"
+        emptyhome.mkdir()
+        fakebin = self.tmp / "fakebin"
+        fakebin.mkdir()
+        fc = fakebin / "claude"
+        fc.write_text(f"#!/bin/sh\nprintf '%s' '{self._FAKE_ENVELOPE}'\n")
+        fc.chmod(0o755)
+        self.env = {**os.environ,
+                    "HOME": str(emptyhome),
+                    "PATH": f"{fakebin}{os.pathsep}{os.environ.get('PATH', '')}"}
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_foreign_checkout_empty_home_produces_real_summary(self):
+        r = subprocess.run([sys.executable, str(self.co_mgl),
+                            "--cwd", str(self.repo.path), "produce"],
+                           env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0,
+                         f"produce exited {r.returncode}; the foreign-checkout producer "
+                         f"could not load its OWN assets with $HOME emptied.\n"
+                         f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}")
+        summaries = list((self.repo.path / ".codex-review" / "local").rglob("summary.json"))
+        self.assertTrue(summaries,
+                        f"no summary.json written — the producer did not load its own "
+                        f"prompt/schema.\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}")
+        summary = json.loads(summaries[0].read_text())
+        # A REAL verdict (the producer loaded the prompt → reviewed; 0 fake findings).
+        self.assertEqual(summary["verdict"], "pass")
+        self.assertEqual(summary.get("block_count", 0), 0)
+        # The summary's scope hash folded in THIS checkout's asset content (#37).
+        self.assertIn("review_scope_hash", summary)
 
 
 if __name__ == "__main__":
