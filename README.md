@@ -141,7 +141,11 @@ the review in the background, so there is no per-PR CI cost. The
   files, launches a backgrounded, commit-pinned `produce` for the committed
   tip. Repo-scoped where its predecessors (`merge_gate_mark.py` dirty marker
   + `merge_gate_scheduler.py` Stop scheduler) were session-cwd-scoped and
-  silently never fired in a two-repo workflow. `test_merge_gate_post_commit.py`,
+  silently never fired in a two-repo workflow. Only the scheduler's Stop
+  *registration* was retired — `merge_gate_scheduler.py` itself stays a live
+  runtime dependency: the shared state library (`repo_state_dir` /
+  `load_state` / `save_state`) that `merge_gate_post_commit.py` imports, and
+  part of `merge_gate_local.py`'s pinned runtime set. `test_merge_gate_post_commit.py`,
   `test_merge_gate_hooks.py`, and `test_merge_gate_local.py` cover the bundle.
 - `merge_gate_measure.py` / `merge_gate_adjudicate.py` — the measurement
   layer for the soft-mode window: `measure` instruments around the gate
