@@ -81,6 +81,28 @@ class TestHarnessMerge(unittest.TestCase):
         d = self._parse(il.merge_harness_toml(existing))
         self.assertEqual(d["merge-gate"]["profile"], "local")
 
+    def test_equivalent_header_spelling_edited_not_duplicated(self):
+        # `[ merge-gate ]` declares the SAME table as `[merge-gate]` (TOML folds
+        # whitespace around a bare key). The old exact-string compare missed it,
+        # appended a second [merge-gate] and produced a duplicate-table parse
+        # failure — the record_profile codex:finding-0 class, fixed here via the
+        # shared toml_sections.section_is.
+        existing = "[ merge-gate ]\n# annotated\nsoft = true\n"
+        out = il.merge_harness_toml(existing)
+        d = self._parse(out)                      # raises if a table is declared twice
+        self.assertEqual(d["merge-gate"]["profile"], "local")
+        self.assertEqual(d["merge-gate"]["soft"], True)
+        self.assertIn("# annotated", out)
+
+    def test_equivalent_local_table_spelling_not_duplicated(self):
+        # An existing quoted/spaced local table must count as "has local" so the
+        # canonical LOCAL_BLOCK is not appended a second time.
+        once = il.merge_harness_toml("")
+        spaced = once.replace("[merge-gate.local]", '[ merge-gate . "local" ]', 1)
+        twice = il.merge_harness_toml(spaced)
+        self._parse(twice)                        # still valid TOML, no dup tables
+        self.assertEqual(twice.count("enforcement_policy"), 1)
+
 
 class TestInstallActions(unittest.TestCase):
     def setUp(self):
@@ -103,22 +125,42 @@ class TestInstallActions(unittest.TestCase):
         body = (self.repo / ".gitignore").read_text()
         self.assertEqual(body.count(".codex-review/"), 1)
 
-    def test_register_global_hooks_idempotent(self):
+    def test_deregister_stale_hooks_removes_retired_pair(self):
+        # #33 — the Stop scheduler + PostToolUse mark are RETIRED (ADR-0014). The
+        # installer no longer registers them and cleans any stale registrations
+        # left on the machine, preserving every unrelated hook.
         settings = self.repo / "settings.json"
-        # seed with an unrelated existing hook to prove we preserve it
-        settings.write_text(json.dumps({"hooks": {"Stop": [
-            {"hooks": [{"type": "command", "command": "python3 other.py"}]}]}}))
-        self.assertTrue(il.register_global_hooks(settings))
-        self.assertFalse(il.register_global_hooks(settings))  # second is no-op
+        settings.write_text(json.dumps({"hooks": {
+            "Stop": [
+                {"hooks": [{"type": "command", "command": "python3 other.py"}]},
+                {"hooks": [{"type": "command", "command": il.SCHED_CMD}]},
+            ],
+            "PostToolUse": [
+                {"matcher": "Edit|Write",
+                 "hooks": [{"type": "command", "command": il.MARK_CMD}]},
+            ],
+        }}))
+        self.assertTrue(il.deregister_stale_hooks(settings))   # removed the retired pair
+        self.assertFalse(il.deregister_stale_hooks(settings))  # idempotent (no-op now)
         data = json.loads(settings.read_text())
-        cmds = [h["command"] for g in data["hooks"]["Stop"] for h in g["hooks"]]
-        self.assertIn("python3 other.py", cmds)             # preserved
-        self.assertIn(il.SCHED_CMD, cmds)                   # added
-        post = [h["command"] for g in data["hooks"]["PostToolUse"] for h in g["hooks"]]
-        self.assertIn(il.MARK_CMD, post)
-        # matcher set on the PostToolUse entry
-        matchers = [g.get("matcher") for g in data["hooks"]["PostToolUse"]]
-        self.assertIn("Edit|Write", matchers)
+        stop_cmds = [h["command"] for g in data["hooks"].get("Stop", []) for h in g["hooks"]]
+        self.assertIn("python3 other.py", stop_cmds)           # unrelated preserved
+        self.assertNotIn(il.SCHED_CMD, stop_cmds)              # stale scheduler gone
+        post_cmds = [h["command"] for g in data["hooks"].get("PostToolUse", [])
+                     for h in g["hooks"]]
+        self.assertNotIn(il.MARK_CMD, post_cmds)               # stale mark gone
+
+    def test_install_does_not_register_retired_hooks(self):
+        # A fresh install must NOT add the Stop/PostToolUse hooks any more.
+        settings = self.repo / "settings.json"
+        settings.write_text(json.dumps({"hooks": {}}))
+        il.deregister_stale_hooks(settings)
+        data = json.loads(settings.read_text())
+        cmds = [h.get("command")
+                for grp in data.get("hooks", {}).values()
+                for g in grp for h in g.get("hooks", [])]
+        self.assertNotIn(il.SCHED_CMD, cmds)
+        self.assertNotIn(il.MARK_CMD, cmds)
 
     def test_teardown_gha_removes_workflow(self):
         wf = self.repo / ".github" / "workflows" / "codex-review.yml"
@@ -306,10 +348,133 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertTrue((repo / "harness.toml").exists())
             self.assertTrue((repo / ".git" / "hooks" / "pre-push").exists())
+            self.assertTrue((repo / ".git" / "hooks" / "post-commit").exists())
             self.assertTrue((repo / ".gitignore").exists())
-            self.assertTrue(settings.exists())
+            # #33 — the installer no longer registers any GLOBAL hooks (the Stop
+            # scheduler + PostToolUse mark are retired), so on a clean machine it
+            # leaves settings.json untouched (nothing stale to remove).
             d = tomllib.loads((repo / "harness.toml").read_text())
             self.assertEqual(d["merge-gate"]["profile"], "local")
+
+    def test_full_local_install_writes_post_commit_and_no_stale_hooks(self):
+        # #33 — a full install lands the post-commit trigger and does NOT register
+        # the retired Stop/PostToolUse hooks.
+        with tempfile.TemporaryDirectory() as t:
+            repo = Path(t) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            settings = Path(t) / "settings.json"
+            r = subprocess.run(
+                [sys.executable, str(HERE / "install_local.py"),
+                 "--repo", str(repo), "--settings", str(settings)],
+                capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            pc = repo / ".git" / "hooks" / "post-commit"
+            self.assertTrue(pc.exists())
+            self.assertTrue(os.access(pc, os.X_OK))
+            self.assertIn(il.POST_COMMIT_MARKER, pc.read_text())
+            # On a clean machine no settings.json is written (nothing to register
+            # or deregister); if it exists, it must not carry the retired hooks.
+            data = json.loads(settings.read_text()) if settings.exists() else {}
+            cmds = [h.get("command")
+                    for grp in data.get("hooks", {}).values()
+                    for g in grp for h in g.get("hooks", [])]
+            self.assertNotIn(il.SCHED_CMD, cmds)
+            self.assertNotIn(il.MARK_CMD, cmds)
+
+
+POST_TEMPLATE = HERE.parent / "templates" / "post-commit"
+
+
+class TestPostCommitInstall(unittest.TestCase):
+    """#33 4e — install the post-commit hook mirroring install_pre_push's marker
+    + foreign-backup convention (post-commit.pre-merge-gate)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        self.hooks = self.repo / ".git" / "hooks"
+        self.hooks.mkdir(parents=True)
+        self.dest = self.hooks / "post-commit"
+        self.backup = self.hooks / "post-commit.pre-merge-gate"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_install_basic(self):
+        dest = il.install_post_commit(self.repo, POST_TEMPLATE)
+        self.assertTrue(dest.exists())
+        self.assertTrue(os.access(dest, os.X_OK))
+        self.assertIn(il.POST_COMMIT_MARKER, dest.read_text())
+
+    def test_foreign_hook_backed_up(self):
+        foreign = "#!/bin/sh\necho husky post-commit\n"
+        self.dest.write_text(foreign)
+        il.install_post_commit(self.repo, POST_TEMPLATE)
+        self.assertTrue(self.backup.exists())
+        self.assertEqual(self.backup.read_text(), foreign)
+        self.assertIn(il.POST_COMMIT_MARKER, self.dest.read_text())
+
+    def test_own_hook_overwritten_no_backup(self):
+        self.dest.write_text(f"#!/bin/sh\n# {il.POST_COMMIT_MARKER}\necho old\n")
+        il.install_post_commit(self.repo, POST_TEMPLATE)
+        self.assertFalse(self.backup.exists())
+        self.assertIn("merge_gate_post_commit", self.dest.read_text())
+
+    def test_existing_backup_not_clobbered(self):
+        self.backup.write_text("#!/bin/sh\necho ORIGINAL\n")
+        self.dest.write_text("#!/bin/sh\necho some other foreign\n")
+        il.install_post_commit(self.repo, POST_TEMPLATE)
+        self.assertEqual(self.backup.read_text(), "#!/bin/sh\necho ORIGINAL\n")
+        self.assertIn(il.POST_COMMIT_MARKER, self.dest.read_text())
+
+
+class TestUninstall(unittest.TestCase):
+    """#33 4e — --uninstall removes our pre-push + post-commit hooks (restoring a
+    foreign backup when present) and deregisters the stale global hooks."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        self.hooks = self.repo / ".git" / "hooks"
+        self.hooks.mkdir(parents=True)
+        self.settings = self.repo / "settings.json"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_uninstall_removes_our_hooks(self):
+        il.install_pre_push(self.repo, TEMPLATE)
+        il.install_post_commit(self.repo, POST_TEMPLATE)
+        self.settings.write_text(json.dumps({"hooks": {
+            "Stop": [{"hooks": [{"type": "command", "command": il.SCHED_CMD}]}],
+            "PostToolUse": [{"matcher": "Edit|Write",
+                             "hooks": [{"type": "command", "command": il.MARK_CMD}]}],
+        }}))
+        il.uninstall(self.repo, self.settings)
+        self.assertFalse((self.hooks / "pre-push").exists())
+        self.assertFalse((self.hooks / "post-commit").exists())
+        cmds = [h["command"] for grp in json.loads(self.settings.read_text())
+                .get("hooks", {}).values() for g in grp for h in g["hooks"]]
+        self.assertNotIn(il.SCHED_CMD, cmds)
+        self.assertNotIn(il.MARK_CMD, cmds)
+
+    def test_uninstall_restores_foreign_backup(self):
+        foreign = "#!/bin/sh\necho husky post-commit\n"
+        self.dest = self.hooks / "post-commit"
+        self.dest.write_text(foreign)
+        il.install_post_commit(self.repo, POST_TEMPLATE)  # backs foreign up
+        il.uninstall(self.repo, self.settings)
+        # foreign hook restored, backup consumed
+        self.assertEqual((self.hooks / "post-commit").read_text(), foreign)
+        self.assertFalse((self.hooks / "post-commit.pre-merge-gate").exists())
+
+    def test_uninstall_leaves_foreign_hook_without_marker_alone(self):
+        # A post-commit that is NOT ours (no marker, no backup) must be untouched.
+        foreign = "#!/bin/sh\necho not ours\n"
+        (self.hooks / "post-commit").write_text(foreign)
+        il.uninstall(self.repo, self.settings)
+        self.assertEqual((self.hooks / "post-commit").read_text(), foreign)
 
 
 if __name__ == "__main__":

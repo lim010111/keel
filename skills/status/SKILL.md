@@ -30,13 +30,27 @@ project state, for any project that uses the local-markdown issue tracker
 
 3. Update **only the narrative block** by editing `STATUS.md` between the two
    markers. Base the update on this session's actual work — recent git
-   commits, issue files that changed, and what the user said. Keep three
+   commits, issue files that changed, and what the user said. The narrative is
+   a **status board, not a changelog** (full rule:
+   `docs/agents/issue-tracker.md` § STATUS.md editing rules). Keep three
    subsections:
-   - `## Current focus` — one or two sentences on the active piece of work.
-   - `## Start here next session` — the concrete next action(s). Name the
-     issue number. If blocked, say on what.
-   - `## Open decisions` — unresolved questions worth not forgetting. Remove
-     items once decided; an empty list is fine.
+   - `## Current focus` — posture + the gate table + **one pointer** to the
+     active track (issue # + spec path). NOT a per-session story: no commit
+     hashes, finding-IDs, or "what this pass caught" narration. That detail
+     belongs in the issue's `> **Resolution:**` block.
+   - `## Start here next session` — the concrete next action *per active
+     track*, not an AC ledger. One line per track, labelled by track
+     (능동/병행/휴면) and naming its issue + feature; dormant tracks get a
+     one-line "don't touch". Overwrite each line every session (never append).
+     *Which* AC is next lives in the issue's checkbox order — point at the
+     issue, don't mirror its checklist. A commit hash/PR# is fine only as a
+     *live actionable handle*. (Full rule: `docs/agents/issue-tracker.md`
+     § narrative is a status board.)
+   - `## Open decisions` — **unresolved** questions only. Delete each the
+     moment it is decided (its outcome moves to the issue/ADR); an empty list
+     is fine.
+   If you're tempted to append this session's history to *Current focus*,
+   append it to the issue's Resolution block instead.
 
 4. Do not invent progress. The narrative reflects reality — if nothing moved
    this session, say so plainly rather than padding it.

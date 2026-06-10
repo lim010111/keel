@@ -15,12 +15,18 @@ state. The narrative block between the two markers is preserved verbatim — tha
 is the only part a human or the /status skill edits. Drift is impossible by
 construction: the table is always a projection of the issue files.
 """
+import os
 import re
 import subprocess
 from pathlib import Path
 
 NARRATIVE_START = "<!-- narrative:start -->"
 NARRATIVE_END = "<!-- narrative:end -->"
+
+# Soft ceiling for the narrative block, in characters (~1.8k tokens). A healthy
+# narrative is ~1.5k chars; this is ~4x that, so the banner only fires on real
+# drift from status-board into changelog — not on a normally-sized narrative.
+NARRATIVE_SOFT_LIMIT = 6000
 
 DEFAULT_NARRATIVE = """\
 ## Current focus
@@ -176,6 +182,28 @@ def stale_warning(narrative: str, state_by_num: dict) -> str:
             f"points to {refs}, now done or no longer present. Run `/status`.")
 
 
+def size_warning(narrative: str) -> str:
+    """Return a one-line banner when the narrative has bloated past the soft
+    limit, or '' if within budget.
+
+    The narrative is preserved verbatim — it is the authored half of the
+    document — so nothing trims it automatically. This banner is the only
+    mechanical signal that it has drifted from status-board into changelog.
+    Like stale_warning it is *falsifiable* (literally over the limit), so it
+    will not train the reader to ignore it. The fix is always the same: move
+    per-session forensics (commits, finding-IDs, history) into the issue
+    Resolution blocks and keep Current focus to posture + pointers.
+    """
+    n = len(narrative)
+    if n <= NARRATIVE_SOFT_LIMIT:
+        return ""
+    return (f"> ⚠️ **Narrative oversized** ({n:,} chars > {NARRATIVE_SOFT_LIMIT:,}) "
+            "— STATUS.md is a status board, not a changelog. Move per-session "
+            "detail (commits, finding-IDs, history) into the issue `Resolution` "
+            "blocks; keep *Current focus* to posture + pointers. See "
+            "docs/agents/issue-tracker.md § STATUS.md editing rules.")
+
+
 def feature_section(feature: str, files: list[Path]) -> tuple[str, int, int, dict]:
     """Render one feature's progress bar + issue table.
 
@@ -214,6 +242,11 @@ def feature_section(feature: str, files: list[Path]) -> tuple[str, int, int, dic
 
 
 def main() -> None:
+    # No-op inside a merge-gate produce subprocess: the validator child runs as a
+    # fresh `claude -p` session that loads settings, so its Stop/SessionStart fire
+    # here; regenerating STATUS.md per produce is spurious churn (#31 seed finding).
+    if os.environ.get("MERGE_GATE_PRODUCER_RUNNING") == "1":
+        return
     root = project_root()
     issue_files = sorted((root / ".scratch").glob("*/issues/*.md"))
     if not issue_files:
@@ -239,8 +272,9 @@ def main() -> None:
         state_by_num.update(states)
 
     narrative = read_narrative(status)
-    warning = stale_warning(narrative, state_by_num)
-    banner = f"\n\n{warning}" if warning else ""
+    warnings = [w for w in (stale_warning(narrative, state_by_num),
+                            size_warning(narrative)) if w]
+    banner = ("\n\n" + "\n".join(warnings)) if warnings else ""
 
     content = f"""# Project Status
 

@@ -1,6 +1,7 @@
 ---
 name: daily-dev-log
-description: Reviews all Claude Code sessions active on a given date (default today, local timezone) and writes a Korean per-project markdown dev log into the user's Obsidian vault. Use when asked to "오늘 작업 정리", "오늘 한 일 정리해줘", "dev log 작성", "daily dev log", "오늘 세션 요약", or "summarize today's claude sessions". Pulls from ~/.claude/projects/*/<sessionId>.jsonl and saves to /mnt/c/Users/shine/Documents/Obsidian/0. Daily/Dev log/YYYY/YYYY-MM/YYYY-MM-DD/YYYY-MM-DD.md (the day folder also holds per-session logs under Sessions/, written by the session-dev-log skill).
+disable-model-invocation: true
+description: Reviews all Claude Code sessions active on a given date (default today, local timezone) and writes a Korean per-project markdown dev log into the user's Obsidian vault. Use when asked to "오늘 작업 정리", "오늘 한 일 정리해줘", "dev log 작성", "daily dev log", "오늘 세션 요약", or "summarize today's claude sessions". Pulls from ~/.claude/projects/*/<sessionId>.jsonl and saves to /mnt/c/Users/shine/Documents/Obsidian/0. Daily/Dev log/YYYY/YYYY-MM/YYYY-MM-DD/YYYY-MM-DD-dev.md (the day folder also holds per-session logs under Sessions/, written by the session-dev-log skill).
 ---
 
 # Daily Dev Log
@@ -26,9 +27,9 @@ python3 ~/.claude/skills/daily-dev-log/scripts/collect_today.py --date 2026-05-1
 3. **작성**: 아래 [출력 구조](#출력-구조) 그대로 한국어 마크다운 생성.
 4. **저장 경로 계산**:
    ```
-   /mnt/c/Users/shine/Documents/Obsidian/0. Daily/Dev log/<YYYY>/<YYYY-MM>/<YYYY-MM-DD>/<YYYY-MM-DD>.md
+   /mnt/c/Users/shine/Documents/Obsidian/0. Daily/Dev log/<YYYY>/<YYYY-MM>/<YYYY-MM-DD>/<YYYY-MM-DD>-dev.md
    ```
-   - `<YYYY-MM-DD>` 폴더가 그날의 디렉토리. 그 안의 `Sessions/`에는 단일 세션 로그(`session-dev-log` 스킬 작성)가 들어가고, 이 전체 요약본은 폴더 바로 아래 `<YYYY-MM-DD>.md`로 둔다.
+   - `<YYYY-MM-DD>` 폴더가 그날의 디렉토리. 그 안의 `Sessions/`에는 단일 세션 로그(`session-dev-log` 스킬 작성)가 들어가고, 이 전체 요약본은 폴더 바로 아래 `<YYYY-MM-DD>-dev.md`로 둔다. (`<YYYY-MM-DD>.md`는 Obsidian Calendar 플러그인이 생성하는 데일리 노트가 차지하므로, 덮어쓰지 않도록 `-dev` 접미사를 붙인다.)
    - 디렉토리 없으면 `mkdir -p`.
    - 기존 파일이 있으면 사용자에게 덮어쓸지 물어본다.
 5. **마무리**: 저장한 절대 경로 한 줄만 출력. 다른 날짜 제안 같은 후속 영업 금지.
@@ -79,4 +80,4 @@ python3 ~/.claude/skills/daily-dev-log/scripts/collect_today.py --date 2026-05-1
 - [ ] 시간이 KST인가 (UTC 아닌가)
 - [ ] 파일 경로가 너무 길어 한 줄을 잡아먹지 않는가
 - [ ] 사용자가 실제로 *요청한* 일이 한 줄 요약에 드러나는가 (도구 호출 나열에 그치지 않게)
-- [ ] 파일이 의도한 경로(`<YYYY>/<YYYY-MM>/<YYYY-MM-DD>/<YYYY-MM-DD>.md`)에 저장되었나
+- [ ] 파일이 의도한 경로(`<YYYY>/<YYYY-MM>/<YYYY-MM-DD>/<YYYY-MM-DD>-dev.md`)에 저장되었나

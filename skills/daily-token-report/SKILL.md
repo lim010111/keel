@@ -1,5 +1,6 @@
 ---
 name: daily-token-report
+disable-model-invocation: true
 description: Generates a statistical token-usage report for one day of Claude Code activity as a self-contained HTML file, saved into the user's Obsidian Dev log folder. Aggregates token counts and estimated USD cost by project, model, session, hour, and per-task (one user request = one task, agent-summarised labels). Use when asked "오늘 토큰 사용량", "토큰 리포트 만들어줘", "하루 토큰 통계", "오늘 얼마 썼어", "어떤 작업이 토큰을 많이 썼어", "daily token report", or "토큰 소모량 정리". Scope matches the daily-dev-log skill (a "day" is 05:00~다음날 04:59 local). Pulls from ~/.claude/projects/*/<sessionId>.jsonl and saves to /mnt/c/Users/shine/Documents/Obsidian/0. Daily/Dev log/YYYY/YYYY-MM/YYYY-MM-DD/YYYY-MM-DD-tokens.html.
 ---
 

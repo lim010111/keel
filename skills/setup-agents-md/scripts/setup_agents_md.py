@@ -60,7 +60,17 @@ def has_agents_import(claude_text):
 
 
 def plan(target, actions):
-    """Append (kind, msg, apply_fn) tuples describing what to do at `target`."""
+    """Append (kind, msg, apply_fn) tuples describing what to do at `target`.
+
+    The kind vocabulary is a DOWNSTREAM CONTRACT (harness-doctor's auto_fill
+    derives consent tiers from it; the doctor's engine maps it to an intent):
+      ok      — already in place, nothing to do
+      change  — pure-create / additive write (safe to auto-apply)
+      migrate — a content-MOVING change (State-2: CLAUDE.md → AGENTS.md);
+                semantically distinct from `change` so consumers can require
+                an explicit go-ahead without sniffing the message text
+      warn    — conflict; refuse to auto-edit, human merges
+      error   — the skill install itself is broken (templates missing)"""
     agents = target / "AGENTS.md"
     claude = target / "CLAUDE.md"
 
@@ -102,7 +112,7 @@ def plan(target, actions):
             agents.write_text(claude_text, encoding="utf-8")
             claude.write_text(claude_tpl, encoding="utf-8")
         actions.append((
-            "change",
+            "migrate",
             f"migrate {_rel(claude)} → {_rel(agents)} (content moved, CLAUDE.md becomes @import wrapper)",
             apply_state2,
         ))
@@ -142,17 +152,18 @@ def _rel(p):
 def render(actions, dry_run):
     for entry in actions:
         kind, msg = entry[0], entry[1]
-        prefix = {"ok": "  ✓", "change": "  +", "warn": "  ⚠", "error": "  ✗"}[kind]
-        if kind == "change" and dry_run:
+        prefix = {"ok": "  ✓", "change": "  +", "migrate": "  +",
+                  "warn": "  ⚠", "error": "  ✗"}[kind]
+        if kind in ("change", "migrate") and dry_run:
             print(f"{prefix} [dry-run] would {msg}")
         else:
             print(f"{prefix} {msg}")
 
 
 def apply_actions(actions):
-    """Run any callable apply_fn attached to a change entry."""
+    """Run any callable apply_fn attached to a change/migrate entry."""
     for entry in actions:
-        if entry[0] == "change" and len(entry) >= 3 and entry[2] is not None:
+        if entry[0] in ("change", "migrate") and len(entry) >= 3 and entry[2] is not None:
             entry[2]()
 
 
@@ -199,7 +210,7 @@ def main():
     print(f"AGENTS.md ↔ CLAUDE.md setup — target: {_rel(target)}")
     render(actions, args.dry_run)
 
-    pending = any(k == "change" for k, *_ in actions)
+    pending = any(k in ("change", "migrate") for k, *_ in actions)
     warnings = any(k == "warn" for k, *_ in actions)
 
     print()

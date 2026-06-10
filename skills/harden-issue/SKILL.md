@@ -24,6 +24,7 @@ If invoked without a path, ask for one. Do not guess from `STATUS.md` or the cur
    - `## Acceptance criteria` section with `- [ ]` / `- [x]` bullets
    - `## Blocked by` section
 3. Per grill-with-docs's "Domain awareness", read `CONTEXT.md` / `CONTEXT-MAP.md` and the `docs/adr/` index.
+4. Pause the narrative-staleness guard — this skill edits the issue's lifecycle / AC / resolution and may spin off an ADR every turn, all of which would otherwise trip it mid-grilling (see grill-with-docs § Session lifecycle): `python3 ~/.claude/hooks/narrative_guard.py pause 2>/dev/null || true`. Re-arm it at end-of-session (see the checklist).
 
 If the issue file lacks required headings, surface this *before* grilling and ask whether to normalise it first.
 
@@ -71,5 +72,6 @@ Before declaring the session done, verify against the actual file (`git diff <pa
 - [ ] Bundles are decomposed into individual items, not collapsed.
 - [ ] Any ADR-qualifying decision is either written as `docs/adr/NNNN-*.md` or the user has explicitly declined.
 - [ ] No new `[ ]` item silently shaves a standard UX/safety feature without acknowledgement.
+- [ ] Narrative posture refreshed with `/status`, then the guard re-armed: `python3 ~/.claude/hooks/narrative_guard.py resume 2>/dev/null || true` (matches the Pre-flight pause).
 
 If any item is unchecked, fix it before ending the session.

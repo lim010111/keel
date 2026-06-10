@@ -61,10 +61,14 @@ python3 ~/.claude/skills/setup-merge-gate/scripts/install_local.py \
 
 It writes the `harness.toml` local sections (preserving any
 `[merge-gate.github-actions]` block and unrelated tables verbatim), installs
-the pre-push hook, adds the `.gitignore` entry, and registers the global
-`merge_gate_mark.py` (PostToolUse Edit|Write) + `merge_gate_scheduler.py` (Stop)
-hooks in `~/.claude/settings.json` if they are not already there. It prints a
-JSON summary; surface it.
+the pre-push hook **and the `post-commit` auto-produce trigger** (#33/ADR-0014;
+both mirror the marker + `.pre-merge-gate` foreign-backup convention), adds the
+`.gitignore` entry, and **cleans any stale** global `merge_gate_mark.py`
+(PostToolUse) / `merge_gate_scheduler.py` (Stop) registrations from
+`~/.claude/settings.json` — those hooks are **retired** (the repo-scoped
+`post-commit` hook replaces them; the old Stop trigger self-gated on the session
+cwd and never fired under the two-repo workflow). It no longer registers any
+global hooks. It prints a JSON summary; surface it.
 
 **4 — Seed the first review and print next steps.** The pre-push gate is
 **advisory** by default — it reports but never blocks (ADR-0009: what makes it a
@@ -72,8 +76,9 @@ gate is the independent, recorded, freshness-covering verdict, not blocking).
 Tell the user:
 
 - Run `python3 ~/.claude/scripts/merge_gate_local.py produce` once now to seed a
-  review of the current changes (or just keep working — the Stop scheduler
-  auto-produces when `auto_produce = "stop-debounced"`).
+  review of the current changes (or just keep working — the `post-commit` hook
+  auto-produces a commit-pinned review of HEAD after each in-scope commit, and
+  the next push waits for it; #33/ADR-0014).
 - On `git push`, the pre-push hook runs `verify`: advisory prints the verdict
   and lets the push through; to **promote** to blocking, set
   `[merge-gate.local].enforcement_policy = "client-side-blocking"` in
@@ -83,12 +88,17 @@ Tell the user:
 
 ### Uninstall (local)
 
-When asked to remove the local gate: delete `<repo>/.git/hooks/pre-push` (if it
-is the merge-gate one — it contains `merge-gate-local verify`), remove the
-`[merge-gate.local*]` sections from `harness.toml`, and optionally remove the
-`.gitignore` entry. The global hooks self-gate (no-op outside local-profile
-repos), so they can stay registered; remove them from `~/.claude/settings.json`
-only if the user wants the machine fully clean.
+Run the helper's uninstall path — it removes our `pre-push` and `post-commit`
+hooks (restoring a foreign `*.pre-merge-gate` backup when present) and
+deregisters any stale Stop/PostToolUse registrations:
+
+```
+python3 ~/.claude/skills/setup-merge-gate/scripts/install_local.py \
+  --repo <repo> --uninstall
+```
+
+It leaves `harness.toml`'s `[merge-gate.local*]` sections and the `.gitignore`
+entry in place — remove those by hand if you want the repo fully clean.
 
 ---
 

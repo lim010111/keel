@@ -14,6 +14,7 @@ skills/consult-externals
 skills/daily-dev-log
 skills/daily-token-report
 skills/harden-issue
+skills/harness-doctor
 skills/run-codex-validators
 skills/session-dev-log
 skills/setup-agents-md
@@ -28,12 +29,16 @@ hooks/tdd_guard.py
 hooks/tdd_keyword.py
 hooks/tdd_mark.py
 hooks/tdd_verify.py
-hooks/session_devlog.py
-hooks/test_session_devlog.py
 hooks/test_tdd_hooks.py
-hooks/merge_gate_mark.py
+hooks/merge_gate_post_commit.py
 hooks/merge_gate_scheduler.py
+hooks/test_merge_gate_post_commit.py
 hooks/test_merge_gate_hooks.py
+hooks/narrative_guard.py
+hooks/test_narrative_guard.py
+hooks/self_verification.py
+hooks/self_verification_pretooluse.py
+hooks/test_self_verification.py
 
 # --- Scripts ---
 scripts/status.py
@@ -41,6 +46,16 @@ scripts/sound_complete.sh
 scripts/sound_permission.sh
 scripts/merge_gate_local.py
 scripts/test_merge_gate_local.py
+scripts/merge_gate_adjudicate.py
+scripts/test_merge_gate_adjudicate.py
+scripts/merge_gate_measure.py
+scripts/test_merge_gate_measure.py
+scripts/harness_doctor.py
+scripts/test_harness_doctor.py
+scripts/toml_sections.py
+scripts/test_toml_sections.py
+scripts/classify_sound.py
+scripts/test_classify_sound.py
 
 # --- Agents (definitions only; agent-memory/ is intentionally excluded) ---
 agents/ci-researcher.md
@@ -59,3 +74,5 @@ settings.json
 # exclude: skills/keel-update
 # exclude: skills/publish-study-notes
 # exclude: skills/weekly-dev-log
+# exclude: scripts/leak_scan.py
+# exclude: scripts/test_leak_scan.py

@@ -25,6 +25,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Resolve toml_sections (the shared section-scoped TOML text utilities) from
+# ~/.claude/scripts so this script works standalone: <this file> is
+# skills/setup-merge-gate/scripts/install_local.py, so parents[3] is ~/.claude.
+_SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+from toml_sections import section_is, section_name, split_sections  # noqa: E402
+
 # Canonical local sections (D8). Kept as text so comments survive and the
 # defaults are auditable. The section editor below owns these table names.
 LOCAL_TABLES = (
@@ -60,31 +69,11 @@ bin = "codex"
 
 # --------------------------------------------------------------------------
 # harness.toml — section-aware merge (stdlib only; no TOML writer dependency).
+# split_sections/section_is live in the shared scripts/toml_sections.py (one
+# owner for the splitting + header-equivalence logic; record_profile.py is the
+# other consumer). Header comparison folds TOML-equivalent spellings, so an
+# existing `[ merge-gate ]` is edited in place, never duplicated.
 # --------------------------------------------------------------------------
-def _header(line: str) -> str | None:
-    s = line.strip()
-    if s.startswith("[") and "]" in s and not s.startswith("[["):
-        return s[:s.index("]") + 1]
-    return None
-
-
-def split_sections(text: str) -> list[tuple[str | None, list[str]]]:
-    """Split TOML into [(header_or_None, lines)] blocks. The first block's
-    header is None (the preamble before any table)."""
-    blocks: list[tuple[str | None, list[str]]] = []
-    cur_header: str | None = None
-    cur: list[str] = []
-    for line in text.splitlines(keepends=True):
-        h = _header(line)
-        if h is not None:
-            blocks.append((cur_header, cur))
-            cur_header, cur = h, [line]
-        else:
-            cur.append(line)
-    blocks.append((cur_header, cur))
-    return blocks
-
-
 def merge_harness_toml(existing: str) -> str:
     """Return harness.toml text with the local profile selected. Idempotent.
     `[merge-gate.github-actions]` and every unrelated table/comment are
@@ -97,11 +86,12 @@ def merge_harness_toml(existing: str) -> str:
     appended only on a fresh install (no pre-existing local tables); runtime
     load_config fills any missing keys from DEFAULT_CONFIG."""
     blocks = split_sections(existing)
-    has_local = any(h in LOCAL_TABLES for h, _ in blocks)
+    local_names = {section_name(t) for t in LOCAL_TABLES}
+    has_local = any(section_name(h) in local_names for h, _ in blocks if h)
     out: list[str] = []
     have_merge_gate = False
     for header, lines in blocks:
-        if header == "[merge-gate]":
+        if section_is(header, "merge-gate"):
             have_merge_gate = True
             # Force profile = "local"; keep any other keys/comments in the block.
             new_lines = []
@@ -176,30 +166,54 @@ def _resolve_hooks_dir(repo_root: Path) -> Path:
     return repo_root / out
 
 
-def install_pre_push(repo_root: Path, template: Path) -> Path:
-    global _last_pre_push_backup
-    _last_pre_push_backup = None
+# Stable marker the merge-gate post-commit template carries (#33), used the same
+# way as PRE_PUSH_MARKER to tell our own hook apart from a foreign one.
+POST_COMMIT_MARKER = "MERGE_GATE_POST_COMMIT"
+
+# Set by install_post_commit when it backs up a pre-existing foreign hook.
+_last_post_commit_backup: Path | None = None
+
+
+def _install_hook(repo_root: Path, hook_name: str, marker: str, template: Path):
+    """Install <template> into the repo's resolved <hook_name> hook, backing up a
+    pre-existing FOREIGN hook (one without `marker`) to <hook_name>.pre-merge-gate
+    — never clobbering a prior backup. A hook that already carries `marker` is
+    ours → overwritten in place. Returns (dest, backup_or_None)."""
     hooks_dir = _resolve_hooks_dir(repo_root)
     hooks_dir.mkdir(parents=True, exist_ok=True)
-    dest = hooks_dir / "pre-push"
-    # Don't silently destroy an existing foreign hook (C3). A hook that already
-    # carries our marker is ours — overwrite in place. Otherwise back it up to
-    # pre-push.pre-merge-gate, but never clobber a prior backup (it wins).
+    dest = hooks_dir / hook_name
+    backup_made = None
     if dest.exists():
         existing = dest.read_text(encoding="utf-8")
-        if PRE_PUSH_MARKER not in existing:
-            backup = dest.with_name("pre-push.pre-merge-gate")
+        if marker not in existing:
+            backup = dest.with_name(f"{hook_name}.pre-merge-gate")
             if not backup.exists():
                 backup.write_text(existing, encoding="utf-8")
-                # Preserve the foreign hook's mode bits (it is typically 0o755);
-                # write_text uses the umask default (0o644), so an operator who
-                # restores by renaming pre-push.pre-merge-gate back would get a
-                # non-executable hook git silently skips — the very property C3
-                # protects (C3 safety-semantics residual).
+                # Preserve the foreign hook's mode bits (typically 0o755) so a
+                # restore-by-rename yields an executable hook git will run (C3
+                # safety-semantics residual; write_text would leave it 0o644).
                 os.chmod(backup, os.stat(dest).st_mode & 0o777)
-                _last_pre_push_backup = backup
+                backup_made = backup
     dest.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(dest, 0o755)
+    return dest, backup_made
+
+
+def install_pre_push(repo_root: Path, template: Path) -> Path:
+    global _last_pre_push_backup
+    dest, _last_pre_push_backup = _install_hook(
+        repo_root, "pre-push", PRE_PUSH_MARKER, template)
+    return dest
+
+
+def install_post_commit(repo_root: Path, template: Path) -> Path:
+    """Install the #33 produce trigger (post-commit) — same marker + foreign-backup
+    convention as install_pre_push. post-commit / pre-push / pre-commit are
+    distinct git events, so the per-hook installer never collides across gates
+    (ADR-0014)."""
+    global _last_post_commit_backup
+    dest, _last_post_commit_backup = _install_hook(
+        repo_root, "post-commit", POST_COMMIT_MARKER, template)
     return dest
 
 
@@ -233,32 +247,75 @@ def _has_command(groups: list, command: str) -> bool:
     return False
 
 
-def register_global_hooks(settings_path: Path) -> bool:
-    """Add the PostToolUse(Edit|Write) mark hook and the Stop scheduler hook to
-    settings.json if absent. Idempotent; preserves all existing hooks. Returns
-    True if anything changed."""
+def deregister_stale_hooks(settings_path: Path) -> bool:
+    """Remove the RETIRED Stop scheduler + PostToolUse mark registrations from
+    settings.json (#33/ADR-0014 replaced them with the per-repo post-commit hook).
+    Idempotent; preserves every unrelated hook; prunes hook groups it empties and
+    any event list left empty. Returns True if anything changed."""
     try:
         data = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
     except Exception:
         data = {}
-    hooks = data.setdefault("hooks", {})
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
     changed = False
-
-    post = hooks.setdefault("PostToolUse", [])
-    if not _has_command(post, MARK_CMD):
-        post.append({"matcher": "Edit|Write",
-                     "hooks": [{"type": "command", "command": MARK_CMD}]})
-        changed = True
-
-    stop = hooks.setdefault("Stop", [])
-    if not _has_command(stop, SCHED_CMD):
-        stop.append({"hooks": [{"type": "command", "command": SCHED_CMD}]})
-        changed = True
-
+    for event, retired in (("Stop", SCHED_CMD), ("PostToolUse", MARK_CMD)):
+        groups = hooks.get(event)
+        if not isinstance(groups, list):
+            continue
+        new_groups = []
+        for g in groups:
+            kept = [h for h in g.get("hooks", []) if h.get("command") != retired]
+            if len(kept) != len(g.get("hooks", [])):
+                changed = True
+            if kept:
+                new_groups.append({**g, "hooks": kept})
+            # a group emptied by the removal is dropped (changed already flagged)
+        if new_groups:
+            hooks[event] = new_groups
+        elif event in hooks:
+            del hooks[event]
+            changed = True
     if changed:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return changed
+
+
+# --------------------------------------------------------------------------
+# Uninstall — remove the local gate's per-repo hooks + stale global registrations.
+# --------------------------------------------------------------------------
+def _uninstall_hook(repo_root: Path, hook_name: str, marker: str) -> dict:
+    """Remove our <hook_name> hook (one carrying `marker`); if a
+    <hook_name>.pre-merge-gate foreign backup exists, restore it in its place.
+    A foreign hook WITHOUT our marker is left untouched. Returns a small summary."""
+    hooks_dir = _resolve_hooks_dir(repo_root)
+    dest = hooks_dir / hook_name
+    backup = hooks_dir / f"{hook_name}.pre-merge-gate"
+    result = {"removed": False, "restored": False}
+    if dest.exists() and marker in dest.read_text(encoding="utf-8"):
+        if backup.exists():
+            mode = os.stat(backup).st_mode & 0o777
+            os.replace(backup, dest)      # restore the foreign hook
+            os.chmod(dest, mode)
+            result["restored"] = True
+        else:
+            dest.unlink()
+            result["removed"] = True
+    return result
+
+
+def uninstall(repo_root: Path, settings_path: Path) -> dict:
+    """Reverse the local-profile hook install: remove our pre-push + post-commit
+    hooks (restoring a foreign backup when present) and deregister the stale
+    global Stop/PostToolUse registrations. harness.toml + .gitignore are left for
+    the operator (the SKILL documents removing them by hand)."""
+    return {
+        "pre_push": _uninstall_hook(repo_root, "pre-push", PRE_PUSH_MARKER),
+        "post_commit": _uninstall_hook(repo_root, "post-commit", POST_COMMIT_MARKER),
+        "stale_global_hooks_removed": deregister_stale_hooks(settings_path),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -282,7 +339,12 @@ def main(argv=None) -> int:
     p.add_argument("--settings", default=str(Path.home() / ".claude" / "settings.json"))
     p.add_argument("--pre-push-template",
                    default=str(Path(__file__).resolve().parent.parent / "templates" / "pre-push.sh"))
+    p.add_argument("--post-commit-template",
+                   default=str(Path(__file__).resolve().parent.parent / "templates" / "post-commit"))
     p.add_argument("--teardown-gha", action="store_true")
+    p.add_argument("--uninstall", action="store_true",
+                   help="remove the local gate's pre-push + post-commit hooks and "
+                        "deregister the stale Stop/PostToolUse global hooks (#33)")
     args = p.parse_args(argv)
 
     repo = Path(args.repo).resolve()
@@ -290,11 +352,23 @@ def main(argv=None) -> int:
         sys.stderr.write(f"install_local: {repo} is not a git repo\n")
         return 1
 
+    if args.uninstall:
+        result = uninstall(repo, Path(args.settings))
+        print(json.dumps({"repo": str(repo), "uninstall": result}, indent=2))
+        print("\nNOTE: harness.toml's [merge-gate.local*] sections and the "
+              ".gitignore entry are left in place — remove them by hand if you "
+              "want the repo fully clean.")
+        return 0
+
     write_harness_toml(repo)
     install_pre_push(repo, Path(args.pre_push_template))
     pre_push_backup = _last_pre_push_backup
+    install_post_commit(repo, Path(args.post_commit_template))
+    post_commit_backup = _last_post_commit_backup
     ensure_gitignore(repo)
-    hooks_changed = register_global_hooks(Path(args.settings))
+    # The Stop scheduler + PostToolUse mark are RETIRED (#33/ADR-0014); the
+    # per-repo post-commit hook replaces them. Clean any stale registrations.
+    stale_removed = deregister_stale_hooks(Path(args.settings))
     removed = teardown_gha(repo) if args.teardown_gha else []
 
     print(json.dumps({
@@ -303,14 +377,18 @@ def main(argv=None) -> int:
         "pre_push": "installed",
         "pre_push_backup": (str(pre_push_backup.relative_to(repo))
                             if pre_push_backup else None),
+        "post_commit": "installed (auto-produce trigger — #33)",
+        "post_commit_backup": (str(post_commit_backup.relative_to(repo))
+                               if post_commit_backup else None),
         "gitignore": "ensured",
-        "global_hooks_registered": hooks_changed,
+        "stale_global_hooks_removed": stale_removed,
         "gha_workflow_removed": removed,
     }, indent=2))
-    if pre_push_backup:
-        print(f"\nNOTE: an existing pre-push hook was backed up to "
-              f"{pre_push_backup.relative_to(repo)} before installing the "
-              "merge-gate hook.")
+    for backup, name in ((pre_push_backup, "pre-push"),
+                         (post_commit_backup, "post-commit")):
+        if backup:
+            print(f"\nNOTE: an existing {name} hook was backed up to "
+                  f"{backup.relative_to(repo)} before installing the merge-gate hook.")
     if args.teardown_gha:
         print("\nNOTE: GHA workflow teardown is the single operator-authorized "
               "freeze exception (ADR-0009 § freeze Exception, 2026-05-28).")

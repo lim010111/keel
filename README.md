@@ -40,9 +40,9 @@ transitions** an artifact crosses on its way to a wider audience, see
 
 | Kind | Items |
 |---|---|
-| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `consult-externals`, `daily-dev-log`, `daily-token-report`, `harden-issue`, `run-codex-validators`, `session-dev-log`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
-| Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `session_devlog`, `merge_gate_mark` · `merge_gate_scheduler` |
-| Scripts | `status.py`, `sound_complete.sh`, `sound_permission.sh`, `merge_gate_local.py` |
+| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `consult-externals`, `daily-dev-log`, `daily-token-report`, `harden-issue`, `harness-doctor`, `run-codex-validators`, `session-dev-log`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
+| Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `narrative_guard`, `merge_gate_post_commit` · `merge_gate_scheduler`, `self_verification` · `self_verification_pretooluse` |
+| Scripts | `status.py`, `sound_complete.sh` · `sound_permission.sh` · `classify_sound.py`, `merge_gate_local.py` · `merge_gate_adjudicate.py` · `merge_gate_measure.py`, `harness_doctor.py`, `toml_sections.py` |
 | Agents | `ci-researcher`, `codex-review-validator`, `korean-context-writer` |
 | Config | `CLAUDE.md`, `statusline.sh`, `settings.json` |
 
@@ -80,16 +80,22 @@ A bundle that auto-refreshes a project's root `STATUS.md` every session:
   `sync.sh` keeps in lockstep with the canonical one
   ([ADR-0001](docs/adr/0001-keel-is-a-sync-mirror.md)).
 - The `SessionStart`/`Stop` hook wiring in `settings.json` runs `status.py`.
+- `narrative_guard.py` — the enforcement half for the hand-written narrative
+  block. Takes a `SessionStart` snapshot, then a blocking `Stop` check refuses
+  to end a turn when the project's posture changed this session but the
+  narrative was left byte-unchanged, re-prompting the agent to run `/status`.
+  `test_narrative_guard.py` covers it.
 
 ### 3. Dev logs
 
-A bundle that, when a session ends, summarizes it in Korean and files it into
-an Obsidian vault:
+A bundle that summarizes a session in Korean and files it into an Obsidian
+vault:
 
-`session_devlog.py` (a `SessionEnd` hook) → spawns a detached headless
-`claude` → the `korean-context-writer` agent + the `session-dev-log` skill →
-Obsidian. `daily-dev-log` groups a whole day's sessions by project into the
-same folder.
+The `session-dev-log` skill (invoked as `/session-dev-log`) → the
+`korean-context-writer` agent → Obsidian. `daily-dev-log` groups a whole
+day's sessions by project into the same folder. (The `SessionEnd` hook that
+auto-invoked this on every session end has been retired — invocation is
+manual now.)
 
 > ⚠️ This bundle has an Obsidian vault path hardcoded. See the Roadmap below.
 
@@ -130,11 +136,19 @@ the review in the background, so there is no per-PR CI cost. The
   + the Claude validator and writes a cached artefact; `verify` (fast) only
   reads that artefact's summary and exits 0 (pass) or 1 (block) — no Codex, no
   Claude, no writes; `force` re-produces ignoring the cache.
-- `merge_gate_mark.py` / `merge_gate_scheduler.py` — the global hooks behind
-  the background `produce`: a `PostToolUse(Edit|Write)` dirty marker plus a
-  non-blocking `Stop` scheduler that enqueues `produce` only when a set of
-  cheap guards all hold (always exits 0). `test_merge_gate_hooks.py` and
-  `test_merge_gate_local.py` cover them.
+- `merge_gate_post_commit.py` — the trigger behind the background `produce`:
+  a git `post-commit` hook that, when the just-made commit touched in-scope
+  files, launches a backgrounded, commit-pinned `produce` for the committed
+  tip. Repo-scoped where its predecessors (`merge_gate_mark.py` dirty marker
+  + `merge_gate_scheduler.py` Stop scheduler) were session-cwd-scoped and
+  silently never fired in a two-repo workflow. `test_merge_gate_post_commit.py`,
+  `test_merge_gate_hooks.py`, and `test_merge_gate_local.py` cover the bundle.
+- `merge_gate_measure.py` / `merge_gate_adjudicate.py` — the measurement
+  layer for the soft-mode window: `measure` instruments around the gate
+  (never changing a decision) and appends freshness/verdict/latency signals
+  to a per-repo ledger; `adjudicate` is the blind verdict-capture UX that
+  fills the ledger's human columns — it shows each finding *before* revealing
+  the gate's mechanical verdict, so false positives are detectable.
 
 ### Standalone components
 
@@ -156,6 +170,19 @@ the review in the background, so there is no per-PR CI cost. The
 - `daily-token-report` — aggregates a day's Claude Code token usage by
   project, model, session, and task into a self-contained HTML report, saved
   to the Obsidian Dev log folder.
+- `harness-doctor` — diagnoses a target repo's harness-scaffold conformance:
+  which applicable gates/skills are installed vs missing, on the intent and
+  enforcement axes, then fills the gaps by delegating to each setup skill's
+  own apply path (consent-gated). `scripts/harness_doctor.py` is the
+  read-only diagnosis engine; `scripts/toml_sections.py` is the shared
+  section-scoped TOML text library the house installers use to edit
+  `harness.toml` without disturbing sibling sections.
+- `self_verification.py` / `self_verification_pretooluse.py` — **dormant**
+  oracle-integrity gate: a `commit-msg` hook that re-runs the verification
+  oracle and blocks the commit on mismatch (with an audited bypass trailer
+  lane), plus a `PreToolUse(Bash)` recorder that logs — never blocks — the
+  Claude-visible evasions to an out-of-repo append-only audit log. Ships as
+  files only; not wired into `settings.json` yet.
 - `setup-agents-md` — bootstraps the `AGENTS.md` ↔ `CLAUDE.md` relationship
   in a target repo. `AGENTS.md` is the canonical agent guidance read
   directly by Codex / antigravity; `CLAUDE.md` `@import`s it so Claude Code
@@ -170,7 +197,10 @@ the review in the background, so there is no per-PR CI cost. The
 - `statusline.sh` — a custom status line.
 - `sound_complete.sh` / `sound_permission.sh` — completion and
   permission-request notification sounds. **WSL only** (plays Windows sounds
-  via `powershell.exe`).
+  via `powershell.exe`). `classify_sound.py` decides *which* sound: it
+  classifies whether the final assistant turn was a question to the user or
+  a plain completion (heuristics + Haiku fallback), since the API exposes no
+  metadata distinguishing the two.
 
 ---
 

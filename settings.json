@@ -14,6 +14,7 @@
     ],
     "defaultMode": "auto"
   },
+  "model": "claude-fable-5[1m]",
   "hooks": {
     "PermissionRequest": [
       {
@@ -55,15 +56,6 @@
             "command": "python3 /home/shine/.claude/hooks/tdd_mark.py"
           }
         ]
-      },
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 /home/shine/.claude/hooks/merge_gate_mark.py"
-          }
-        ]
       }
     ],
     "SessionStart": [
@@ -74,6 +66,14 @@
             "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"; python3 /home/shine/.claude/scripts/status.py >/dev/null 2>&1; if [ -f \"$root/STATUS.md\" ]; then echo '=== Project status board (STATUS.md) ==='; cat \"$root/STATUS.md\"; fi"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/shine/.claude/hooks/narrative_guard.py snapshot"
+          }
+        ]
       }
     ],
     "Stop": [
@@ -81,7 +81,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/shine/.claude/scripts/sound_complete.sh"
+            "command": "/home/shine/.claude/scripts/sound_complete.sh",
+            "timeout": 20
           }
         ]
       },
@@ -105,17 +106,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/shine/.claude/hooks/merge_gate_scheduler.py"
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 /home/shine/.claude/hooks/session_devlog.py"
+            "command": "python3 /home/shine/.claude/hooks/narrative_guard.py check"
           }
         ]
       }
@@ -139,7 +130,7 @@
       }
     }
   },
-  "effortLevel": "xhigh",
+  "effortLevel": "high",
   "skipDangerousModePermissionPrompt": true,
   "autoCompactEnabled": false,
   "remoteControlAtStartup": true,

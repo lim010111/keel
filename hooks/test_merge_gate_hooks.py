@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Tests for the merge-gate scheduler + mark hooks (claude-harness-work #30).
+"""Tests for the merge-gate scheduler hook (claude-harness-work #30).
 
 Stdlib unittest only. Run: python3 hooks/test_merge_gate_hooks.py -v
 
-Covers the cheap/diff gate decision logic (pure), the Stop scheduler's launch
-wiring (in-process with Popen patched — never spawns a real produce), and the
-PostToolUse mark hook's self-gating + scope filtering (subprocess).
+Covers the cheap/diff gate decision logic (pure) and the Stop scheduler's launch
+wiring (in-process with Popen patched — never spawns a real produce).
 """
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -25,8 +23,6 @@ sys.path.insert(0, str(HOOKS))
 
 import merge_gate_local as mg          # noqa: E402
 import merge_gate_scheduler as mgs     # noqa: E402
-
-MARK_HOOK = HOOKS / "merge_gate_mark.py"
 
 
 def init_repo(path: Path, profile="local", reviewers='["codex"]', extra=""):
@@ -207,55 +203,6 @@ class TestSchedulerMain(unittest.TestCase):
         (self.root / ".codex-review" / "junk").write_text("z\n")
         self._run({"cwd": str(self.root)})
         self.assertEqual(self.launched, [])
-
-
-# --------------------------------------------------------------------------
-# mark hook — self-gate + scope filtering (subprocess)
-# --------------------------------------------------------------------------
-class TestMarkHook(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self._state = tempfile.TemporaryDirectory()
-
-    def tearDown(self):
-        self._tmp.cleanup()
-        self._state.cleanup()
-
-    def _run_mark(self, file_path):
-        payload = {"cwd": str(self.root),
-                   "tool_input": {"file_path": str(file_path)}}
-        env = {**os.environ, "MERGE_GATE_STATE_ROOT": self._state.name}
-        subprocess.run([sys.executable, str(MARK_HOOK)], input=json.dumps(payload),
-                       text=True, env=env, capture_output=True, timeout=20)
-
-    def _state_for(self):
-        import hashlib
-        h = hashlib.sha1(str(self.root).encode()).hexdigest()[:16]
-        f = Path(self._state.name) / h / "state.json"
-        return json.loads(f.read_text()) if f.exists() else None
-
-    def test_local_inscope_marks_dirty(self):
-        init_repo(self.root)
-        self._run_mark(self.root / "src" / "a.py")
-        st = self._state_for()
-        self.assertIsNotNone(st)
-        self.assertTrue(st["dirty"])
-
-    def test_non_local_self_gates(self):
-        init_repo(self.root, profile=None)
-        self._run_mark(self.root / "src" / "a.py")
-        self.assertIsNone(self._state_for())
-
-    def test_github_actions_profile_self_gates(self):
-        init_repo(self.root, profile="github-actions")
-        self._run_mark(self.root / "a.py")
-        self.assertIsNone(self._state_for())
-
-    def test_out_of_scope_edit_not_marked(self):
-        init_repo(self.root)
-        self._run_mark(self.root / ".codex-review" / "local" / "x")
-        self.assertIsNone(self._state_for())
 
 
 if __name__ == "__main__":

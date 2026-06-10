@@ -1,5 +1,6 @@
 ---
 name: tech-blog
+disable-model-invocation: true
 description: Writes plain, honest Korean technical blog posts that contain only verifiable information — no speculation, no clickbait, no exaggeration. Every factual claim must trace to the user's code/project, a cited external source, or user-confirmed input; otherwise it is asked about or omitted. Use when the user asks to write a Korean technical blog post, mentions 기술 블로그 글/블로그 포스트 작성, or wants to turn a topic or code into a blog article.
 ---
 
