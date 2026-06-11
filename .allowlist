@@ -76,3 +76,9 @@ settings.json
 # exclude: skills/weekly-dev-log
 # exclude: scripts/leak_scan.py
 # exclude: scripts/test_leak_scan.py
+#
+# Authored harness skill, deliberately kept out of the public mirror
+# (user request) — not keel-maintenance tooling like the entries above.
+# Listed here so detect-drift.sh won't flag it even if it stops being a
+# symlink into ~/.agents.
+# exclude: skills/teach
