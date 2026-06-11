@@ -551,6 +551,53 @@ class TestCompletionLint(unittest.TestCase):
             self.assertEqual(_check(root, sid, sr).returncode, 0,
                              "a grilling pause must suppress the lint too")
 
+    # -- diff-against-anchor (75a13c0 advisory review, codex medium upheld):
+    #    the lint must block only lines absent from the session anchor, not
+    #    re-litigate legacy offenders just because the narrative was edited.
+    def test_legacy_offender_survives_unrelated_edit(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = Path(td)
+            git_init(root)
+            seed_issue(root, "feat", "01", "alpha", total=2, done=0)
+            write_status(root, self.DIRTY)  # offender pre-dates the session
+            sid = vid()
+            _snapshot(root, sid, sr)
+            # An UNRELATED narrative edit; the legacy line is untouched.
+            write_status(root, self.DIRTY + "\n- **능동 · feat #02:** start beta.\n")
+            r = _check(root, sid, sr)
+            self.assertEqual(r.returncode, 0,
+                             f"a legacy offender must not block an unrelated edit; stderr={r.stderr}")
+
+    def test_block_quotes_only_lines_new_since_anchor(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = Path(td)
+            git_init(root)
+            seed_issue(root, "feat", "01", "alpha", total=2, done=0)
+            write_status(root, self.DIRTY)  # legacy: 완료 · feat #01
+            sid = vid()
+            _snapshot(root, sid, sr)
+            write_status(root, self.DIRTY + "\n- **종료 · feat #02:** beta wrapped.\n")
+            r = _check(root, sid, sr)
+            self.assertEqual(r.returncode, 2, f"a NEW offender must still block; stderr={r.stderr}")
+            self.assertIn("종료 · feat #02", r.stderr, "must quote the new line")
+            self.assertNotIn("완료 · feat #01", r.stderr,
+                             "must NOT re-litigate the legacy line")
+
+    def test_pre_key_snapshot_fails_open(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            sid = vid()
+            _snapshot(root, sid, sr)
+            snap = the_snap(sr)  # simulate an anchor from before the offenders key
+            data = json.loads(snap.read_text())
+            data.pop("offenders", None)
+            snap.write_text(json.dumps(data))
+            write_status(root, self.DIRTY)
+            r = _check(root, sid, sr)
+            self.assertEqual(r.returncode, 0,
+                             f"an anchor without an offender baseline cannot attribute "
+                             f"lines — must fail open; stderr={r.stderr}")
+
 
 # --------------------------------------------------------------------------
 # slice 14 — block message names the change and directs to /status (A6)

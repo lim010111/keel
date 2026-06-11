@@ -14,12 +14,15 @@ was left byte-unchanged, re-prompting the agent to run /status. Automation as
 enforcement, not authorship — modelled on tdd_verify.py.
 
 Four argv subcommands:
-  snapshot  — SessionStart: anchor {posture fingerprint, narrative hash}.
+  snapshot  — SessionStart: anchor {posture fingerprint, narrative hash,
+              completion-offender baseline}.
   check     — Stop: block (exit 2) iff posture changed since the snapshot AND
               the narrative is byte-unchanged since the snapshot. Also blocks
               when the narrative DID change but carries completion-labelled
-              track lines (`- **완료 …**`) — done tracks are deleted, not
-              relabelled; detector shared with status.py (status-harness#03).
+              track lines (`- **완료 …**`) absent from the anchor's baseline —
+              done tracks are deleted, not relabelled, and you clean what YOU
+              wrote (legacy lines stay the advisory banner's job); detector
+              shared with status.py (status-harness#03).
   pause     — drop a (session, repo) marker that makes `check` exit 0 without
               blocking. A grilling skill (grill-with-docs / harden-issue) runs
               this up front: it edits ADRs / CONTEXT / issue files inline as
@@ -303,10 +306,16 @@ def snapshot() -> None:
         if not issue_files or not has_markers(status_path):
             sys.exit(0)  # opt-in: not a local-markdown issue project
         fp = compute_fingerprint(root)
-        nh = narrative_hash(status_path)
+        narr = status.read_narrative(status_path)
         state_dir().mkdir(parents=True, exist_ok=True)
-        snap_path(sid, root).write_text(
-            json.dumps({"fingerprint": fp, "narrative_hash": nh}))
+        snap_path(sid, root).write_text(json.dumps({
+            "fingerprint": fp,
+            "narrative_hash": hashlib.sha256(narr.encode()).hexdigest(),
+            # Offender baseline for the completion lint: `check` blocks only
+            # lines absent from this anchor — you clean what you wrote, never
+            # a legacy line someone else left (75a13c0 advisory review).
+            "offenders": status.completion_offenders(narr),
+        }))
     except Exception:
         pass  # fail-open: never raise on SessionStart
     sys.exit(0)
@@ -350,22 +359,29 @@ def check() -> None:
     narrative_changed = (cur_nh != snap["narrative_hash"])
     if narrative_changed:
         # Completion-label lint (status-harness#03): you clean what you wrote.
-        # Fires only on a narrative the agent touched THIS session — a legacy
-        # offender with an untouched narrative is the advisory banner's job,
-        # not a block for someone else's mess. No re-baseline on this path:
-        # the anchor stays until the lines are actually gone.
-        offenders = status.completion_offenders(
+        # Blocks only lines ABSENT from the anchor's offender baseline — a
+        # legacy offender survives even an unrelated narrative edit; it stays
+        # the advisory banner's job (75a13c0 advisory review: a full-narrative
+        # scan here re-litigated someone else's mess). An anchor predating the
+        # baseline key cannot attribute lines, so it fails open. No re-baseline
+        # on the block path: the anchor stays until the lines are gone.
+        cur_off = status.completion_offenders(
             status.read_narrative(status_path))
-        if offenders:
-            print(completion_block_message(offenders), file=sys.stderr)
-            sys.exit(2)
+        if "offenders" in snap:
+            base = set(snap["offenders"])
+            new_off = [o for o in cur_off if o not in base]
+            if new_off:
+                print(completion_block_message(new_off), file=sys.stderr)
+                sys.exit(2)
         # The agent touched the narrative this session (did their job, or ran
-        # /status). Re-baseline to {current fingerprint, current narrative} so a
-        # *second* posture change later in the same session is still caught (A5).
-        # Checked before posture so re-baseline beats block when both moved.
+        # /status). Re-baseline to {current fingerprint, current narrative,
+        # current offenders} so a *second* posture change later in the same
+        # session is still caught (A5). Checked before posture so re-baseline
+        # beats block when both moved.
         try:
-            sp.write_text(
-                json.dumps({"fingerprint": cur_fp, "narrative_hash": cur_nh}))
+            sp.write_text(json.dumps({"fingerprint": cur_fp,
+                                      "narrative_hash": cur_nh,
+                                      "offenders": cur_off}))
         except Exception:
             pass  # best-effort: never turn an allow into a block over a write error
         sys.exit(0)
