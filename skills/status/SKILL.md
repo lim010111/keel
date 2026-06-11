@@ -39,12 +39,15 @@ project state, for any project that uses the local-markdown issue tracker
      hashes, finding-IDs, or "what this pass caught" narration. That detail
      belongs in the issue's `> **Resolution:**` block.
    - `## Start here next session` — the concrete next action *per active
-     track*, not an AC ledger. One line per track, labelled by track
-     (능동/병행/휴면) and naming its issue + feature; dormant tracks get a
-     one-line "don't touch". Overwrite each line every session (never append).
-     *Which* AC is next lives in the issue's checkbox order — point at the
-     issue, don't mirror its checklist. A commit hash/PR# is fine only as a
-     *live actionable handle*. (Full rule: `docs/agents/issue-tracker.md`
+     track*, not an AC ledger. One line per track, labelled by track — a
+     **closed set**: 능동/병행/휴면. A *finished* track's line is **deleted**,
+     never relabelled (`완료`/`종료`/`done`… — the narrative guard blocks
+     these); a live follow-up action (push, merge, issue to file) stays as an
+     능동/병행 line naming that action. Dormant tracks get a one-line "don't
+     touch". Overwrite each line every session (never append). *Which* AC is
+     next lives in the issue's checkbox order — point at the issue, don't
+     mirror its checklist. A commit hash/PR# is fine only as a *live
+     actionable handle*. (Full rule: `docs/agents/issue-tracker.md`
      § narrative is a status board.)
    - `## Open decisions` — **unresolved** questions only. Delete each the
      moment it is decided (its outcome moves to the issue/ADR); an empty list

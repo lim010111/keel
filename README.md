@@ -72,19 +72,25 @@ Four hooks form a pipeline, wired together through session files in
 A bundle that auto-refreshes a project's root `STATUS.md` every session:
 
 - `scripts/status.py` — generates the issue table in `STATUS.md` from the
-  issue files in `.scratch/`. **This is the canonical version.**
+  issue files in `.scratch/`. **This is the canonical version.** Its `--brief`
+  mode prints a session-start view (narrative + actionable rows only;
+  done/parked rows collapse to counts) so the standing per-session context
+  cost stays small. `test_status.py` covers it.
 - The `status` skill — refreshes `STATUS.md` (`/status`). It calls `status.py`
   and updates the hand-written narrative sections.
 - The `setup-status-harness` skill — installs the STATUS harness into a
   project that doesn't have one. It bundles its own copy of `status.py`, which
   `sync.sh` keeps in lockstep with the canonical one
   ([ADR-0001](docs/adr/0001-keel-is-a-sync-mirror.md)).
-- The `SessionStart`/`Stop` hook wiring in `settings.json` runs `status.py`.
+- The `SessionStart`/`Stop` hook wiring in `settings.json` runs `status.py`
+  (`--brief` at session start).
 - `narrative_guard.py` — the enforcement half for the hand-written narrative
   block. Takes a `SessionStart` snapshot, then a blocking `Stop` check refuses
   to end a turn when the project's posture changed this session but the
   narrative was left byte-unchanged, re-prompting the agent to run `/status`.
-  `test_narrative_guard.py` covers it.
+  It also blocks completion-labelled track lines written into the narrative
+  (the board's labels are a closed set; finished tracks are deleted, not
+  relabelled). `test_narrative_guard.py` covers it.
 
 ### 3. Dev logs
 

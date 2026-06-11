@@ -9,7 +9,6 @@ What this writes (under <target>):
 
   .github/workflows/codex-review.yml      ← rendered from templates/
   docs/merge-gate.md                      ← rendered from templates/
-  docs/merge-gate-operations.md           ← copied from templates/OPERATIONS.md + marker
   harness.toml                            ← [merge-gate] section, surgical
   .claude/agents/codex-review-validator.md  ← vendored from ~/.claude/agents/
   .claude/skills/run-codex-validators/      ← vendored from ~/.claude/skills/
@@ -62,7 +61,6 @@ PLACEHOLDERS = (
 WORKFLOW_REL = ".github/workflows/codex-review.yml"
 HARNESS_TOML_REL = "harness.toml"
 DOCS_QUICKREF_REL = "docs/merge-gate.md"
-DOCS_OPERATIONS_REL = "docs/merge-gate-operations.md"
 VENDOR_AGENT_REL = ".claude/agents/codex-review-validator.md"
 VENDOR_SKILL_REL = ".claude/skills/run-codex-validators"
 # Codex review-output schema, vendored verbatim from the openai-codex plugin.
@@ -351,8 +349,6 @@ def install(target: Path, values: dict, dry_run: bool, runtime_src_override: Pat
     artefacts: list[tuple[Path, str]] = []
     artefacts.append((Path(WORKFLOW_REL), render_template(TEMPLATES / "codex-review.yml", tokens)))
     artefacts.append((Path(DOCS_QUICKREF_REL), render_template(TEMPLATES / "merge-gate.md.template", tokens)))
-    ops_body = (TEMPLATES / "OPERATIONS.md").read_text(encoding="utf-8")
-    artefacts.append((Path(DOCS_OPERATIONS_REL), f"{DOCS_MARKER}\n\n{ops_body}"))
     artefacts.append((Path(VENDOR_AGENT_REL), add_marker(agent_src.read_text(encoding="utf-8"), agent_src.suffix)))
     # Codex review-output schema — verbatim copy, no marker (JSON has no
     # comment syntax). Default `codex_review_cmd` points --output-schema here.
@@ -409,10 +405,10 @@ def print_next_steps() -> None:
     print("       merge-gate / codex-review")
     print()
     print("     The check is stable across soft/hard mode flips; do not")
-    print("     re-add the rule when promoting per operations playbook §2.")
+    print("     re-add the rule when promoting.")
     print()
     print("  3. The gate ships in SOFT mode (data collection — never blocks).")
-    print("     Flip to HARD only after meeting the §2 criteria. Edit")
+    print("     Flip to HARD only after meeting the promotion criteria. Edit")
     print("     `harness.toml` [merge-gate] soft_mode_default and re-run this")
     print("     installer to push the change into the workflow.")
 
@@ -454,7 +450,7 @@ def uninstall(target: Path, dry_run: bool) -> None:
         actions.append((REM, sch, None))
 
     # Docs — marker-gated
-    for rel in (DOCS_QUICKREF_REL, DOCS_OPERATIONS_REL):
+    for rel in (DOCS_QUICKREF_REL,):
         p = target / rel
         if not p.exists():
             continue

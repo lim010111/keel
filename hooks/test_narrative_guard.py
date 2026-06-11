@@ -493,6 +493,66 @@ class TestGrillingPause(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
+# status-harness#03 — completion-label lint: you clean what you wrote
+#
+# A finished track's line is deleted, never relabelled `- **완료**`. The guard
+# blocks only when the narrative changed this session AND carries completion
+# labels; legacy offenders with an untouched narrative are the advisory
+# banner's job (status.py), not a block for someone else's mess.
+# --------------------------------------------------------------------------
+class TestCompletionLint(unittest.TestCase):
+    DIRTY = "## Current focus\n\nx\n\n- **완료 · feat #01:** alpha shipped.\n"
+
+    def test_blocks_when_written_this_session(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            sid = vid()
+            _snapshot(root, sid, sr)
+            snap = the_snap(sr)
+            before = snap.read_text()
+            write_status(root, self.DIRTY)  # narrative edit introduces the label
+            r = _check(root, sid, sr)
+            self.assertEqual(r.returncode, 2, f"completion label must block; stderr={r.stderr}")
+            self.assertIn("완료 · feat #01", r.stderr, "block must quote the offending line")
+            self.assertIn("Resolution", r.stderr, "block must say where the content goes")
+            self.assertEqual(snap.read_text(), before,
+                             "lint block must NOT re-baseline the snapshot")
+
+    def test_clears_once_lines_removed(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            sid = vid()
+            _snapshot(root, sid, sr)
+            write_status(root, self.DIRTY)
+            self.assertEqual(_check(root, sid, sr).returncode, 2)
+            write_status(root, "## Current focus\n\nAlpha shipped; next beta.\n")
+            self.assertEqual(_check(root, sid, sr).returncode, 0,
+                             "removing the lines must clear the block")
+
+    def test_legacy_offender_with_untouched_narrative_does_not_block(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = Path(td)
+            git_init(root)
+            seed_issue(root, "feat", "01", "alpha", total=2, done=0)
+            write_status(root, self.DIRTY)  # offender pre-dates the session
+            sid = vid()
+            _snapshot(root, sid, sr)
+            r = _check(root, sid, sr)
+            self.assertEqual(r.returncode, 0,
+                             f"a pre-existing offender must not block; stderr={r.stderr}")
+
+    def test_pause_suppresses_the_lint(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            sid = vid()
+            _snapshot(root, sid, sr)
+            run_pause("pause", root, sid, sr)
+            write_status(root, self.DIRTY)
+            self.assertEqual(_check(root, sid, sr).returncode, 0,
+                             "a grilling pause must suppress the lint too")
+
+
+# --------------------------------------------------------------------------
 # slice 14 — block message names the change and directs to /status (A6)
 # --------------------------------------------------------------------------
 class TestBlockMessage(unittest.TestCase):

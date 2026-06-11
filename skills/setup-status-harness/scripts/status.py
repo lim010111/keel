@@ -18,15 +18,31 @@ construction: the table is always a projection of the issue files.
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 NARRATIVE_START = "<!-- narrative:start -->"
 NARRATIVE_END = "<!-- narrative:end -->"
 
-# Soft ceiling for the narrative block, in characters (~1.8k tokens). A healthy
-# narrative is ~1.5k chars; this is ~4x that, so the banner only fires on real
-# drift from status-board into changelog — not on a normally-sized narrative.
-NARRATIVE_SOFT_LIMIT = 6000
+# Soft ceiling for the narrative block, in characters (~1k tokens). A healthy
+# narrative is ~1.5k chars; this is ~2.7x that, so the banner only fires on
+# real drift from status-board into changelog — not on a normally-sized
+# narrative (status-harness#03 lowered it from 6000 once the completion-label
+# lint removed the main bloat source).
+NARRATIVE_SOFT_LIMIT = 4000
+
+# Track labels are a closed set ({능동, 병행, 휴면}): a finished track's line
+# is DELETED from the narrative, never relabelled to a completion word — that
+# is how the board regrows into a changelog (status-harness#03). This denylist
+# anchors at the top-level bold bullet-label position only, so prose mentions,
+# indented continuations, and Open-decisions issue-name labels never fire.
+# Korean labels prefix-match (완료된/종료됨 fire too); English ones are
+# word-bounded. Habitual relabelling is the observed failure mode — synonym
+# invention is not pre-armoured against until observed.
+COMPLETION_LABEL_RE = re.compile(
+    r"^- \*\*\s*(?:완료|종료|완수|마감|하드닝-done"
+    r"|(?:done|shipped|closed|finished|merged|landed)\b)",
+    re.I)
 
 DEFAULT_NARRATIVE = """\
 ## Current focus
@@ -204,12 +220,38 @@ def size_warning(narrative: str) -> str:
             "docs/agents/issue-tracker.md § STATUS.md editing rules.")
 
 
+def completion_offenders(narrative: str) -> list[str]:
+    """Top-level narrative bullets whose bold label opens with a completion
+    word. Single source for both the advisory banner here and the blocking
+    lint in narrative_guard.py (which imports this module)."""
+    return [l.rstrip() for l in narrative.splitlines()
+            if COMPLETION_LABEL_RE.match(l)]
+
+
+def completion_warning(narrative: str) -> str:
+    """Return a one-line banner when the narrative carries completed-track
+    lines, or '' if clean.
+
+    Advisory only — the blocking half lives in narrative_guard.py and fires
+    only on lines written this session. This banner is the standing signal
+    that covers what the guard cannot: pre-existing offenders and edits made
+    outside a Claude Code Stop cycle (cross-agent, manual)."""
+    n = len(completion_offenders(narrative))
+    if not n:
+        return ""
+    return (f"> ⚠️ **Completed-track lines in narrative** ({n}) — a finished "
+            "track's line is deleted, not relabelled (labels are 능동/병행/휴면 "
+            "only). Detail → the issue's `Resolution` block; posture outcome → "
+            "the gate-table cell. See docs/agents/issue-tracker.md § The "
+            "narrative is a status board, not a changelog.")
+
+
 def feature_section(feature: str, files: list[Path]) -> tuple[str, int, int, dict]:
     """Render one feature's progress bar + issue table.
 
-    Returns (markdown, criteria_done, criteria_total, state_by_num). Blocker
-    resolution is scoped to this feature, so issue numbers never collide
-    across features.
+    Returns (markdown, criteria_done, criteria_total, state_by_num, issues).
+    Blocker resolution is scoped to this feature, so issue numbers never
+    collide across features.
     """
     issues = [parse_issue(p) for p in sorted(files)]
     by_num = {i["num"]: i for i in issues}
@@ -238,15 +280,52 @@ def feature_section(feature: str, files: list[Path]) -> tuple[str, int, int, dic
 | # | Issue | Triage | Criteria | State | Blocked by |
 |---|-------|--------|----------|-------|-----------|
 {chr(10).join(rows)}"""
-    return md, done, total, states
+    return md, done, total, states, issues
 
 
-def main() -> None:
+# Lifecycle states worth a row in the brief session-start injection — the work
+# a session could actually pick up (or unblock). done/parked/wontfix rows are
+# orientation the narrative + progress fraction already carry; injecting them
+# every session was the dominant standing context tax (status-harness#03).
+ACTIONABLE_STATES = ("todo", "in-progress", "blocked", "?")
+
+
+def feature_brief(feature: str, issues: list[dict], states: dict,
+                  done: int, total: int) -> str:
+    """One feature's brief block: progress line + actionable rows only.
+    Everything else collapses to a counted omission line — the full table
+    lives in STATUS.md (file ≠ injection)."""
+    frac = done / (total or 1)
+    head = f"## {feature} — `{bar(frac)}` {done}/{total} ({frac:.0%})"
+
+    live = [i for i in issues if states[i["num"]] in ACTIONABLE_STATES]
+    omitted = []
+    for kind in ("done", "parked", "wontfix"):
+        n = sum(1 for i in issues if states[i["num"]] == kind)
+        if n:
+            omitted.append(f"{n} {kind}")
+    note = ("… " + " + ".join(omitted) + " omitted — full table: STATUS.md"
+            if omitted else "")
+
+    if not live:
+        return head + (f"\n{note}" if note else "")
+    rows = [f"| {i['num']} | {i['title']} | {i['done']}/{i['total']} | "
+            f"{EMOJI[states[i['num']]]} |" for i in live]
+    table = ("| # | Issue | Criteria | State |\n"
+             "|---|-------|----------|-------|\n" + "\n".join(rows))
+    return "\n".join(p for p in (head, "", table, note) if p != "")
+
+
+def main(argv: list[str] | None = None) -> None:
     # No-op inside a merge-gate produce subprocess: the validator child runs as a
     # fresh `claude -p` session that loads settings, so its Stop/SessionStart fire
     # here; regenerating STATUS.md per produce is spurious churn (#31 seed finding).
     if os.environ.get("MERGE_GATE_PRODUCER_RUNNING") == "1":
         return
+    # --brief: regenerate the file exactly as a plain run would, but print the
+    # brief session-start view instead of the regen message. The SessionStart
+    # hook injects this stdout, so it must contain ONLY the view.
+    brief = "--brief" in (sys.argv[1:] if argv is None else argv)
     root = project_root()
     issue_files = sorted((root / ".scratch").glob("*/issues/*.md"))
     if not issue_files:
@@ -260,11 +339,13 @@ def main() -> None:
         by_feature.setdefault(p.parent.parent.name, []).append(p)
 
     sections = []
+    briefs = []
     state_by_num: dict[str, str] = {}
     total_done = total_crit = 0
     for feature in sorted(by_feature):
-        md, done, total, states = feature_section(feature, by_feature[feature])
+        md, done, total, states, issues = feature_section(feature, by_feature[feature])
         sections.append(md)
+        briefs.append(feature_brief(feature, issues, states, done, total))
         total_done += done
         total_crit += total
         # Cross-feature number collisions are rare and narrative refs are
@@ -273,7 +354,8 @@ def main() -> None:
 
     narrative = read_narrative(status)
     warnings = [w for w in (stale_warning(narrative, state_by_num),
-                            size_warning(narrative)) if w]
+                            size_warning(narrative),
+                            completion_warning(narrative)) if w]
     banner = ("\n\n" + "\n".join(warnings)) if warnings else ""
 
     content = f"""# Project Status
@@ -296,12 +378,18 @@ that triage state and are excluded from the progress bar.
     # no-op diff every session. Generated content is now date-free, so an
     # unchanged project yields byte-identical output run after run.
     old = status.read_text(encoding="utf-8") if status.exists() else ""
-    if content == old:
+    if content != old:
+        status.write_text(content, encoding="utf-8")
+    if brief:
+        parts = ["\n".join(warnings)] if warnings else []
+        parts.append(narrative)
+        parts.extend(briefs)
+        print("\n\n".join(parts))
+    elif content == old:
         print(f"STATUS.md unchanged — {total_done}/{total_crit} criteria.")
-        return
-    status.write_text(content, encoding="utf-8")
-    print(f"STATUS.md regenerated — {total_done}/{total_crit} criteria, "
-          f"{len(issue_files)} issues, {len(by_feature)} feature(s).")
+    else:
+        print(f"STATUS.md regenerated — {total_done}/{total_crit} criteria, "
+              f"{len(issue_files)} issues, {len(by_feature)} feature(s).")
 
 
 if __name__ == "__main__":

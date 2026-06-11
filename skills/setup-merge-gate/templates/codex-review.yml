@@ -52,7 +52,7 @@ env:
   TRUST_DOC_GLOBS: '%%TRUST_DOC_GLOBS%%'
   PROJECT_NAME: '%%PROJECT_NAME%%'
   # Label the PR author / approver applies to skip the gate (audited
-  # bypass lane — see operations playbook §4). Filled at install time so
+  # bypass lane). Filled at install time so
   # different projects can use different bypass-label conventions.
   BYPASS_LABEL: '%%BYPASS_LABEL%%'
   COMMENT_HEADER: merge-gate-codex-review

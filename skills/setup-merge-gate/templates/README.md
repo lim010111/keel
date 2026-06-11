@@ -8,7 +8,6 @@ there.
 
 | Template | Renders into target project as | Source issue |
 |---|---|---|
-| `OPERATIONS.md` | `docs/merge-gate-operations.md` | #06 |
 | `codex-review.yml` | `.github/workflows/codex-review.yml` | #03 |
 | `merge-gate.md.template` | `docs/merge-gate.md` | #04 |
 
@@ -43,7 +42,7 @@ before writing the file. None of the tokens may remain in the rendered file.
 | `%%NODE_VERSION%%` | string | `"20"` | Major Node version for the Codex CLI install. |
 | `%%CODEX_INSTALL_CMD%%` | shell snippet | `npm install -g @openai/codex@latest` | Must leave a working `codex` (and any plugin script the review invocation needs) on `$PATH`. |
 | `%%CODEX_REVIEW_CMD%%` | shell snippet | `codex exec --json --output-schema .codex-review/schema.json --dangerously-bypass-approvals-and-sandbox "Run an adversarial review of the diff against origin/$BASE_REF"` | Must write a JSONL stream to stdout. Each line is a Codex conversation event; the final `item.completed[agent_message]` carries the review payload (JSON conforming to `review-output.schema.json`) inside its `.item.text` field. The workflow's "Normalize Codex JSONL" step extracts that payload to `.codex-review/codex-review.normalized.json` for downstream consumers. The installer vendors the schema to `.codex-review/schema.json` (target-local) so CI runners can satisfy `--output-schema` without the openai-codex plugin marketplace. The `--dangerously-bypass-approvals-and-sandbox` flag is required on GitHub Actions runners because Codex's `--sandbox read-only` enforcement uses `bwrap`, which needs kernel namespace capabilities the runners don't grant (refs claude-harness-work#20). Operators who want a different sandbox policy or schema can override the command in `harness.toml [merge-gate].codex_review_cmd`. |
-| `%%BYPASS_LABEL%%` | string | `merge-gate-bypass` | Label that, when applied to a PR, causes preflight to short-circuit and the gate to pass without running Codex. Surfaced in the bypass sticky comment and check-outcome notice. Logged as an audited bypass — see operations playbook §4. Default `merge-gate-bypass` is fine for most projects; override if a project's label-namespacing convention demands a different name. |
+| `%%BYPASS_LABEL%%` | string | `merge-gate-bypass` | Label that, when applied to a PR, causes preflight to short-circuit and the gate to pass without running Codex. Surfaced in the bypass sticky comment and check-outcome notice. Logged as an audited bypass. Default `merge-gate-bypass` is fine for most projects; override if a project's label-namespacing convention demands a different name. |
 
 ## Substitution rules
 

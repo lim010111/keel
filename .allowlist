@@ -42,6 +42,7 @@ hooks/test_self_verification.py
 
 # --- Scripts ---
 scripts/status.py
+scripts/test_status.py
 scripts/sound_complete.sh
 scripts/sound_permission.sh
 scripts/merge_gate_local.py

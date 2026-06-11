@@ -16,7 +16,10 @@ enforcement, not authorship — modelled on tdd_verify.py.
 Four argv subcommands:
   snapshot  — SessionStart: anchor {posture fingerprint, narrative hash}.
   check     — Stop: block (exit 2) iff posture changed since the snapshot AND
-              the narrative is byte-unchanged since the snapshot.
+              the narrative is byte-unchanged since the snapshot. Also blocks
+              when the narrative DID change but carries completion-labelled
+              track lines (`- **완료 …**`) — done tracks are deleted, not
+              relabelled; detector shared with status.py (status-harness#03).
   pause     — drop a (session, repo) marker that makes `check` exit 0 without
               blocking. A grilling skill (grill-with-docs / harden-issue) runs
               this up front: it edits ADRs / CONTEXT / issue files inline as
@@ -256,6 +259,24 @@ def narrative_hash(status_path: Path) -> str:
     return hashlib.sha256(status.read_narrative(status_path).encode()).hexdigest()
 
 
+def completion_block_message(offenders: list[str]) -> str:
+    lines = "\n".join(f"  • {o}" for o in offenders)
+    return (
+        "Completed-track lines were written into the STATUS.md narrative this "
+        "session:\n"
+        f"{lines}\n\n"
+        "Track labels are a closed set (능동/병행/휴면) — a finished track's "
+        "line is DELETED, not relabelled. Where the content goes instead:\n"
+        "  • forensics / what-happened detail → the issue's `> **Resolution:**` block\n"
+        "  • a posture outcome → the Current-focus posture line / gate-table cell\n"
+        "  • a live follow-up action → an 능동/병행 line naming that action\n\n"
+        "Delete the line(s), then finish the turn. "
+        "(Set NARRATIVE_GUARD_DISABLED=1 to bypass.)\n"
+        "Rule: docs/agents/issue-tracker.md § The narrative is a status board, "
+        "not a changelog."
+    )
+
+
 def disabled() -> bool:
     # Kill-switch (A7) + parity with status.py:248 — a merge-gate `produce` runs
     # a fresh `claude -p` whose SessionStart/Stop fire in this same repo; skip so
@@ -328,6 +349,16 @@ def check() -> None:
 
     narrative_changed = (cur_nh != snap["narrative_hash"])
     if narrative_changed:
+        # Completion-label lint (status-harness#03): you clean what you wrote.
+        # Fires only on a narrative the agent touched THIS session — a legacy
+        # offender with an untouched narrative is the advisory banner's job,
+        # not a block for someone else's mess. No re-baseline on this path:
+        # the anchor stays until the lines are actually gone.
+        offenders = status.completion_offenders(
+            status.read_narrative(status_path))
+        if offenders:
+            print(completion_block_message(offenders), file=sys.stderr)
+            sys.exit(2)
         # The agent touched the narrative this session (did their job, or ran
         # /status). Re-baseline to {current fingerprint, current narrative} so a
         # *second* posture change later in the same session is still caught (A5).

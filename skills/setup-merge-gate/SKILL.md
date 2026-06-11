@@ -1,13 +1,14 @@
 ---
 name: setup-merge-gate
-description: Install the merge-gate harness into a target project. Defaults to the LOCAL profile (claude-harness-work ADR-0009) — a pre-push hook that runs `merge-gate-local verify`, backed by a local `produce` that runs Codex adversarial-review + the Claude validator with no per-PR CI spend. The github-actions profile (a PR-blocking GitHub Actions workflow) is dormant/opt-in, reached only via `--profile github-actions`. Use when the user asks to "set up merge-gate", "install the merge gate", "wire up Codex review", "/setup-merge-gate", "머지 게이트 설치", "머지-게이트 깔아줘". Also supports `--uninstall`.
+description: Install the merge-gate harness into a target project. Defaults to the LOCAL profile (claude-harness-work ADR-0009) — a pre-push hook that runs `merge-gate-local verify`, backed by a local `produce` that runs a reviewer set (Codex by default) adversarial-review + the Claude validator with no per-PR CI spend. The github-actions profile (a PR-blocking GitHub Actions workflow) is dormant/opt-in, reached only via `--profile github-actions`. Use when the user asks to "set up merge-gate", "install the merge gate", "wire up Codex review", "/setup-merge-gate", "머지 게이트 설치", "머지-게이트 깔아줘". Also supports `--uninstall`.
 ---
 
 # Install the merge-gate harness into a project
 
-The merge gate runs Codex adversarial-review, classifies each finding with the
-Claude validator (uphold/dismiss/unsure — ADR-0005, Claude-only MVP), and
-blocks on validator-upheld/unsure critical/high findings. It installs under one
+The merge gate runs an adversarial review — by default Codex, though the producer
+is a combinable **reviewer set** (Codex, Claude, AGY — ADR-0010) — classifies each
+finding with the Claude validator (uphold/dismiss/unsure — ADR-0005, Claude-only
+MVP), and blocks on validator-upheld/unsure critical/high findings. It installs under one
 of two **Gate profiles** (CONTEXT.md → *Gate profile*):
 
 | Profile | Venue | Default | Spend | Status |
@@ -121,7 +122,6 @@ and gates merge via branch protection.
 | `.github/workflows/codex-review.yml`           | `templates/codex-review.yml` rendered | The CI workflow |
 | `harness.toml` `[merge-gate]` section          | written from CLI flags                | Per-gate config (ADR-0003) |
 | `docs/merge-gate.md`                            | `templates/merge-gate.md.template` rendered | Short reference for humans |
-| `docs/merge-gate-operations.md`                 | `templates/OPERATIONS.md` (verbatim + marker) | Long-form operations playbook (#06) |
 | `.claude/agents/codex-review-validator.md`     | vendored from `~/.claude/agents/`     | The validator agent definition (#02) |
 | `.claude/skills/run-codex-validators/`         | vendored from `~/.claude/skills/`     | The runtime slash command (#05) |
 
@@ -211,7 +211,7 @@ change. `render.py`'s drift check aborts if surgery on `harness.toml` would
 touch any non-`[merge-gate]` section. After a dry run, sanity-check:
 
 - `grep -nE '%%[A-Z_]+%%' .github/workflows/codex-review.yml` — empty.
-- `head -1 docs/merge-gate.md` / `docs/merge-gate-operations.md` — start with the generated marker.
+- `head -1 docs/merge-gate.md` — starts with the generated marker.
 
 The workflow's stable identifiers are the workflow name `merge-gate` and job id
 `codex-review` (the branch-protection key). Do not rename either across re-installs.

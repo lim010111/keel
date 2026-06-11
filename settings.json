@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"; python3 /home/shine/.claude/scripts/status.py >/dev/null 2>&1; if [ -f \"$root/STATUS.md\" ]; then echo '=== Project status board (STATUS.md) ==='; cat \"$root/STATUS.md\"; fi"
+            "command": "out=\"$(python3 /home/shine/.claude/scripts/status.py --brief 2>/dev/null)\"; if [ -n \"$out\" ]; then echo '=== Project status board (brief — actionable rows only; full board: STATUS.md) ==='; echo \"$out\"; fi"
           }
         ]
       },
@@ -130,7 +130,7 @@
       }
     }
   },
-  "effortLevel": "high",
+  "effortLevel": "xhigh",
   "skipDangerousModePermissionPrompt": true,
   "autoCompactEnabled": false,
   "remoteControlAtStartup": true,
