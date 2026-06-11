@@ -6,7 +6,8 @@ Run:  python3 scripts/test_merge_gate_local.py -v
 
 Focus, per #30's tracer-bullet order and the "highest-risk" callouts:
   * G1 normalize — the five-branch JSONL→.result.findings[] port, proven
-    shape-equivalent to the frozen GHA jq step (the #18 regression class).
+    shape-equivalent to the GHA-era jq reference expression (the #18
+    regression class; the workflow itself was removed — ADR-0021).
   * canonical-diff helper — the load-bearing D4 invariant: produce and verify
     agree on the hash; a content-identical amend does NOT churn the cache;
     uncommitted work hashes like the later committed tree.
@@ -145,9 +146,9 @@ class TestNormalize(unittest.TestCase):
         self.assertEqual(out["result"]["findings"], [])
 
     def test_shape_equivalent_to_gha_jq(self):
-        """The normalized doc must match the frozen GHA jq step's output shape
-        exactly (the contract: produce feeds the validator a byte-equivalent
-        shape to what the GHA template feeds). Compare against jq if present."""
+        """The normalized doc must match the reference jq expression's output
+        shape exactly (the contract: produce feeds the validator the shape
+        `/run-codex-validators` expects). Compare against jq if present."""
         if not _have("jq"):
             self.skipTest("jq not installed")
         payload = {"verdict": "needs-attention", "summary": "s",
@@ -169,10 +170,11 @@ def _have(binary):
     return which(binary) is not None
 
 
-# The frozen GHA "Normalize Codex JSONL" jq expression, kept verbatim so this
-# test proves byte-equivalence of SHAPE. Mirrors test_aggregate.py's JQ_NORMALIZE
-# pattern. If codex-review.yml's normalize step changes, update this (and the
-# port in merge_gate_local.normalize_codex_jsonl) to match.
+# The GHA-era "Normalize Codex JSONL" jq expression (the workflow it came
+# from was removed — ADR-0021), kept verbatim as the independent reference
+# oracle so this test proves byte-equivalence of SHAPE. Mirrors
+# test_aggregate.py's JQ_NORMALIZE pattern. merge_gate_local.normalize_codex_jsonl
+# is the live implementation; this expression is its frozen specification.
 _JQ_NORMALIZE = r"""
 if $codex_exit != "0" then
   {result: {verdict: "unknown",

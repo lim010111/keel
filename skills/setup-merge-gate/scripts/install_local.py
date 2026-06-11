@@ -4,17 +4,12 @@
 detection); this helper does the file writes:
 
   * merge the `[merge-gate]` + `[merge-gate.local*]` sections into harness.toml
-    (D8 defaults), leaving any `[merge-gate.github-actions]` block and unrelated
-    tables/comments byte-untouched;
+    (D8 defaults), leaving unrelated tables/comments byte-untouched;
   * install the per-repo pre-push hook;
   * add the artefact cache to .gitignore;
-  * register the global Stop / PostToolUse hooks in settings.json (idempotent);
-  * (authorized freeze exception) tear down an installed GHA workflow when
-    switching a repo to local — the SKILL HITL-confirms before passing
-    --teardown-gha.
+  * register the global Stop / PostToolUse hooks in settings.json (idempotent).
 
 Run: install_local.py --repo <path> [--settings <path>] [--pre-push-template <path>]
-                      [--teardown-gha]
 """
 from __future__ import annotations
 
@@ -76,8 +71,8 @@ bin = "codex"
 # --------------------------------------------------------------------------
 def merge_harness_toml(existing: str) -> str:
     """Return harness.toml text with the local profile selected. Idempotent.
-    `[merge-gate.github-actions]` and every unrelated table/comment are
-    preserved verbatim (D8 — installer writes only the local sections).
+    Every unrelated table/comment is preserved verbatim (D8 — the installer
+    writes only the local sections).
 
     Existing `[merge-gate.local*]` tables are PRESERVED verbatim, never
     clobbered (C2): a repo that promoted enforcement_policy to
@@ -318,21 +313,6 @@ def uninstall(repo_root: Path, settings_path: Path) -> dict:
     }
 
 
-# --------------------------------------------------------------------------
-# GHA teardown — the single operator-authorized freeze exception (ADR-0009).
-# --------------------------------------------------------------------------
-def teardown_gha(repo_root: Path) -> list[str]:
-    """Remove an installed GHA merge-gate workflow when switching to local.
-    Returns the list of removed paths (for the install output). The SKILL
-    HITL-confirms before calling this."""
-    removed = []
-    wf = repo_root / ".github" / "workflows" / "codex-review.yml"
-    if wf.exists():
-        wf.unlink()
-        removed.append(str(wf.relative_to(repo_root)))
-    return removed
-
-
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="local-profile installer helper (#30)")
     p.add_argument("--repo", required=True)
@@ -341,7 +321,6 @@ def main(argv=None) -> int:
                    default=str(Path(__file__).resolve().parent.parent / "templates" / "pre-push.sh"))
     p.add_argument("--post-commit-template",
                    default=str(Path(__file__).resolve().parent.parent / "templates" / "post-commit"))
-    p.add_argument("--teardown-gha", action="store_true")
     p.add_argument("--uninstall", action="store_true",
                    help="remove the local gate's pre-push + post-commit hooks and "
                         "deregister the stale Stop/PostToolUse global hooks (#33)")
@@ -369,7 +348,6 @@ def main(argv=None) -> int:
     # The Stop scheduler + PostToolUse mark are RETIRED (#33/ADR-0014); the
     # per-repo post-commit hook replaces them. Clean any stale registrations.
     stale_removed = deregister_stale_hooks(Path(args.settings))
-    removed = teardown_gha(repo) if args.teardown_gha else []
 
     print(json.dumps({
         "repo": str(repo),
@@ -382,16 +360,12 @@ def main(argv=None) -> int:
                                if post_commit_backup else None),
         "gitignore": "ensured",
         "stale_global_hooks_removed": stale_removed,
-        "gha_workflow_removed": removed,
     }, indent=2))
     for backup, name in ((pre_push_backup, "pre-push"),
                          (post_commit_backup, "post-commit")):
         if backup:
             print(f"\nNOTE: an existing {name} hook was backed up to "
                   f"{backup.relative_to(repo)} before installing the merge-gate hook.")
-    if args.teardown_gha:
-        print("\nNOTE: GHA workflow teardown is the single operator-authorized "
-              "freeze exception (ADR-0009 § freeze Exception, 2026-05-28).")
     return 0
 
 

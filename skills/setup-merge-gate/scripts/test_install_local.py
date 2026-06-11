@@ -44,23 +44,6 @@ class TestHarnessMerge(unittest.TestCase):
         self.assertEqual(d["merge-gate"]["local"]["review_globs"], ["**/*"])
         self.assertNotIn("*.lock", d["merge-gate"]["local"]["ignore_globs"])
 
-    def test_preserves_gha_section(self):
-        existing = (
-            "[merge-gate]\n"
-            'profile = "github-actions"\n\n'
-            "[merge-gate.github-actions]\n"
-            'soft_mode = true\n'
-            'bypass_label = "merge-gate-bypass"\n'
-        )
-        out = il.merge_harness_toml(existing)
-        d = self._parse(out)
-        self.assertEqual(d["merge-gate"]["profile"], "local")  # flipped
-        # GHA section preserved verbatim
-        self.assertEqual(d["merge-gate"]["github-actions"]["soft_mode"], True)
-        self.assertEqual(d["merge-gate"]["github-actions"]["bypass_label"],
-                         "merge-gate-bypass")
-        self.assertEqual(d["merge-gate"]["local"]["enforcement_policy"], "advisory")
-
     def test_preserves_unrelated_tables_and_comments(self):
         existing = "# top comment\n[tool.other]\nkey = 1\n"
         out = il.merge_harness_toml(existing)
@@ -161,17 +144,6 @@ class TestInstallActions(unittest.TestCase):
                 for g in grp for h in g.get("hooks", [])]
         self.assertNotIn(il.SCHED_CMD, cmds)
         self.assertNotIn(il.MARK_CMD, cmds)
-
-    def test_teardown_gha_removes_workflow(self):
-        wf = self.repo / ".github" / "workflows" / "codex-review.yml"
-        wf.parent.mkdir(parents=True)
-        wf.write_text("name: merge-gate\n")
-        removed = il.teardown_gha(self.repo)
-        self.assertFalse(wf.exists())
-        self.assertIn(".github/workflows/codex-review.yml", removed)
-
-    def test_teardown_gha_noop_when_absent(self):
-        self.assertEqual(il.teardown_gha(self.repo), [])
 
 
 class TestC2PreserveLocalSettings(unittest.TestCase):

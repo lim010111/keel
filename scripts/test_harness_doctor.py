@@ -186,15 +186,18 @@ class TestUnknownClass(unittest.TestCase):
 
 
 class TestLegacyGhaSchema(unittest.TestCase):
-    def test_legacy_gha_is_needs_migration_not_local_with_missing_hook(self):
-        # The disaster guarded against: misreading this as a local gate with an
-        # absent hook would let #04 auto-install a local pre-push onto a GHA repo.
+    def test_legacy_gha_schema_is_surfaced_as_a_gap_never_local(self):
+        # Legacy-GHA recognition was removed with the profile (ADR-0021; the two
+        # legacy-schema installs were torn down). A leftover legacy section is an
+        # unrecognized [merge-gate] like any other: a gap — but still NEVER
+        # misread as a local gate with an absent hook (which would let #04
+        # auto-install a local pre-push onto it).
         repo = _new_repo(LEGACY_GHA_TOML)
         rec = _record(harness_doctor.diagnose(repo), "merge-gate")
-        self.assertEqual(rec["intent"], "present")
-        self.assertEqual(rec["state"], "legacy-schema/needs-migration")
+        self.assertNotEqual(rec["state"], "legacy-schema/needs-migration")
+        self.assertNotEqual(rec["applicability"], "parked")
         self.assertNotEqual(rec["enforcement"], "unwired")  # never installable-local
-        self.assertEqual(rec["applicability"], "parked")     # GHA frozen, ADR-0009
+        self.assertTrue(harness_doctor._is_gap(rec))
 
 
 class TestUnrecognizedProfile(unittest.TestCase):
@@ -214,13 +217,14 @@ class TestUnrecognizedProfile(unittest.TestCase):
         self.assertNotEqual(rec["state"], "legacy-schema/needs-migration")
         self.assertTrue(harness_doctor._is_gap(rec))
 
-    def test_github_actions_profile_is_recognized_and_parked(self):
-        # The current-schema dormant GHA profile (ADR-0009) is recognized, parked,
-        # and NOT a gap — distinct from the legacy pre-profile schema.
+    def test_github_actions_profile_is_surfaced_as_a_gap(self):
+        # The github-actions profile was removed (ADR-0021) — 'local' is the only
+        # profile. A leftover github-actions value is just another unrecognized
+        # profile: surfaced as a gap, never blessed as parked.
         repo = _new_repo('[merge-gate]\nprofile = "github-actions"\n')
         rec = _record(harness_doctor.diagnose(repo), "merge-gate")
-        self.assertEqual(rec["applicability"], "parked")
-        self.assertFalse(harness_doctor._is_gap(rec))
+        self.assertNotEqual(rec["applicability"], "parked")
+        self.assertTrue(harness_doctor._is_gap(rec))
 
 
 class TestReuseByImport(unittest.TestCase):
@@ -361,15 +365,15 @@ class TestComputeCoverage(unittest.TestCase):
         self.assertEqual(set(cov["applicable"]), {"agents-md", "status-harness", "merge-gate"})
 
 
-    def test_parked_self_verification_excluded_but_wanted_gha_merge_gate_stays(self):
+    def test_parked_self_verification_excluded_but_unrecognized_merge_gate_stays(self):
         # AC12 + two panel blockers. (a) self-verification is the one
         # legitimately-parked-in-scaffold concern (no installer) → out of the
         # denominator, surfaced as "opted-in, parked". (b) A merge-gate the
-        # operator WANTED but that resolves to a frozen github-actions profile
-        # (record applicability=parked) must NOT vanish from the denominator —
-        # parked is the static no-installer set, NOT "any parked record". Its
-        # intent is present, so it counts installed (the migration need is #02's
-        # needs-migration state, not the phase-1 fraction).
+        # operator WANTED but whose [merge-gate] resolves to an unrecognized
+        # profile (e.g. a leftover github-actions value — removed, ADR-0021)
+        # must NOT vanish from the denominator — parked is the static
+        # no-installer set, NOT "any non-local record". Its intent is partial,
+        # so it stays an open coverage gap, never silently covered.
         repo = _new_repo('[merge-gate]\nprofile = "github-actions"\n\n' + SELF_VERIFY_TOML)
         (repo / "AGENTS.md").write_text("# proj\n", encoding="utf-8")
         (repo / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
@@ -380,8 +384,8 @@ class TestComputeCoverage(unittest.TestCase):
             "ci": False})
         self.assertNotIn("self-verification", cov["applicable"])      # parked → out of denom
         self.assertIn("self-verification", cov["parked_opted_in"])    # surfaced as opted-in/parked
-        self.assertIn("merge-gate", cov["applicable"])                # wanted GHA gate STAYS in denom
-        self.assertIn("merge-gate", cov["covered"])                   # intent=present → installed
+        self.assertIn("merge-gate", cov["applicable"])                # stays in denom
+        self.assertNotIn("merge-gate", cov["covered"])                # open gap, not covered
 
     def test_unrecognized_scaffold_slug_is_surfaced_not_a_perpetual_gap(self):
         # AC11 trap at the coverage layer + panel blocker-1. A recorded scaffold

@@ -173,16 +173,16 @@ def _merge_gate_decision(repo, rec):
                 "message": "merge-gate pre-push wired but the #33 post-commit "
                            "producer trigger is missing — report-only; the surgical "
                            "post-commit-only fill is #07"}
-    # Fillable predicate. Excludes parked (legacy-GHA / github-actions profile),
-    # state-bearing (needs-migration / unknown-class), and unrecognized/typo
-    # profiles (intent=partial). What remains is profile local-or-absent — the
+    # Fillable predicate. Excludes state-bearing (unknown-class) and
+    # unrecognized profiles (intent=partial — anything but 'local', the only
+    # profile since ADR-0021). What remains is profile local-or-absent — the
     # engine has already classified every other case out.
     if not (rec["applicability"] == "applicable" and rec["state"] is None
             and rec["intent"] != "partial"):
         return {"status": "report-only",
-                "message": "merge-gate not auto-fillable (parked / legacy / "
-                           "unrecognized profile) — resolve via /setup-merge-gate; "
-                           "GHA→local migration is #07"}
+                "message": "merge-gate not auto-fillable (unrecognized "
+                           "[merge-gate] — expected profile 'local'); resolve "
+                           "via /setup-merge-gate"}
     if not _hooks_dir_in_repo(repo):
         return {"status": "report-only",
                 "message": "git hooks dir resolves outside the repo "

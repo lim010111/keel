@@ -5,15 +5,15 @@ Stdlib `unittest` only — pytest is not installed in this environment.
 Run:  python3 scripts/test_aggregate.py -v
 
 Covers:
-  - aggregate.py build-input on the workflow's NORMALIZED single-doc
-    payload (the happy path the workflow's Normalize step produces).
+  - aggregate.py build-input on the producer's NORMALIZED single-doc
+    payload (the happy path the Normalize step produces).
   - aggregate.py build-input on a raw JSONL stream (defensive path for
-    direct invocation outside the workflow).
-  - Invariance: same findings from JSONL and from its workflow-normalize
-    output. Proves the two extraction paths can't drift.
+    direct invocation outside the producer).
+  - Invariance: same findings from JSONL and from its normalize output.
+    Proves the two extraction paths can't drift.
   - Fallbacks: no agent_message event, malformed agent_message.text,
     empty findings — each returns [] with exit 0.
-  - The workflow's jq Normalize expression is duplicated as JQ_NORMALIZE
+  - The GHA-era jq Normalize expression is duplicated as JQ_NORMALIZE
     and exercised against the same JSONL fixture; its output, fed back
     through aggregate.py, must match the JSONL path.
 """
@@ -36,12 +36,12 @@ FIXTURES = SCRIPTS / "fixtures"
 sys.path.insert(0, str(SCRIPTS))
 from aggregate import parse_validator_output  # noqa: E402
 
-# The workflow's "Normalize Codex JSONL → single-doc review payload" step
-# jq expression. Kept here as a string so the test can prove byte-equivalence
-# between (a) JSONL → workflow-normalize → aggregate.py and (b) JSONL →
-# aggregate.py direct. If you edit this constant, update
-# ~/.claude/skills/setup-merge-gate/templates/codex-review.yml's "Normalize
-# Codex JSONL" step to match (and vice versa).
+# The GHA-era "Normalize Codex JSONL → single-doc review payload" jq
+# expression (the workflow it shipped in was removed — ADR-0021). Kept here
+# verbatim as the reference oracle so the test can prove byte-equivalence
+# between (a) JSONL → jq-normalize → aggregate.py and (b) JSONL →
+# aggregate.py direct. merge_gate_local.normalize_codex_jsonl is the live
+# port; test_merge_gate_local._JQ_NORMALIZE mirrors this constant.
 JQ_NORMALIZE = r"""
 if $codex_exit != "0" then
   {result: {verdict: "unknown",
@@ -232,10 +232,10 @@ class TestBuildInput(unittest.TestCase):
         self.assertEqual(findings[0]["file"], "injected.py")
         self.assertEqual(findings[0]["line"], 4)
 
-    def test_no_durable_context_by_default_gha_byte_identical(self):
+    def test_no_durable_context_by_default(self):
         """D11: without --durable-context-from the payload has NO
-        durable_context key — the GHA build-input invocation stays
-        byte-identical to pre-#30."""
+        durable_context key — intent-less invocations stay byte-identical
+        to pre-#30."""
         payload = run_build_input(FIXTURES / "single_doc_with_result.json")
         self.assertNotIn("durable_context", payload)
 
@@ -276,9 +276,9 @@ class TestBuildInput(unittest.TestCase):
 
 class TestOutDirThreading(unittest.TestCase):
     """The --out-dir arg lands the artefacts wherever the producer points it
-    (local profile passes the per-reviewer tuple sub-dir). The default path
-    behaviour the GHA workflow relies on is exercised by TestWriteFallback /
-    TestPairingOnId, which pass `--out-dir .codex-review` explicitly."""
+    (local profile passes the per-reviewer tuple sub-dir). The default-path
+    behaviour is exercised by TestWriteFallback / TestPairingOnId, which pass
+    `--out-dir .codex-review` explicitly."""
 
     def test_write_outputs_honors_out_dir(self):
         tmp = Path(tempfile.mkdtemp(prefix="aggregatetest-"))

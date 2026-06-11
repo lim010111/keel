@@ -5,7 +5,7 @@ Deterministic helper for the /run-codex-validators skill. Three subcommands:
 
   build-input     emit validator <input> JSON on stdout
   write-outputs   parse validator stdout + codex JSON, write the
-                  validators.{json,md} artifacts the workflow consumes
+                  validators.{json,md} artifacts the merge-gate consumes
   write-fallback  emit "Codex did not run" artifacts and return
 
 All commands return exit code 0 unless argparse itself rejects the args.
@@ -46,7 +46,7 @@ def err(msg: str) -> None:
 
 
 def _findings_from_result_doc(doc: object) -> list[dict] | None:
-    """Extract findings[] from a single-doc payload of the workflow's
+    """Extract findings[] from a single-doc payload of the producer's
     normalize-step shape: {result: {findings: [...]}, codex: {...}}.
 
     Returns None if `doc` is not that shape (caller falls back to JSONL).
@@ -64,11 +64,11 @@ def _findings_from_result_doc(doc: object) -> list[dict] | None:
 def _findings_from_jsonl_stream(lines: list[str]) -> list[dict]:
     """Extract findings from raw Codex `--json` JSONL output.
 
-    Matches the workflow's "Normalize Codex JSONL" jq expression: filter
-    item.completed[agent_message] events, take the last one, json.loads
-    its .item.text, return result.findings[]. Returns [] on any failure
-    (missing event, malformed payload, etc.) — same fail-safe as the
-    workflow's fallback branches.
+    Matches the producer's "Normalize Codex JSONL" step (merge_gate_local.py
+    G1): filter item.completed[agent_message] events, take the last one,
+    json.loads its .item.text, return result.findings[]. Returns [] on any
+    failure (missing event, malformed payload, etc.) — same fail-safe as the
+    normalize fallback branches.
     """
     last_agent_msg: dict | None = None
     for raw in lines:
@@ -102,8 +102,8 @@ def _findings_from_jsonl_stream(lines: list[str]) -> list[dict]:
 
 
 def load_codex_findings(path: str) -> list[dict]:
-    """Return Codex findings[] from either a single-doc payload (workflow
-    case — what the normalize step writes) or a raw JSONL stream (defensive
+    """Return Codex findings[] from either a single-doc payload (what the
+    producer's normalize step writes) or a raw JSONL stream (defensive
     path for direct local invocation, regression tests, alternative hosts).
 
     The two paths must produce identical findings for equivalent input.
@@ -118,8 +118,8 @@ def load_codex_findings(path: str) -> list[dict]:
         return []
     if not raw.strip():
         return []
-    # Try single-doc first — this is the normalized-payload case the
-    # workflow installs after #18. json.load on a JSONL file raises
+    # Try single-doc first — this is the normalized-payload case installed
+    # after #18. json.load on a JSONL file raises
     # JSONDecodeError ("Extra data") on the second top-level value, so
     # this never silently picks up only the first event.
     try:
@@ -173,8 +173,8 @@ def cmd_build_input(args: argparse.Namespace) -> int:
     }
     # D11 (claude-harness-work#30): the local profile has no PR body, so the
     # producer threads durable intent (published-range commit messages, branch,
-    # optional operator-supplied intent) as additional, written context. Default
-    # empty/absent so the GHA invocation stays byte-identical. The validator
+    # optional operator-supplied intent) as additional, written context.
+    # Default empty/absent — callers that pass no intent get no key. The validator
     # weighs it like a PR description; durable/written context is legitimate,
     # session-ephemeral context is biased (ADR-0001/0010/0011).
     durable = ""
@@ -510,7 +510,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--durable-context-from", default=None,
                    help="optional file of durable validator context (branch / "
                         "published-range commit messages / operator intent); "
-                        "default empty keeps the GHA invocation byte-identical (D11)")
+                        "default empty — payload then has no durable_context (D11)")
     b.set_defaults(func=cmd_build_input)
 
     w = sub.add_parser("write-outputs", help="write validators.json + validators.md")
@@ -530,7 +530,7 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit:
         # argparse already wrote the usage error to stderr; honor the
         # "always exit 0" runtime contract (#05 AC, ADR-0005). The
-        # workflow's `Decide check outcome` step is the sole gate.
+        # merge-gate's `verify` step is the sole gate.
         return 0
     try:
         return args.func(args)

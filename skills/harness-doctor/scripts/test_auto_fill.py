@@ -43,8 +43,9 @@ def _recorded(scaffold, ci: bool = False) -> str:
     return f"[harness]\nscaffold = [{items}]\nci = {str(ci).lower()}\n"
 
 
-# Verbatim shape of the real legacy github-actions target repos (mirrors
-# test_harness_doctor.py): [merge-gate] with the GHA keys, NO profile.
+# Verbatim shape of the (since torn-down, ADR-0021) legacy github-actions
+# target repos (mirrors test_harness_doctor.py): GHA keys, NO profile —
+# kept as a realistic unrecognized-section regression input.
 LEGACY_GHA_TOML = """[merge-gate]
 soft_mode_default = 'true'
 codex_review_cmd = 'codex exec --json "Run an adversarial review"'
@@ -210,8 +211,9 @@ class TestMergeGateFill(unittest.TestCase):
         self.assertEqual((_hooks_dir(repo) / "pre-push").read_text(encoding="utf-8"), husky)
 
     def test_legacy_gha_is_report_only_no_local_pre_push(self):
-        # AC (parked / footgun): a legacy github-actions [merge-gate] is report-only
-        # — auto-fill must NEVER install a local pre-push onto a GHA repo.
+        # AC (footgun): a leftover legacy-GHA-shaped [merge-gate] (unrecognized
+        # since ADR-0021) is report-only — auto-fill must NEVER install a local
+        # pre-push onto a section it does not understand.
         repo = _new_repo(_recorded(["merge-gate"]) + "\n" + LEGACY_GHA_TOML)
         plan = auto_fill.build_plan(repo)
         mg = [r for r in plan["records"] if r["concern"] == "merge-gate"]
@@ -220,8 +222,8 @@ class TestMergeGateFill(unittest.TestCase):
         self.assertFalse((_hooks_dir(repo) / "pre-push").exists())
 
     def test_github_actions_profile_is_report_only_local_only(self):
-        # AC (local-only): a recorded github-actions profile is report-only — never
-        # forced to local, never auto-activating the frozen profile (ADR-0009).
+        # AC (local-only): a leftover github-actions profile value (removed,
+        # ADR-0021) is report-only — never silently force-converted to local.
         repo = _new_repo(_recorded(["merge-gate"])
                          + '\n[merge-gate]\nprofile = "github-actions"\n')
         plan = auto_fill.build_plan(repo)

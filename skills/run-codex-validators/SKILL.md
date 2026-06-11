@@ -1,13 +1,14 @@
 ---
 name: run-codex-validators
-description: Validator-layer runtime for the merge-gate. Reads Codex adversarial-review JSON, dispatches the `codex-review-validator` subagent to classify each finding (uphold/dismiss/unsure), then writes `.codex-review/validators.{json,md}` for the workflow to consume. Invoked by `.github/workflows/codex-review.yml` (or a human after a local `codex /adversarial-review`). Takes `--codex-json <path>` (default `./codex-review.json`) and `--soft-mode <true|false>`. Always exits 0 — the workflow's `Decide check outcome` step is the sole authoritative gate. MVP is Claude-only (ADR-0005).
+description: Validator-layer runtime for the merge-gate. Reads Codex adversarial-review JSON, dispatches the `codex-review-validator` subagent to classify each finding (uphold/dismiss/unsure), then writes `.codex-review/validators.{json,md}` for the merge-gate to consume. Invoked by the local merge-gate producer (`merge_gate_local.py produce`) or a human after a local `codex /adversarial-review`. Takes `--codex-json <path>` (default `./codex-review.json`) and `--soft-mode <true|false>`. Always exits 0 — the merge-gate's `verify` step is the sole authoritative gate. MVP is Claude-only (ADR-0005).
 ---
 
 # `/run-codex-validators` — validator-layer runtime
 
 You are the runtime glue between Codex (which produced JSON findings) and
 the Claude validator subagent (which classifies them). Your output is two
-files the workflow consumes; you do not decide the gate. The workflow does.
+files the merge-gate consumes; you do not decide the gate. The gate's
+`verify` step does.
 
 ## Invocation contract
 
@@ -22,26 +23,24 @@ claude -p "/run-codex-validators --codex-json <path> --soft-mode <true|false>" \
 - `--codex-json` default: `./codex-review.json`.
 - `--soft-mode` is `true` or `false`; required.
 - `--out-dir` (optional) default `./.codex-review/` — the directory the two
-  output files are written to. The GitHub Actions workflow omits it, so the
-  default keeps that invocation **byte-identical**. The local merge-gate
-  producer (`merge-gate-local produce`, claude-harness-work#30) passes a
+  output files are written to. The local merge-gate producer
+  (`merge-gate-local produce`, claude-harness-work#30) passes a
   per-reviewer tuple sub-dir here so each reviewer's `validators.{json,md}`
   land separately. **Use `$OUT_DIR` below wherever `.codex-review` was
   hardcoded.**
 - `--intent-from <path>` (optional) — a file of **durable** validator context
   (branch name / published-range commit messages / operator-supplied intent).
   The local profile has no PR body, so the producer supplies this written
-  intent for the validator to weigh like a PR description (D11). Omitted by the
-  GHA workflow → empty → byte-identical. Pass it through to `build-input` as
-  `--durable-context-from` (step 4).
+  intent for the validator to weigh like a PR description (D11). Pass it
+  through to `build-input` as `--durable-context-from` (step 4).
 
 ## Always exit 0
 
 This is the most important constraint. No matter what goes wrong —
 missing Codex JSON, malformed input, subagent failure — write the
 fallback artifacts (via `scripts/aggregate.py write-fallback`) and
-return success. The workflow's `Decide check outcome` step is the sole
-authoritative gate (see ADR-0005 and `setup-merge-gate/templates/codex-review.yml`).
+return success. The merge-gate's `verify` step is the sole authoritative
+gate (ADR-0005; composition — ADR-0011).
 
 ## Adapter table — the silent bug killer
 
@@ -143,21 +142,17 @@ Written under `$OUT_DIR` (default `./.codex-review/`, created if missing):
   }
   ```
 - `validators.md` — severity-count table + the list of items where
-  `block == true` with their one-line citations. The workflow appends
-  this to its sticky PR comment.
+  `block == true` with their one-line citations — the human-readable
+  companion the merge-gate surfaces in its report.
 
 ## Where `aggregate.py` lives
 
 The helper script lives alongside this SKILL.md, at `scripts/aggregate.py`
-within the skill directory. The skill is loaded from one of two places:
-
-- **Vendored into the target repo** by the installer (#04):
-  `./.claude/skills/run-codex-validators/scripts/aggregate.py`
-- **Global install:**
-  `~/.claude/skills/run-codex-validators/scripts/aggregate.py`
-
-Prefer the project-local copy when both exist. Below, `$AGG` stands for
-whichever path resolved; `python3 "$AGG" <subcommand> …` is the call shape.
+within the skill directory — the global install:
+`~/.claude/skills/run-codex-validators/scripts/aggregate.py`. (Per-repo
+vendored copies were a github-actions-profile mechanism — removed,
+ADR-0021.) Below, `$AGG` stands for that resolved path;
+`python3 "$AGG" <subcommand> …` is the call shape.
 
 ## Workflow you execute
 
@@ -189,7 +184,7 @@ whichever path resolved; `python3 "$AGG" <subcommand> …` is the call shape.
    **If `$INTENT_FROM` was passed**, append
    `--durable-context-from "$INTENT_FROM"` to the `build-input` call so the
    validator receives the durable intent (D11). When absent, omit it — the
-   payload then has no `durable_context` key (GHA byte-identical).
+   payload then has no `durable_context` key.
 
 5. **Dispatch the validator subagent.** Use the Agent tool with
    `subagent_type: codex-review-validator` and pass the contents of
@@ -214,29 +209,28 @@ python3 "$AGG" write-fallback \
   --out-dir "$OUT_DIR"
 ```
 
-then return success. The workflow handles the rest.
+then return success. The merge-gate's `verify` step handles the rest.
 
 The fallback writes `validators.json` with `aggregate: []` and a non-empty
-`fallback: "<reason>"` key. The workflow's `Decide check outcome` step is
-the sole gate decision-maker and inspects both: under hard mode it fails
-closed when `.fallback` is non-empty AND the normalized Codex payload
-reports critical/high findings (claude-harness-work#24). The runtime's
-"always exit 0" contract is preserved — do NOT change `write-fallback` to
-embed Codex findings into `aggregate[]`; the workflow already has the
-information it needs to decide.
+`fallback: "<reason>"` key. The merge-gate's `verify` step
+(`merge_gate_local.py`) is the sole gate decision-maker and inspects both:
+under blocking enforcement it fails closed when `.fallback` is non-empty
+AND the normalized Codex payload reports critical/high findings
+(claude-harness-work#24). The runtime's "always exit 0" contract is
+preserved — do NOT change `write-fallback` to embed Codex findings into
+`aggregate[]`; the gate already has the information it needs to decide.
 
 ## What this skill must not do
 
 - Do not call `agy`, `gemini`, or any validator beyond
-  `codex-review-validator`. ADR-0005 keeps the MVP single-model until
-  #10 produces real soft-mode measurement data.
+  `codex-review-validator`. ADR-0005 keeps the MVP single-model (a 2nd
+  validator is post-v1 backlog).
 - Do not change `validators.json` to a dict-shaped schema. The list
   shape is the forward-compat anchor.
 - Do not rewrite the validator agent's `<input>` / `<output_contract>`.
   Adapt at this skill's boundary (the adapter table above).
-- Do not return non-zero from this skill or its scripts. The workflow's
-  `Decide check outcome` step decides blocking; this runtime only
-  produces evidence.
+- Do not return non-zero from this skill or its scripts. The merge-gate's
+  `verify` step decides blocking; this runtime only produces evidence.
 - Do not read `harness.toml` or other project config. The CLI args
   carry everything needed; configuration is the installer's concern (#04).
 
@@ -244,9 +238,8 @@ information it needs to decide.
 
 - `~/.claude/agents/codex-review-validator.md` (#02) — the validator's
   `<input>` and `<output_contract>` this skill adapts to and parses from.
-- `~/.claude/skills/setup-merge-gate/templates/codex-review.yml` (#03)
-  — the workflow that invokes this skill and consumes its two output
-  files. #04's installer is responsible for the `Decide check outcome`
-  step's integration with `validators.json`.
+- `~/.claude/scripts/merge_gate_local.py` (#30) — the producer that
+  invokes this skill headless and the `verify` step that consumes its two
+  output files.
 - ADR-0005 `claude-only-validator-mvp-gemini-deferred.md` — the rationale
   for single-validator MVP and list-shaped schema.

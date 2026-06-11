@@ -131,15 +131,10 @@ SCAFFOLD_CONCERNS = ("agents-md", "status-harness", "merge-gate", "self-verifica
 # The single legitimately-parked-in-scaffold concern (#03 AC12): a concern with
 # no installer skill to fill it. Excluded from the coverage denominator (reporting
 # it as a gap would nag you to install what you deliberately parked). This is NOT
-# widened to "any record whose applicability == parked" — an installed-but-frozen
-# gate (e.g. a github-actions merge-gate the operator wanted) must stay in the
+# widened to "any record whose applicability == parked" — a wanted merge-gate
+# whose section resolves to an unrecognized profile must stay in the
 # denominator, not silently vanish from the fraction.
 PARKED_CONCERNS = {"self-verification"}
-
-# Signature keys of the legacy (pre-`profile`) github-actions [merge-gate] schema
-# (e.g. chess_transformer). Legacy is recognized by these +
-# an absent `profile`, never by "profile != local" (#02 AC).
-LEGACY_GHA_KEYS = {"soft_mode_default", "codex_review_cmd", "bypass_label"}
 
 
 def resolve_hooks_dir(repo_root):
@@ -191,9 +186,9 @@ def _record(concern, intent="absent", enforcement="n/a",
 
 
 def _merge_gate_record(repo_root, mg):
-    """merge-gate is bespoke: it discriminates the local profile from the legacy
-    github-actions schema. Always reported (the marquee gate) — absent when there
-    is no [merge-gate] section."""
+    """merge-gate is bespoke: 'local' is the only profile (ADR-0021); anything
+    else is surfaced, never blessed. Always reported (the marquee gate) — absent
+    when there is no [merge-gate] section."""
     if mg is None:
         return _record("merge-gate", intent="absent", enforcement="n/a")
     profile = mg.get("profile")
@@ -204,31 +199,14 @@ def _merge_gate_record(repo_root, mg):
         m_state = "wired" if hook_has_marker(repo_root, m_hook, m_marker) else "unwired"
         return _record("merge-gate", intent="present", enforcement=enforcement,
                        detail=f"#33 measurement post-commit trigger: {m_state}")
-    # Legacy github-actions schema — recognized POSITIVELY by its keys and the
-    # ABSENCE of a profile, NEVER by "profile != local" (which would silently bless
-    # a typo'd profile or an empty section as parked legacy → a false "conforms",
-    # #02 AC). GHA enforces server-side, frozen per ADR-0009; reported
-    # needs-migration, never as a local gate with a missing hook (which would let
-    # #04 auto-install a local pre-push onto a GHA repo).
-    if profile is None and (LEGACY_GHA_KEYS & set(mg)):
-        return _record(
-            "merge-gate", intent="present", enforcement="n/a", applicability="parked",
-            state="legacy-schema/needs-migration",
-            detail="github-actions schema (ADR-0009 frozen); GHA→local migration is #07")
-    if profile == "github-actions":
-        # The current-schema dormant/opt-in GHA profile (ADR-0009) — recognized
-        # and parked, NOT the legacy pre-profile schema (so not needs-migration).
-        return _record(
-            "merge-gate", intent="present", enforcement="n/a", applicability="parked",
-            state="github-actions-profile",
-            detail="github-actions profile (ADR-0009 dormant/opt-in)")
-    # Unrecognized: a typo'd profile, an empty [merge-gate], or a profile-less
-    # section without the legacy GHA keys. Surface as an applicable gap (intent
-    # partial, state None so _is_gap fires) rather than false-blessing it.
+    # Unrecognized: a typo'd profile, an empty [merge-gate], a profile-less
+    # section, or a leftover github-actions/legacy-GHA config (the profile was
+    # removed — ADR-0021). Surface as an applicable gap (intent partial, state
+    # None so _is_gap fires) rather than false-blessing it — and never as a
+    # local gate with a missing hook (which would let #04 auto-install onto it).
     return _record(
         "merge-gate", intent="partial", enforcement="n/a",
-        detail=f"unrecognized [merge-gate] profile {profile!r}; expected 'local', "
-               "'github-actions', or the legacy GHA schema (keys + no profile)")
+        detail=f"unrecognized [merge-gate] profile {profile!r}; expected 'local'")
 
 
 def _gate_record(repo_root, section):
@@ -382,10 +360,9 @@ def compute_coverage(records, profile):
     recognized = [c for c in scaffold if c in SCAFFOLD_CONCERNS]
     unrecognized = [c for c in scaffold if c not in SCAFFOLD_CONCERNS]
     # Denominator = recognized scaffold minus the static no-installer parked set.
-    # NOT widened to "any record whose applicability==parked": an installed-but-
-    # frozen gate (a github-actions merge-gate the operator wanted) must stay in
-    # the denominator — its migration need is #02's needs-migration state, not a
-    # vanished coverage term.
+    # NOT widened to "any record whose applicability==parked": a wanted
+    # merge-gate whose section resolves to an unrecognized profile must stay in
+    # the denominator as an open gap, not a vanished coverage term.
     denom = [c for c in recognized if c not in PARKED_CONCERNS]
     covered = [c for c in denom if rec_by.get(c, {}).get("intent") == "present"]
     parked_opted_in = [c for c in recognized if c in PARKED_CONCERNS]

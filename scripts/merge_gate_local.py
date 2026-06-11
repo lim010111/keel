@@ -25,9 +25,9 @@ Design lives in `.scratch/merge-gate/issues/30-local-merge-gate-profile.md`
     is fed to the reviewer INLINE (ADR-0012); the model never self-collects it.
   * Codex reviewer = `codex exec --json --output-schema <schema> --sandbox
     read-only "<adversarial prompt>"` — NOT `codex review` (ADR-0012). Its
-    JSONL is normalized to `.result.findings[]` by a port of the frozen GHA
-    "Normalize Codex JSONL" step (G1), shape-equivalent to what the GHA
-    template feeds `/run-codex-validators --codex-json`.
+    JSONL is normalized to `.result.findings[]` by the "Normalize Codex
+    JSONL" step (G1; ported from the since-removed GHA workflow — ADR-0021),
+    the shape `/run-codex-validators --codex-json` expects.
   * The validator (uphold/dismiss) runs in its OWN headless context, never the
     implementing session (#24/#26/#29 fail-open lessons); produce sets
     MERGE_GATE_PRODUCER_RUNNING=1 around the headless calls.
@@ -269,8 +269,8 @@ def load_config(repo_root: Path) -> Config:
     """Read `[merge-gate]` + `[merge-gate.local*]` from <repo>/harness.toml.
 
     Backward/forward tolerant: unknown keys ignored, missing keys defaulted.
-    The wrapper only ever reads the LOCAL profile's keys — it must not depend
-    on GHA-profile keys (frozen, ADR-0009)."""
+    The wrapper only ever reads the LOCAL profile's keys (the only profile —
+    ADR-0021); leftover foreign keys are ignored, never load-bearing."""
     data = _merge_defaults(DEFAULT_CONFIG, {})
     toml_path = repo_root / "harness.toml"
     if not toml_path.exists():
@@ -313,9 +313,9 @@ def err(msg: str) -> None:
 
 
 def glob_to_regex(pattern: str) -> re.Pattern:
-    """fnmatch-with-** → regex. Ported verbatim from the GHA template's
-    docs-only `to_regex` (codex-review.yml) so local scope-matching and the
-    frozen workflow agree on glob semantics."""
+    """fnmatch-with-** → regex. Ported verbatim from the docs-only `to_regex`
+    of the since-removed GHA workflow template (ADR-0021), preserving its
+    glob semantics."""
     out, i = [], 0
     while i < len(pattern):
         c = pattern[i]
@@ -642,9 +642,11 @@ def review_scope_hash(cfg: Config) -> str:
 
 # --------------------------------------------------------------------------
 # G1 — Normalize Codex `--json` JSONL → single-doc `.result.findings[]`.
-# Port of the frozen GHA "Normalize Codex JSONL" jq step (codex-review.yml,
-# ADR-0012). The output shape MUST be byte-equivalent to what the GHA template
-# feeds `/run-codex-validators --codex-json`. Five branches, in the same order:
+# The "Normalize Codex JSONL" step, ported from the since-removed GHA
+# workflow's jq step (ADR-0021; ADR-0012). The output shape MUST stay
+# byte-equivalent to what `/run-codex-validators --codex-json` expects
+# (test_merge_gate_local keeps the original jq expression verbatim as the
+# reference oracle). Five branches, in the same order:
 #   codex-failed / missing-result / malformed-payload / normalize-failed / ok
 # Skipping this reintroduces #18's silent zero-findings.
 # --------------------------------------------------------------------------
@@ -2267,8 +2269,8 @@ def _build_intent_file(root: Path, cfg: Config, base: str, tip: str | None,
                        args) -> Path | None:
     """Durable validator context (D11): published-range commit messages + branch
     + optional operator intent, written to artifact_root/.intent.txt. Returns the
-    path, or None when there is no intent to record. Default empty keeps GHA
-    byte-identical."""
+    path, or None when there is no intent to record (the payload then has no
+    durable_context key)."""
     intent_parts = []
     branch = current_branch(root)
     if branch and branch != "HEAD":

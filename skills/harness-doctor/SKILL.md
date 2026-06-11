@@ -145,9 +145,9 @@ writes. The fill set is `{diagnose gaps} ∩ {recorded scaffold}` — **with no
 **Footgun refusals are automatic** (you do not need to reason about them): a
 merge-gate whose `pre-push`/`post-commit` already carries our marker is
 report-only (a re-render would clobber a prepended block — the #41 `#31`-RETIRED
-tombstone is the live instance); a legacy-GHA / github-actions-profile / unknown
-`[merge-gate]` is report-only (auto-fill installs the **local** profile only,
-ADR-0009; never onto a GHA repo); an out-of-repo `core.hooksPath` is report-only
+tombstone is the live instance); an unrecognized `[merge-gate]` (anything but
+profile `local` — the only profile, ADR-0021) is report-only (auto-fill never
+installs onto a section it does not understand); an out-of-repo `core.hooksPath` is report-only
 (two-scope leak). Re-running a full `install_local.py` is never how the gap is
 filled — auto_fill calls the repo-scoped functions directly.
 
