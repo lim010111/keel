@@ -61,7 +61,6 @@ scripts/test_classify_sound.py
 # --- Agents (definitions only; agent-memory/ is intentionally excluded) ---
 agents/ci-researcher.md
 agents/codex-review-validator.md
-agents/korean-context-writer.md
 
 # --- Config ---
 CLAUDE.md

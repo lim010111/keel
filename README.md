@@ -43,7 +43,7 @@ transitions** an artifact crosses on its way to a wider audience, see
 | Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `consult-externals`, `daily-dev-log`, `daily-token-report`, `harden-issue`, `harness-doctor`, `run-codex-validators`, `session-dev-log`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
 | Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `narrative_guard`, `merge_gate_post_commit` · `merge_gate_scheduler`, `self_verification` · `self_verification_pretooluse` |
 | Scripts | `status.py`, `sound_complete.sh` · `sound_permission.sh` · `classify_sound.py`, `merge_gate_local.py` · `merge_gate_adjudicate.py` · `merge_gate_measure.py`, `harness_doctor.py`, `toml_sections.py` |
-| Agents | `ci-researcher`, `codex-review-validator`, `korean-context-writer` |
+| Agents | `ci-researcher`, `codex-review-validator` |
 | Config | `CLAUDE.md`, `statusline.sh`, `settings.json` |
 
 These components aren't all independent. The four bundles below **only work
@@ -97,11 +97,10 @@ A bundle that auto-refreshes a project's root `STATUS.md` every session:
 A bundle that summarizes a session in Korean and files it into an Obsidian
 vault:
 
-The `session-dev-log` skill (invoked as `/session-dev-log`) → the
-`korean-context-writer` agent → Obsidian. `daily-dev-log` groups a whole
-day's sessions by project into the same folder. (The `SessionEnd` hook that
-auto-invoked this on every session end has been retired — invocation is
-manual now.)
+The `session-dev-log` skill (invoked as `/session-dev-log`) → Obsidian.
+`daily-dev-log` groups a whole day's sessions by project into the same
+folder. (The `SessionEnd` hook that auto-invoked this on every session
+end has been retired — invocation is manual now.)
 
 > ⚠️ This bundle has an Obsidian vault path hardcoded. See the Roadmap below.
 
@@ -267,8 +266,8 @@ keel went public early — small, and growing one piece at a time. A few
 hardening tasks are still open:
 
 - [ ] Drop the hardcoded Obsidian paths — move the memory paths in
-      `daily-dev-log`, `daily-token-report`, `session-dev-log`, `tech-blog`,
-      and `korean-context-writer` into configuration.
+      `daily-dev-log`, `daily-token-report`, `session-dev-log`, and
+      `tech-blog` into configuration.
 - [ ] Genericize absolute paths — `/home/shine` → `$HOME`.
 - [ ] Split `settings.json` into a harness block and personal preference.
 - [ ] Make `sound_*.sh` cross-platform (optional).
