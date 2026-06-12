@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -670,6 +671,58 @@ class TestUninstall(unittest.TestCase):
         (self.hooks / "post-commit").write_text(foreign)
         il.uninstall(self.repo, self.settings)
         self.assertEqual((self.hooks / "post-commit").read_text(), foreign)
+
+
+class Test46ManualDefaultOutDirIgnored(unittest.TestCase):
+    """#46 — a manual `/run-codex-validators` run relying on the skill's
+    default `--out-dir` must leave no committable, review-in-scope artefact
+    on a fresh install. The default lives as prose in that skill's SKILL.md;
+    this guards the coupling between that prose and the installer's ignore
+    surface (gitignore entry + rendered ignore_globs) so a future rename of
+    either side cannot silently reopen the seam (the #43 → #46 bug class)."""
+
+    SKILL_MD = HERE.parents[1] / "run-codex-validators" / "SKILL.md"
+    AGGREGATE = HERE.parents[1] / "run-codex-validators" / "scripts" / "aggregate.py"
+
+    def skill_default_out_dir(self) -> str:
+        m = re.search(r"`--out-dir` \(optional\) default `\./([^`/]+)/`",
+                      self.SKILL_MD.read_text())
+        self.assertIsNotNone(m, "cannot find the --out-dir default in SKILL.md")
+        return m.group(1)
+
+    def test_manual_default_run_leaves_no_committable_in_scope_artefact(self):
+        sys.path.insert(0, str(HERE.parents[2] / "scripts"))
+        import merge_gate_local as mgl
+        with tempfile.TemporaryDirectory() as t:
+            repo = Path(t) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            r = subprocess.run(
+                [sys.executable, str(HERE / "install_local.py"),
+                 "--repo", str(repo), "--settings", str(Path(t) / "settings.json"),
+                 "--pre-push-template", str(TEMPLATE)],
+                capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            default = self.skill_default_out_dir()
+            # the real artefact writer, pointed at the resolved skill default
+            r = subprocess.run(
+                [sys.executable, str(self.AGGREGATE), "write-fallback",
+                 "--reason", "manual run", "--out-dir", str(repo / default)],
+                capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            globs = tomllib.loads((repo / "harness.toml").read_text()
+                                  )["merge-gate"]["local"]["ignore_globs"]
+            for name in ("validators.json", "validators.md"):
+                rel = f"{default}/{name}"
+                self.assertTrue((repo / rel).exists())
+                # not committable — covered by the installed .gitignore
+                self.assertEqual(
+                    subprocess.run(["git", "-C", str(repo), "check-ignore",
+                                    "-q", rel]).returncode, 0,
+                    f"{rel} is committable (not gitignored) on a fresh install")
+                # not review-in-scope — excluded by the rendered ignore_globs
+                self.assertFalse(mgl.in_scope(rel, ["**/*"], globs),
+                                 f"{rel} is inside the canonical review scope")
 
 
 if __name__ == "__main__":

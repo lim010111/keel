@@ -276,9 +276,10 @@ class TestBuildInput(unittest.TestCase):
 
 class TestOutDirThreading(unittest.TestCase):
     """The --out-dir arg lands the artefacts wherever the producer points it
-    (local profile passes the per-reviewer tuple sub-dir). The default-path
-    behaviour is exercised by TestWriteFallback / TestPairingOnId, which pass
-    `--out-dir .codex-review` explicitly."""
+    (local profile passes the per-reviewer tuple sub-dir). aggregate.py has
+    no built-in default (--out-dir is required); the skill-level default
+    `./.merge-gate/` lives in SKILL.md prose, and the executor resolves it
+    and passes --out-dir explicitly (#46)."""
 
     def test_write_outputs_honors_out_dir(self):
         tmp = Path(tempfile.mkdtemp(prefix="aggregatetest-"))

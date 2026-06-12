@@ -1,6 +1,6 @@
 ---
 name: run-codex-validators
-description: Validator-layer runtime for the merge-gate. Reads Codex adversarial-review JSON, dispatches the `codex-review-validator` subagent to classify each finding (uphold/dismiss/unsure), then writes `.codex-review/validators.{json,md}` for the merge-gate to consume. Invoked by the local merge-gate producer (`merge_gate_local.py produce`) or a human after a local `codex /adversarial-review`. Takes `--codex-json <path>` (default `./codex-review.json`) and `--soft-mode <true|false>`. Always exits 0 — the merge-gate's `verify` step is the sole authoritative gate. MVP is Claude-only (ADR-0005).
+description: Validator-layer runtime for the merge-gate. Reads Codex adversarial-review JSON, dispatches the `codex-review-validator` subagent to classify each finding (uphold/dismiss/unsure), then writes `.merge-gate/validators.{json,md}` for the merge-gate to consume. Invoked by the local merge-gate producer (`merge_gate_local.py produce`) or a human after a local `codex /adversarial-review`. Takes `--codex-json <path>` (default `./codex-review.json`) and `--soft-mode <true|false>`. Always exits 0 — the merge-gate's `verify` step is the sole authoritative gate. MVP is Claude-only (ADR-0005).
 ---
 
 # `/run-codex-validators` — validator-layer runtime
@@ -22,12 +22,14 @@ claude -p "/run-codex-validators --codex-json <path> --soft-mode <true|false>" \
 - Working directory is the target repo root.
 - `--codex-json` default: `./codex-review.json`.
 - `--soft-mode` is `true` or `false`; required.
-- `--out-dir` (optional) default `./.codex-review/` — the directory the two
-  output files are written to. The local merge-gate producer
-  (`merge-gate-local produce`, claude-harness-work#30) passes a
+- `--out-dir` (optional) default `./.merge-gate/` — the directory the two
+  output files are written to. The default sits inside the local profile's
+  gitignored, review-scope-excluded artifact root (claude-harness-work#46),
+  so a manual run leaves no committable artefact. The local merge-gate
+  producer (`merge-gate-local produce`, claude-harness-work#30) passes a
   per-reviewer tuple sub-dir here so each reviewer's `validators.{json,md}`
-  land separately. **Use `$OUT_DIR` below wherever `.codex-review` was
-  hardcoded.**
+  land separately. **Use `$OUT_DIR` below wherever an output path is
+  needed — never hardcode one.**
 - `--intent-from <path>` (optional) — a file of **durable** validator context
   (branch name / published-range commit messages / operator-supplied intent).
   The local profile has no PR body, so the producer supplies this written
@@ -139,7 +141,7 @@ is `append`, not a rewrite.
 
 ## Output files
 
-Written under `$OUT_DIR` (default `./.codex-review/`, created if missing):
+Written under `$OUT_DIR` (default `./.merge-gate/`, created if missing):
 
 - `validators.json`:
   ```json
@@ -165,7 +167,7 @@ ADR-0021.) Below, `$AGG` stands for that resolved path;
 
 1. **Parse arguments.** Extract `--codex-json` (default
    `./codex-review.json`), `--soft-mode`, `--out-dir` (default
-   `.codex-review` → call it `$OUT_DIR`), the optional `--intent-from`
+   `.merge-gate` → call it `$OUT_DIR`), the optional `--intent-from`
    (call it `$INTENT_FROM`, unset if absent), and the optional
    `--agent-model` (call it `$AGENT_MODEL`, unset if absent) from the
    slash-command invocation. If `--soft-mode` is missing or not
