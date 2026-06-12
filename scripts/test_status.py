@@ -72,7 +72,7 @@ class TestCompletionOffenders(unittest.TestCase):
         for line in [
             "- **능동 · merge-gate #43:** rename 작업",
             "- **병행 · self-verify#01:** activation 이슈 신설",
-            "- **휴면 · GHA 프로필:** frozen — 손대지 않음",
+            "- **휴면 · publication-gate:** #03 parked — 손대지 않음",
             "- **#25 trust-boundary mitigation (ADR-0007 미작성)** — open decision",
             "- **post-v1 hardening 백로그** — 2nd validator",
             "상세는 #41 Resolution 에 완료 기록이 있다.",   # prose mention

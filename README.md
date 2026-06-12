@@ -107,32 +107,29 @@ manual now.)
 
 ### 4. The merge gate
 
-A bundle that installs and runs a pre-merge CI gate in a target project:
-Codex does the adversarial review, then a Claude validator subagent
-classifies each finding (`uphold`/`dismiss`/`unsure`) against the project's
-own documented context, and the gate blocks merge on `critical`/`high` ∩
-`uphold` (with `unsure` failing safe behind a labelled bypass lane). MVP is
-Claude-only; second validator returns once enough soft-mode measurement
-data is in.
+A bundle that installs and runs a pre-merge gate in a target project: a
+reviewer set (Codex by default) does the adversarial review, then a Claude
+validator subagent classifies each finding (`uphold`/`dismiss`/`unsure`)
+against the project's own documented context, and the gate blocks merge on
+`critical`/`high` ∩ `uphold` (with `unsure` failing safe behind a labelled
+bypass lane). MVP is Claude-only.
 
-The gate ships in two **profiles**. The default is **local**: a per-repo
-`pre-push` hook runs `merge-gate-local verify` — fast, deterministic, and
-spends no Codex or Claude tokens — while a cheap Stop-time scheduler produces
-the review in the background, so there is no per-PR CI cost. The
-**github-actions** profile (the workflow above) is opt-in.
+The gate is **local-only**: a per-repo `pre-push` hook runs
+`merge-gate-local verify` — fast, deterministic, and spends no Codex or
+Claude tokens — while a `post-commit` hook launches the expensive `produce`
+in the background, so there is no per-PR CI cost. (A github-actions profile
+existed and was removed outright.)
 
-- `setup-merge-gate` — the installer. Defaults to the **local** profile (a
-  `pre-push` hook + a `[merge-gate]` section in the project's `harness.toml`);
-  with `--profile github-actions` it instead renders the workflow into
-  `.github/workflows/codex-review.yml` and **vendors** the validator agent +
-  the runtime skill into the target's `.claude/` so clean CI runners discover
-  them without a global `~/.claude/`. `--uninstall` reverses everything,
+- `setup-merge-gate` — the installer: a `pre-push` hook + a `[merge-gate]`
+  section in the project's `harness.toml`. `--uninstall` reverses everything,
   leaving docs alone if the user has edited their generated marker out.
-- `run-codex-validators` — the runtime invoked by the workflow. Reads
-  Codex JSON, adapts it to the validator agent's input shape, dispatches
-  the subagent via the Agent tool, aggregates verdicts, and writes
-  `validators.{json,md}` for the workflow's `Decide check outcome` step to
-  consume. **Always exits 0**; the workflow is the sole authoritative gate.
+- `run-codex-validators` — the validator runtime, invoked by the local
+  producer (`merge_gate_local.py produce`) or a human after a local
+  `codex /adversarial-review`. Reads Codex JSON, adapts it to the validator
+  agent's input shape, dispatches the subagent via the Agent tool, aggregates
+  verdicts, and writes `validators.{json,md}` for the merge gate to consume.
+  **Always exits 0**; the merge-gate's `verify` step is the sole
+  authoritative gate.
 - `codex-review-validator` (agent) — the classifier itself. Takes one
   finding at a time and returns `uphold`/`dismiss`/`unsure` plus a strict
   citation rule: a `dismiss` without a quoted code/doc line auto-promotes
