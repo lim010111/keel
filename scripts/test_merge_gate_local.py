@@ -3891,6 +3891,23 @@ class Test48ReasoningEffortKeys(Test47PerComponentModelKeys):
                        validator={"dispatcher_effort": "low"})
         self.assertIsNone(mg._invalid_reasoning_effort(ok))
 
+    def test_inactive_reviewer_effort_is_inert(self):
+        # #48 produce-review (codex:finding-0 + claude:finding-1, upheld): a
+        # stale/bad effort key on a reviewer OUTSIDE cfg.reviewers must not
+        # wedge produce — it is inert (never injected, never hashed). The
+        # dispatcher always runs, so ITS bad knob still refuses.
+        inert = self._cfg(reviewers=["codex"],
+                          reviewer_config={"claude": {"bin": "claude",
+                                                      "reasoning_effort": "bogus"}})
+        self.assertIsNone(mg._invalid_reasoning_effort(inert))
+        inert_codex = self._cfg(reviewers=["claude"],
+                                reviewer_config={"codex": {"bin": "codex",
+                                                           "reasoning_effort": "ultra"}})
+        self.assertIsNone(mg._invalid_reasoning_effort(inert_codex))
+        dispatcher_still = self._cfg(reviewers=["codex"],
+                                     validator={"dispatcher_effort": "bogus"})
+        self.assertIsNotNone(mg._invalid_reasoning_effort(dispatcher_still))
+
     def test_cmd_produce_refuses_bad_effort_before_spend(self):
         (self.root / "harness.toml").write_text(
             '[merge-gate]\nprofile = "local"\n\n'

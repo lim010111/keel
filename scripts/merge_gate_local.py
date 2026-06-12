@@ -1538,17 +1538,23 @@ def _invalid_validator_model(cfg: Config) -> str | None:
 
 def _invalid_reasoning_effort(cfg: Config) -> str | None:
     """Refusal message for the first off-enum reasoning-effort knob (#48),
-    else None. Unset keys pass (tool defaults). Checks the codex/claude
-    reviewer `reasoning_effort` keys and the validator `dispatcher_effort`."""
-    v = cfg.reviewer_reasoning_effort("codex")
-    if v is not None and v not in _CODEX_REASONING_EFFORTS:
-        return (f"refusing codex reasoning_effort {v!r}: not an official "
-                f"model_reasoning_effort value "
-                f"({'/'.join(sorted(_CODEX_REASONING_EFFORTS))}) (#48)")
-    for label, val in (("claude reasoning_effort",
-                        cfg.reviewer_reasoning_effort("claude")),
-                       ("validator.dispatcher_effort",
-                        cfg.validator_dispatcher_effort)):
+    else None. Unset keys pass (tool defaults). Only ACTIVE reviewers' keys
+    are checked (#48 produce-review, codex:finding-0 + claude:finding-1, both
+    upheld): an inert key on a reviewer outside cfg.reviewers must not wedge
+    produce — consistent with review_scope_hash, which hashes active
+    reviewers' knobs only. The validator dispatcher always runs, so its knob
+    is always checked."""
+    if "codex" in cfg.reviewers:
+        v = cfg.reviewer_reasoning_effort("codex")
+        if v is not None and v not in _CODEX_REASONING_EFFORTS:
+            return (f"refusing codex reasoning_effort {v!r}: not an official "
+                    f"model_reasoning_effort value "
+                    f"({'/'.join(sorted(_CODEX_REASONING_EFFORTS))}) (#48)")
+    checks = [("validator.dispatcher_effort", cfg.validator_dispatcher_effort)]
+    if "claude" in cfg.reviewers:
+        checks.insert(0, ("claude reasoning_effort",
+                          cfg.reviewer_reasoning_effort("claude")))
+    for label, val in checks:
         if val is not None and val not in _CLAUDE_EFFORTS:
             return (f"refusing {label} {val!r}: not an official --effort "
                     f"value ({'/'.join(sorted(_CLAUDE_EFFORTS))}) (#48)")
