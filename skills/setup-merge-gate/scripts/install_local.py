@@ -192,10 +192,16 @@ def _hook_backups(hooks_dir: Path, hook_name: str) -> list[tuple[int, Path]]:
     """Existing <hook_name>.pre-merge-gate backups as (index, path), oldest →
     newest. The unsuffixed name is index 0; the #42 escalation names
     <hook_name>.pre-merge-gate.<n> are index n. Non-numeric suffixes are not
-    ours and are ignored."""
+    ours and are ignored.
+
+    These names are a namespace this installer OWNS: backups are foreign
+    content and cannot carry a marker, so restore trusts the filename —
+    anything placed there by other tooling is treated as a backup (2903e83
+    review, claude:finding-0 — accepted; content-level provenance is
+    impossible and sidecar state would reintroduce the #42 staleness class)."""
     base = f"{hook_name}.pre-merge-gate"
     found: list[tuple[int, Path]] = []
-    if (hooks_dir / base).exists():
+    if os.path.lexists(hooks_dir / base):     # a backup may BE a (broken) symlink
         found.append((0, hooks_dir / base))
     for cand in hooks_dir.glob(base + ".*"):
         suffix = cand.name[len(base) + 1:]
@@ -216,21 +222,52 @@ def _install_hook(repo_root: Path, hook_name: str, marker: str, template: Path):
     hooks_dir.mkdir(parents=True, exist_ok=True)
     dest = hooks_dir / hook_name
     backup_made = None
-    if dest.exists():
-        existing = dest.read_text(encoding="utf-8")
+    if dest.is_symlink() or dest.exists():
+        try:
+            existing = dest.read_text(encoding="utf-8")
+        except OSError:                       # broken symlink — nothing to read
+            existing = ""
         if marker not in existing:
             prior = _hook_backups(hooks_dir, hook_name)
-            # max+1 (not first gap) keeps indices monotone, so the NEWEST backup
-            # is always the highest number — what uninstall's restore relies on.
-            backup = dest.with_name(
-                f"{hook_name}.pre-merge-gate.{prior[-1][0] + 1}" if prior
-                else f"{hook_name}.pre-merge-gate")
-            backup.write_text(existing, encoding="utf-8")
-            # Preserve the foreign hook's mode bits (typically 0o755) so a
-            # restore-by-rename yields an executable hook git will run (C3
-            # safety-semantics residual; write_text would leave it 0o644).
-            os.chmod(backup, os.stat(dest).st_mode & 0o777)
-            backup_made = backup
+            newest = prior[-1][1] if prior else None
+            if (newest is not None
+                    and not dest.is_symlink() and not newest.is_symlink()
+                    and newest.read_bytes() == dest.read_bytes()
+                    and os.stat(newest).st_mode & 0o777
+                        == os.stat(dest).st_mode & 0o777):
+                # The newest backup already preserves exactly these bytes+mode —
+                # a manager regenerating the same hook every cycle (husky on
+                # npm install) must not grow the chain unboundedly (2903e83
+                # review, claude:finding-1). Restore semantics are unchanged:
+                # restoring that backup IS this hook. Lossy GC of DIFFERING
+                # backups stays out — that is the #42 footgun itself.
+                pass
+            else:
+                # max+1 (not first gap) keeps indices monotone, so the NEWEST
+                # backup is always the highest number — what uninstall's restore
+                # relies on.
+                backup = dest.with_name(
+                    f"{hook_name}.pre-merge-gate.{prior[-1][0] + 1}" if prior
+                    else f"{hook_name}.pre-merge-gate")
+                if dest.is_symlink():
+                    # A symlinked hook (hook managers link into their own tree):
+                    # reading/writing through the link would mutate the TARGET
+                    # file, which uninstall cannot un-corrupt (2903e83 review).
+                    # Move the LINK itself — a same-dir rename keeps relative
+                    # targets resolving; bytes and mode live in the untouched
+                    # target, so no chmod either (chmod follows the link).
+                    os.replace(dest, backup)
+                else:
+                    backup.write_text(existing, encoding="utf-8")
+                    # Preserve the foreign hook's mode bits (typically 0o755) so
+                    # a restore-by-rename yields an executable hook git will run
+                    # (C3 safety-semantics residual; write_text would leave it
+                    # 0o644).
+                    os.chmod(backup, os.stat(dest).st_mode & 0o777)
+                backup_made = backup
+        elif dest.is_symlink():
+            # ours-through-a-link: replace the LINK, never write the target.
+            dest.unlink()
     dest.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(dest, 0o755)
     return dest, backup_made
@@ -336,9 +373,14 @@ def _uninstall_hook(repo_root: Path, hook_name: str, marker: str) -> dict:
     if dest.exists() and marker in dest.read_text(encoding="utf-8"):
         if backups:
             backup = backups[-1][1]
-            mode = os.stat(backup).st_mode & 0o777
-            os.replace(backup, dest)      # restore the foreign hook
-            os.chmod(dest, mode)
+            if backup.is_symlink():
+                # a backed-up LINK is restored as the link itself — stat/chmod
+                # would follow it to the target (and raise on a broken link).
+                os.replace(backup, dest)
+            else:
+                mode = os.stat(backup).st_mode & 0o777
+                os.replace(backup, dest)  # restore the foreign hook
+                os.chmod(dest, mode)
             result["restored"] = True
         else:
             dest.unlink()

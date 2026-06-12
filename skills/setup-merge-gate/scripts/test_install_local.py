@@ -499,6 +499,34 @@ class Test42StaleBackupNeverDiscardsForeignHook(unittest.TestCase):
             (self.hooks / "post-commit.pre-merge-gate.1").read_text(), live)
         self.assertIn(il.POST_COMMIT_MARKER, (self.hooks / "post-commit").read_text())
 
+    def test_identical_regenerated_hook_does_not_grow_backup_chain(self):
+        # 2903e83 review, claude:finding-1 — a manager regenerating the SAME
+        # foreign hook on every cycle (husky on npm install) must not add a
+        # byte-identical backup per cycle; only content/mode changes do.
+        regen = "#!/bin/sh\necho husky\n"
+        for _ in range(3):
+            self.dest.write_text(regen)          # manager clobbers our hook
+            os.chmod(self.dest, 0o755)
+            il.install_pre_push(self.repo, TEMPLATE)
+        self.assertEqual(self.backup.read_text(), regen)
+        self.assertFalse((self.hooks / "pre-push.pre-merge-gate.1").exists())
+        # a CHANGED foreign hook still gets its own backup
+        self.dest.write_text("#!/bin/sh\necho husky v2\n")
+        il.install_pre_push(self.repo, TEMPLATE)
+        self.assertEqual((self.hooks / "pre-push.pre-merge-gate.1").read_text(),
+                         "#!/bin/sh\necho husky v2\n")
+
+    def test_same_bytes_different_mode_still_backed_up(self):
+        # mode is part of what restore preserves — dedup only on bytes+mode.
+        self.backup.write_text("#!/bin/sh\necho husky\n")
+        os.chmod(self.backup, 0o755)
+        self.dest.write_text("#!/bin/sh\necho husky\n")
+        os.chmod(self.dest, 0o700)
+        il.install_pre_push(self.repo, TEMPLATE)
+        escalated = self.hooks / "pre-push.pre-merge-gate.1"
+        self.assertTrue(escalated.exists())
+        self.assertEqual(os.stat(escalated).st_mode & 0o777, 0o700)
+
     def test_uninstall_restores_newest_backup_leaves_stale_one(self):
         # AC4 — after an escalated install, uninstall restores the hook that was
         # live just before install (the newest backup); the stale unsuffixed
@@ -514,6 +542,63 @@ class Test42StaleBackupNeverDiscardsForeignHook(unittest.TestCase):
         self.assertEqual(os.stat(self.dest).st_mode & 0o777, 0o700)
         self.assertFalse((self.hooks / "pre-push.pre-merge-gate.1").exists())  # consumed
         self.assertEqual(self.backup.read_text(), stale)            # stale kept
+
+
+class TestSymlinkForeignHook(unittest.TestCase):
+    """2903e83 review, codex:finding-0 — a SYMLINKED foreign hook must not be
+    written through: write_text follows the link and corrupts the hook
+    manager's target file, which uninstall cannot un-corrupt. The fix backs up
+    the LINK itself by same-dir rename (relative targets keep resolving) and
+    installs our hook as a fresh regular file."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        self.hooks = self.repo / ".git" / "hooks"
+        self.hooks.mkdir(parents=True)
+        self.dest = self.hooks / "pre-push"
+        self.backup = self.hooks / "pre-push.pre-merge-gate"
+        # hook manager's own tree, linked RELATIVELY from .git/hooks
+        self.target = self.repo / "hookmgr" / "pre-push.sh"
+        self.target.parent.mkdir()
+        self.target.write_text("#!/bin/sh\necho managed hook\n")
+        os.chmod(self.target, 0o700)
+        self.dest.symlink_to(Path("..") / ".." / "hookmgr" / "pre-push.sh")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_repro_symlink_target_not_corrupted(self):
+        il.install_pre_push(self.repo, TEMPLATE)
+        # Pre-fix: write_text followed the link — the manager's file became the
+        # merge-gate template. Post-fix: target untouched, byte and mode.
+        self.assertEqual(self.target.read_text(), "#!/bin/sh\necho managed hook\n")
+        self.assertEqual(os.stat(self.target).st_mode & 0o777, 0o700)
+        # dest is now OUR regular file, not a write through the old link.
+        self.assertFalse(self.dest.is_symlink())
+        self.assertIn(il.PRE_PUSH_MARKER, self.dest.read_text())
+        # the backup is the moved LINK itself and still resolves (same dir).
+        self.assertTrue(self.backup.is_symlink())
+        self.assertEqual(self.backup.read_text(), "#!/bin/sh\necho managed hook\n")
+
+    def test_uninstall_restores_the_link_itself(self):
+        il.install_pre_push(self.repo, TEMPLATE)
+        il.uninstall(self.repo, self.repo / "settings.json")
+        self.assertTrue(self.dest.is_symlink())
+        self.assertEqual(self.dest.read_text(), "#!/bin/sh\necho managed hook\n")
+        self.assertEqual(os.stat(self.target).st_mode & 0o777, 0o700)
+        self.assertFalse(self.backup.is_symlink() and False)  # backup consumed:
+        self.assertFalse(os.path.lexists(self.backup))
+
+    def test_broken_symlink_does_not_create_target(self):
+        # write_text through a BROKEN link would create the missing target.
+        self.dest.unlink()
+        self.dest.symlink_to(Path("..") / ".." / "gone" / "nowhere.sh")
+        il.install_pre_push(self.repo, TEMPLATE)
+        self.assertFalse((self.repo / "gone" / "nowhere.sh").exists())
+        self.assertFalse(self.dest.is_symlink())
+        self.assertIn(il.PRE_PUSH_MARKER, self.dest.read_text())
+        self.assertTrue(os.path.lexists(self.backup))  # the link, moved aside
 
 
 class TestUninstall(unittest.TestCase):
