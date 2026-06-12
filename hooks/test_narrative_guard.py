@@ -973,6 +973,27 @@ class TestWrittenSet(unittest.TestCase):
             self.assertIn(os.path.realpath("/a/real.md"), self._ws(t),
                           "torn lines must not void the readable entries")
 
+    def test_relative_entries_are_dropped_not_cwd_resolved(self):
+        # 0eaca72 review (claude low, upheld): a relative transcript entry
+        # resolved via os.path.realpath against the hook PROCESS cwd — which
+        # for a Stop hook is typically the project root — so junk like
+        # ".scratch/feat/issues/01-x.md" could FALSELY attribute someone
+        # else's change. False attribution is the one direction the design
+        # forbids; dropping the entry merely under-attributes (fail-open).
+        with tempfile.TemporaryDirectory() as td:
+            rel = ".scratch/feat/issues/01-alpha.md"
+            (Path(td) / ".scratch/feat/issues").mkdir(parents=True)
+            t = make_transcript(td, writes=[rel], backups=[rel])
+            old = os.getcwd()
+            os.chdir(td)  # make the relative entry resolvable, temptingly
+            try:
+                ws = self._ws(t)
+            finally:
+                os.chdir(old)
+            self.assertEqual(ws, set(),
+                             "relative entries must be dropped, never resolved "
+                             "against the hook process cwd")
+
 
 class TestAttributionFailOpen(unittest.TestCase):
     """A4 — no positive attribution -> the guard never blocks."""

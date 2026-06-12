@@ -62,7 +62,12 @@ Known gaps (by design):
     the subagent's own transcript), and issue deletions (`rm`) leave no record
     there: such posture moves are unattributable, so the guard stays silent —
     fail-open, "귀속 불명이면 관여하지 않는다". A staleness miss there is
-    backstopped by the next session's staleness banner. The cross-session FALSE
+    backstopped by the next session's staleness banner. Same for the lint: a
+    completion line ADDED via Bash looks like someone else's narrative edit,
+    so the foreign-change path absorbs it into the offender baseline without a
+    lint-block (0eaca72 review, claude medium upheld) — the standing
+    completion banner (status.completion_warning, regenerated every Stop) is
+    the backstop that keeps flagging it. The cross-session FALSE
     attribution gap (an unrelated session drafted into narrating, the writing
     session silently discharged — the 2026-06-12 merge-gate#48 incident) is
     CLOSED by this attribution; cf. the known-gap table in status-harness#01's
@@ -315,12 +320,18 @@ def written_set(payload: dict) -> set[str] | None:
                                 and b.get("name") in WRITE_TOOLS):
                             inp = b.get("input") or {}
                             fp = inp.get("file_path") or inp.get("notebook_path")
-                            if fp:
+                            # Absolute entries only (0eaca72 review): a relative
+                            # entry would realpath against the hook PROCESS cwd
+                            # — typically this very project — and could FALSELY
+                            # attribute someone else's change. Dropping it only
+                            # under-attributes, which fails open.
+                            if fp and os.path.isabs(fp):
                                 out.add(_norm(fp))
                 elif kind == "file-history-snapshot":
                     backups = (d.get("snapshot") or {}).get("trackedFileBackups") or {}
                     for k in backups:
-                        out.add(_norm(k))
+                        if isinstance(k, str) and os.path.isabs(k):
+                            out.add(_norm(k))
     except OSError:
         return None  # unreadable mid-scan: a partial set could misattribute
     return out
@@ -337,7 +348,14 @@ def attribute_changes(changes: list[str], written: set[str], root: Path) -> list
     only when that file is in the written-set. The aggregate ADR line is
     re-rendered with only the attributed names — someone else's change must
     not even be MENTIONED (naming it invites the blocked session to narrate
-    it; that change is the staleness banner's / the writing session's job)."""
+    it; that change is the staleness banner's / the writing session's job).
+
+    Granularity is the FILE, not the transition (0eaca72 review, codex medium
+    upheld): a session that wrote the file is held to ANY posture move on it,
+    including one a concurrent session made — disk state can't say who caused
+    a transition without per-session content history. Accepted: such a session
+    has real context on that file (the incident's harm was drafting a session
+    with NONE), and the worst case is the pre-#04 status quo, a block."""
     out: list[str] = []
     for c in changes:
         if c.startswith(ADR_CHANGE_PREFIX):
