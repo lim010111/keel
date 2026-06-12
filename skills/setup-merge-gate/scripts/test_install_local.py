@@ -434,6 +434,88 @@ class TestPostCommitInstall(unittest.TestCase):
         self.assertIn(il.POST_COMMIT_MARKER, self.dest.read_text())
 
 
+class Test42StaleBackupNeverDiscardsForeignHook(unittest.TestCase):
+    """#42 — a stale <hook>.pre-merge-gate must never cause the LIVE foreign
+    hook to be silently discarded: the fresh backup escalates to the next free
+    numbered name (.pre-merge-gate.<n>), byte- and mode-preserving, and
+    uninstall restores the NEWEST backup (what was live just before install),
+    leaving older stale backups untouched (operator content)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        self.hooks = self.repo / ".git" / "hooks"
+        self.hooks.mkdir(parents=True)
+        self.dest = self.hooks / "pre-push"
+        self.backup = self.hooks / "pre-push.pre-merge-gate"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_repro_live_foreign_hook_preserved_despite_stale_backup(self):
+        # AC1 reproduction: stale backup + live foreign hook → pre-fix the live
+        # hook is overwritten with NO backup of its own.
+        stale = "#!/bin/sh\necho OLD backup from a previous cycle\n"
+        live = "#!/bin/sh\necho CURRENT husky hook\n"
+        self.backup.write_text(stale)
+        self.dest.write_text(live)
+        os.chmod(self.dest, 0o700)
+        il.install_pre_push(self.repo, TEMPLATE)
+        # Stale backup untouched; live foreign content preserved SOMEWHERE.
+        self.assertEqual(self.backup.read_text(), stale)
+        escalated = self.hooks / "pre-push.pre-merge-gate.1"
+        self.assertTrue(escalated.exists())
+        self.assertEqual(escalated.read_text(), live)            # byte-preserving
+        self.assertEqual(os.stat(escalated).st_mode & 0o777, 0o700)  # mode-preserving
+        self.assertIn(il.PRE_PUSH_MARKER, self.dest.read_text())
+
+    def test_second_stale_backup_escalates_to_next_number(self):
+        self.backup.write_text("#!/bin/sh\necho stale 0\n")
+        (self.hooks / "pre-push.pre-merge-gate.1").write_text("#!/bin/sh\necho stale 1\n")
+        live = "#!/bin/sh\necho third foreign hook\n"
+        self.dest.write_text(live)
+        il.install_pre_push(self.repo, TEMPLATE)
+        self.assertEqual((self.hooks / "pre-push.pre-merge-gate.2").read_text(), live)
+
+    def test_gap_in_numbered_backups_stays_monotone(self):
+        # A deleted middle backup must not make a NEW backup reuse a lower
+        # number than an existing one (restore-newest would then pick wrong).
+        self.backup.write_text("#!/bin/sh\necho stale 0\n")
+        (self.hooks / "pre-push.pre-merge-gate.2").write_text("#!/bin/sh\necho stale 2\n")
+        live = "#!/bin/sh\necho live\n"
+        self.dest.write_text(live)
+        il.install_pre_push(self.repo, TEMPLATE)
+        self.assertEqual((self.hooks / "pre-push.pre-merge-gate.3").read_text(), live)
+
+    def test_post_commit_symmetric(self):
+        # AC5 — post-commit goes through the same _install_hook path.
+        stale = "#!/bin/sh\necho OLD\n"
+        live = "#!/bin/sh\necho CURRENT post-commit\n"
+        (self.hooks / "post-commit.pre-merge-gate").write_text(stale)
+        (self.hooks / "post-commit").write_text(live)
+        il.install_post_commit(self.repo, POST_TEMPLATE)
+        self.assertEqual((self.hooks / "post-commit.pre-merge-gate").read_text(), stale)
+        self.assertEqual(
+            (self.hooks / "post-commit.pre-merge-gate.1").read_text(), live)
+        self.assertIn(il.POST_COMMIT_MARKER, (self.hooks / "post-commit").read_text())
+
+    def test_uninstall_restores_newest_backup_leaves_stale_one(self):
+        # AC4 — after an escalated install, uninstall restores the hook that was
+        # live just before install (the newest backup); the stale unsuffixed
+        # backup is operator content and stays.
+        stale = "#!/bin/sh\necho OLD backup\n"
+        live = "#!/bin/sh\necho CURRENT husky hook\n"
+        self.backup.write_text(stale)
+        self.dest.write_text(live)
+        os.chmod(self.dest, 0o700)
+        il.install_pre_push(self.repo, TEMPLATE)
+        il.uninstall(self.repo, self.repo / "settings.json")
+        self.assertEqual(self.dest.read_text(), live)              # newest restored
+        self.assertEqual(os.stat(self.dest).st_mode & 0o777, 0o700)
+        self.assertFalse((self.hooks / "pre-push.pre-merge-gate.1").exists())  # consumed
+        self.assertEqual(self.backup.read_text(), stale)            # stale kept
+
+
 class TestUninstall(unittest.TestCase):
     """#33 4e — --uninstall removes our pre-push + post-commit hooks (restoring a
     foreign backup when present) and deregisters the stale global hooks."""

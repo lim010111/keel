@@ -188,11 +188,30 @@ POST_COMMIT_MARKER = "MERGE_GATE_POST_COMMIT"
 _last_post_commit_backup: Path | None = None
 
 
+def _hook_backups(hooks_dir: Path, hook_name: str) -> list[tuple[int, Path]]:
+    """Existing <hook_name>.pre-merge-gate backups as (index, path), oldest →
+    newest. The unsuffixed name is index 0; the #42 escalation names
+    <hook_name>.pre-merge-gate.<n> are index n. Non-numeric suffixes are not
+    ours and are ignored."""
+    base = f"{hook_name}.pre-merge-gate"
+    found: list[tuple[int, Path]] = []
+    if (hooks_dir / base).exists():
+        found.append((0, hooks_dir / base))
+    for cand in hooks_dir.glob(base + ".*"):
+        suffix = cand.name[len(base) + 1:]
+        if suffix.isdigit():
+            found.append((int(suffix), cand))
+    return sorted(found)
+
+
 def _install_hook(repo_root: Path, hook_name: str, marker: str, template: Path):
     """Install <template> into the repo's resolved <hook_name> hook, backing up a
     pre-existing FOREIGN hook (one without `marker`) to <hook_name>.pre-merge-gate
-    — never clobbering a prior backup. A hook that already carries `marker` is
-    ours → overwritten in place. Returns (dest, backup_or_None)."""
+    — never clobbering a prior backup: when that name is already taken by a stale
+    backup, the live foreign hook escalates to the next free numbered name
+    (.pre-merge-gate.<n>) instead of being silently discarded (#42). A hook that
+    already carries `marker` is ours → overwritten in place.
+    Returns (dest, backup_or_None)."""
     hooks_dir = _resolve_hooks_dir(repo_root)
     hooks_dir.mkdir(parents=True, exist_ok=True)
     dest = hooks_dir / hook_name
@@ -200,14 +219,18 @@ def _install_hook(repo_root: Path, hook_name: str, marker: str, template: Path):
     if dest.exists():
         existing = dest.read_text(encoding="utf-8")
         if marker not in existing:
-            backup = dest.with_name(f"{hook_name}.pre-merge-gate")
-            if not backup.exists():
-                backup.write_text(existing, encoding="utf-8")
-                # Preserve the foreign hook's mode bits (typically 0o755) so a
-                # restore-by-rename yields an executable hook git will run (C3
-                # safety-semantics residual; write_text would leave it 0o644).
-                os.chmod(backup, os.stat(dest).st_mode & 0o777)
-                backup_made = backup
+            prior = _hook_backups(hooks_dir, hook_name)
+            # max+1 (not first gap) keeps indices monotone, so the NEWEST backup
+            # is always the highest number — what uninstall's restore relies on.
+            backup = dest.with_name(
+                f"{hook_name}.pre-merge-gate.{prior[-1][0] + 1}" if prior
+                else f"{hook_name}.pre-merge-gate")
+            backup.write_text(existing, encoding="utf-8")
+            # Preserve the foreign hook's mode bits (typically 0o755) so a
+            # restore-by-rename yields an executable hook git will run (C3
+            # safety-semantics residual; write_text would leave it 0o644).
+            os.chmod(backup, os.stat(dest).st_mode & 0o777)
+            backup_made = backup
     dest.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(dest, 0o755)
     return dest, backup_made
@@ -301,15 +324,18 @@ def deregister_stale_hooks(settings_path: Path) -> bool:
 # Uninstall — remove the local gate's per-repo hooks + stale global registrations.
 # --------------------------------------------------------------------------
 def _uninstall_hook(repo_root: Path, hook_name: str, marker: str) -> dict:
-    """Remove our <hook_name> hook (one carrying `marker`); if a
-    <hook_name>.pre-merge-gate foreign backup exists, restore it in its place.
-    A foreign hook WITHOUT our marker is left untouched. Returns a small summary."""
+    """Remove our <hook_name> hook (one carrying `marker`); if foreign backups
+    exist, restore the NEWEST one (highest .pre-merge-gate.<n> index — the hook
+    that was live just before our install, #42) in its place; any older stale
+    backups are operator content and stay. A foreign hook WITHOUT our marker is
+    left untouched. Returns a small summary."""
     hooks_dir = _resolve_hooks_dir(repo_root)
     dest = hooks_dir / hook_name
-    backup = hooks_dir / f"{hook_name}.pre-merge-gate"
+    backups = _hook_backups(hooks_dir, hook_name)
     result = {"removed": False, "restored": False}
     if dest.exists() and marker in dest.read_text(encoding="utf-8"):
-        if backup.exists():
+        if backups:
+            backup = backups[-1][1]
             mode = os.stat(backup).st_mode & 0o777
             os.replace(backup, dest)      # restore the foreign hook
             os.chmod(dest, mode)
