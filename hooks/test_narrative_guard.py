@@ -98,6 +98,27 @@ def basic_repo(td: str, **issue_kw) -> Path:
     return root
 
 
+def make_transcript(dirpath, writes=(), *, backups=(), extra_lines=()) -> Path:
+    """Synthesize a session transcript (JSONL) the way Claude Code writes it:
+    one `assistant` write-tool tool_use line per path in `writes`, an optional
+    `file-history-snapshot` line carrying `backups` as trackedFileBackups keys,
+    plus raw `extra_lines` appended verbatim (status-harness#04)."""
+    lines = [json.dumps({
+        "type": "assistant",
+        "message": {"content": [
+            {"type": "tool_use", "name": "Write",
+             "input": {"file_path": str(w), "content": "x"}}]}})
+        for w in writes]
+    if backups:
+        lines.append(json.dumps({
+            "type": "file-history-snapshot",
+            "snapshot": {"trackedFileBackups": {str(b): {} for b in backups}}}))
+    lines.extend(extra_lines)
+    p = Path(dirpath) / f"transcript-{uuid.uuid4().hex}.jsonl"
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
 def vid() -> str:
     return f"VERIFY-{uuid.uuid4()}"
 
@@ -225,7 +246,15 @@ def _snapshot(root, sid, sr):
     return run_guard("snapshot", {"session_id": sid, "cwd": str(root)}, state_root=sr)
 
 
-def _check(root, sid, sr, **payload):
+def _check(root, sid, sr, *, writes=None, transcript=None, **payload):
+    """`writes` (a list of paths) synthesizes a transcript attributing those
+    writes to this session, the way a real Stop payload carries transcript_path
+    (status-harness#04). writes=None means NO transcript in the payload —
+    attribution unknown."""
+    if transcript is None and writes is not None:
+        transcript = make_transcript(sr, writes)
+    if transcript is not None:
+        payload["transcript_path"] = str(transcript)
     return run_guard("check", {"session_id": sid, "cwd": str(root), **payload},
                      state_root=sr)
 
@@ -239,8 +268,8 @@ class TestCheckBlocks(unittest.TestCase):
             snap = the_snap(sr)
             before = snap.read_text()
             # Posture change (boxes -> done); narrative (STATUS.md) untouched.
-            seed_issue(root, "feat", "01", "alpha", total=2, done=2)
-            r = _check(root, sid, sr)
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)
+            r = _check(root, sid, sr, writes=[issue])
             self.assertEqual(r.returncode, 2, f"expected block; stderr={r.stderr}")
             self.assertTrue(r.stderr.strip(), "block must explain itself on stderr")
             self.assertEqual(snap.read_text(), before,
@@ -258,9 +287,9 @@ class TestCheckAllows(unittest.TestCase):
             _snapshot(root, sid, sr)
             snap = the_snap(sr)
             before = snap.read_text()
-            seed_issue(root, "feat", "01", "alpha", total=2, done=2)     # posture change
-            write_status(root, "## Current focus\n\nAlpha is done now.\n")  # narrative edit
-            r = _check(root, sid, sr)
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # posture change
+            st = write_status(root, "## Current focus\n\nAlpha is done now.\n")  # narrative edit
+            r = _check(root, sid, sr, writes=[issue, st])
             self.assertEqual(r.returncode, 0, f"agent updated narrative; stderr={r.stderr}")
             self.assertNotEqual(snap.read_text(), before,
                                 "narrative change should re-baseline the snapshot")
@@ -286,8 +315,8 @@ class TestP1CountBump(unittest.TestCase):
             write_status(root, "## Current focus\n\nGrinding alpha.\n")
             sid = vid()
             _snapshot(root, sid, sr)
-            seed_issue(root, "feat", "01", "alpha", total=3, done=2)  # still in-progress
-            r = _check(root, sid, sr)
+            issue = seed_issue(root, "feat", "01", "alpha", total=3, done=2)  # still in-progress
+            r = _check(root, sid, sr, writes=[issue])
             self.assertEqual(r.returncode, 0,
                              f"an AC count bump (1/3->2/3) must not block; stderr={r.stderr}")
 
@@ -302,14 +331,15 @@ class TestReBaseline(unittest.TestCase):
             sid = vid()
             _snapshot(root, sid, sr)
             # Change #1 + narrative edit -> re-baseline + allow.
-            seed_issue(root, "feat", "01", "alpha", total=2, done=2)
-            write_status(root, "## Current focus\n\nAlpha is done.\n")
-            self.assertEqual(_check(root, sid, sr).returncode, 0)
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)
+            st = write_status(root, "## Current focus\n\nAlpha is done.\n")
+            self.assertEqual(_check(root, sid, sr, writes=[issue, st]).returncode, 0)
             # Change #2 (new ADR), narrative untouched since the re-baseline -> block.
             adr = root / "docs" / "adr"
             adr.mkdir(parents=True)
-            (adr / "0001-x.md").write_text("# adr one\n", encoding="utf-8")
-            r = _check(root, sid, sr)
+            adr_file = adr / "0001-x.md"
+            adr_file.write_text("# adr one\n", encoding="utf-8")
+            r = _check(root, sid, sr, writes=[issue, st, adr_file])
             self.assertEqual(r.returncode, 2,
                              f"2nd posture change must block after re-baseline; stderr={r.stderr}")
 
@@ -323,8 +353,8 @@ class TestLoopGuard(unittest.TestCase):
             root = basic_repo(td, total=2, done=0)
             sid = vid()
             _snapshot(root, sid, sr)
-            seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # block-eligible
-            r = _check(root, sid, sr, stop_hook_active=True)
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # block-eligible
+            r = _check(root, sid, sr, writes=[issue], stop_hook_active=True)
             self.assertEqual(r.returncode, 0,
                              f"loop guard must allow once-per-turn; stderr={r.stderr}")
 
@@ -356,8 +386,8 @@ class TestFailOpen(unittest.TestCase):
             sid = vid()
             _snapshot(root, sid, sr)
             the_snap(sr).write_text("{not json")  # corrupt
-            seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # would block
-            self.assertEqual(_check(root, sid, sr).returncode, 0)
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # would block
+            self.assertEqual(_check(root, sid, sr, writes=[issue]).returncode, 0)
 
     def test_status_without_markers_noops(self):
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
@@ -369,8 +399,8 @@ class TestFailOpen(unittest.TestCase):
             self.assertEqual(_snapshot(root, sid, sr).returncode, 0)
             self.assertEqual(snap_files(sr), [],
                              "no markers -> opt-out, no snapshot")
-            seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # posture change
-            self.assertEqual(_check(root, sid, sr).returncode, 0)
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # posture change
+            self.assertEqual(_check(root, sid, sr, writes=[issue]).returncode, 0)
 
 
 # --------------------------------------------------------------------------
@@ -382,8 +412,10 @@ class TestDisableSwitches(unittest.TestCase):
             root = basic_repo(td, total=2, done=0)
             sid = vid()
             _snapshot(root, sid, sr)
-            seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # block-eligible
-            r = run_guard("check", {"session_id": sid, "cwd": str(root)}, state_root=sr,
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # block-eligible
+            t = make_transcript(sr, [issue])
+            r = run_guard("check", {"session_id": sid, "cwd": str(root),
+                                    "transcript_path": str(t)}, state_root=sr,
                           env_extra={"NARRATIVE_GUARD_DISABLED": "1"})
             self.assertEqual(r.returncode, 0, f"kill-switch must disable block; stderr={r.stderr}")
 
@@ -406,8 +438,10 @@ class TestDisableSwitches(unittest.TestCase):
             self.assertEqual(snap_files(sr), [],
                              "producer subprocess must not write junk snapshots")
             _snapshot(root, sid, sr)
-            seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # block-eligible
-            r1 = run_guard("check", {"session_id": sid, "cwd": str(root)}, state_root=sr,
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # block-eligible
+            t = make_transcript(sr, [issue])
+            r1 = run_guard("check", {"session_id": sid, "cwd": str(root),
+                                     "transcript_path": str(t)}, state_root=sr,
                            env_extra={"MERGE_GATE_PRODUCER_RUNNING": "1"})
             self.assertEqual(r1.returncode, 0, f"producer subprocess must not block; stderr={r1.stderr}")
 
@@ -450,8 +484,9 @@ class TestGrillingPause(unittest.TestCase):
                              "pause must write one (session, repo)-keyed marker")
             adr = root / "docs" / "adr"
             adr.mkdir(parents=True)
-            (adr / "0001-x.md").write_text("# adr one\n", encoding="utf-8")
-            r = _check(root, sid, sr)
+            adr_file = adr / "0001-x.md"
+            adr_file.write_text("# adr one\n", encoding="utf-8")
+            r = _check(root, sid, sr, writes=[adr_file])
             self.assertEqual(r.returncode, 0,
                              f"pause must suppress the mid-grilling block; stderr={r.stderr}")
 
@@ -461,13 +496,14 @@ class TestGrillingPause(unittest.TestCase):
             sid = vid()
             _snapshot(root, sid, sr)
             run_pause("pause", root, sid, sr)
-            seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # posture change
-            self.assertEqual(_check(root, sid, sr).returncode, 0, "paused -> no block")
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # posture change
+            self.assertEqual(_check(root, sid, sr, writes=[issue]).returncode, 0,
+                             "paused -> no block")
             # End of grilling: resume re-arms; the deferred posture change now
             # legitimately blocks until the narrative is refreshed.
             self.assertEqual(run_pause("resume", root, sid, sr).returncode, 0)
             self.assertEqual(pause_files(sr), [], "resume must remove the marker")
-            r = _check(root, sid, sr)
+            r = _check(root, sid, sr, writes=[issue])
             self.assertEqual(r.returncode, 2,
                              f"after resume the real posture change must block; stderr={r.stderr}")
 
@@ -480,8 +516,8 @@ class TestGrillingPause(unittest.TestCase):
             _snapshot(rootP, sid, sr)
             _snapshot(rootQ, sid, sr)
             run_pause("pause", rootP, sid, sr)  # pause ONLY repo P
-            seed_issue(rootQ, "feat", "01", "alpha", total=2, done=2)  # change in Q
-            r = _check(rootQ, sid, sr)
+            issueQ = seed_issue(rootQ, "feat", "01", "alpha", total=2, done=2)  # change in Q
+            r = _check(rootQ, sid, sr, writes=[issueQ])
             self.assertEqual(r.returncode, 2,
                              f"a pause in repo P must not silence the guard in repo Q; stderr={r.stderr}")
 
@@ -510,8 +546,8 @@ class TestCompletionLint(unittest.TestCase):
             _snapshot(root, sid, sr)
             snap = the_snap(sr)
             before = snap.read_text()
-            write_status(root, self.DIRTY)  # narrative edit introduces the label
-            r = _check(root, sid, sr)
+            st = write_status(root, self.DIRTY)  # narrative edit introduces the label
+            r = _check(root, sid, sr, writes=[st])
             self.assertEqual(r.returncode, 2, f"completion label must block; stderr={r.stderr}")
             self.assertIn("완료 · feat #01", r.stderr, "block must quote the offending line")
             self.assertIn("Resolution", r.stderr, "block must say where the content goes")
@@ -523,10 +559,10 @@ class TestCompletionLint(unittest.TestCase):
             root = basic_repo(td, total=2, done=0)
             sid = vid()
             _snapshot(root, sid, sr)
-            write_status(root, self.DIRTY)
-            self.assertEqual(_check(root, sid, sr).returncode, 2)
-            write_status(root, "## Current focus\n\nAlpha shipped; next beta.\n")
-            self.assertEqual(_check(root, sid, sr).returncode, 0,
+            st = write_status(root, self.DIRTY)
+            self.assertEqual(_check(root, sid, sr, writes=[st]).returncode, 2)
+            st = write_status(root, "## Current focus\n\nAlpha shipped; next beta.\n")
+            self.assertEqual(_check(root, sid, sr, writes=[st]).returncode, 0,
                              "removing the lines must clear the block")
 
     def test_legacy_offender_with_untouched_narrative_does_not_block(self):
@@ -547,8 +583,8 @@ class TestCompletionLint(unittest.TestCase):
             sid = vid()
             _snapshot(root, sid, sr)
             run_pause("pause", root, sid, sr)
-            write_status(root, self.DIRTY)
-            self.assertEqual(_check(root, sid, sr).returncode, 0,
+            st = write_status(root, self.DIRTY)
+            self.assertEqual(_check(root, sid, sr, writes=[st]).returncode, 0,
                              "a grilling pause must suppress the lint too")
 
     # -- diff-against-anchor (75a13c0 advisory review, codex medium upheld):
@@ -563,8 +599,8 @@ class TestCompletionLint(unittest.TestCase):
             sid = vid()
             _snapshot(root, sid, sr)
             # An UNRELATED narrative edit; the legacy line is untouched.
-            write_status(root, self.DIRTY + "\n- **능동 · feat #02:** start beta.\n")
-            r = _check(root, sid, sr)
+            st = write_status(root, self.DIRTY + "\n- **능동 · feat #02:** start beta.\n")
+            r = _check(root, sid, sr, writes=[st])
             self.assertEqual(r.returncode, 0,
                              f"a legacy offender must not block an unrelated edit; stderr={r.stderr}")
 
@@ -576,8 +612,8 @@ class TestCompletionLint(unittest.TestCase):
             write_status(root, self.DIRTY)  # legacy: 완료 · feat #01
             sid = vid()
             _snapshot(root, sid, sr)
-            write_status(root, self.DIRTY + "\n- **종료 · feat #02:** beta wrapped.\n")
-            r = _check(root, sid, sr)
+            st = write_status(root, self.DIRTY + "\n- **종료 · feat #02:** beta wrapped.\n")
+            r = _check(root, sid, sr, writes=[st])
             self.assertEqual(r.returncode, 2, f"a NEW offender must still block; stderr={r.stderr}")
             self.assertIn("종료 · feat #02", r.stderr, "must quote the new line")
             self.assertNotIn("완료 · feat #01", r.stderr,
@@ -592,8 +628,8 @@ class TestCompletionLint(unittest.TestCase):
             data = json.loads(snap.read_text())
             data.pop("offenders", None)
             snap.write_text(json.dumps(data))
-            write_status(root, self.DIRTY)
-            r = _check(root, sid, sr)
+            st = write_status(root, self.DIRTY)
+            r = _check(root, sid, sr, writes=[st])
             self.assertEqual(r.returncode, 0,
                              f"an anchor without an offender baseline cannot attribute "
                              f"lines — must fail open; stderr={r.stderr}")
@@ -608,8 +644,8 @@ class TestBlockMessage(unittest.TestCase):
             root = basic_repo(td, total=2, done=0)
             sid = vid()
             _snapshot(root, sid, sr)
-            seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # todo -> done
-            r = _check(root, sid, sr)
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # todo -> done
+            r = _check(root, sid, sr, writes=[issue])
             self.assertEqual(r.returncode, 2)
             self.assertIn("/status", r.stderr)
             self.assertNotIn("edit the narrative", r.stderr.lower())
@@ -622,8 +658,9 @@ class TestBlockMessage(unittest.TestCase):
             _snapshot(root, sid, sr)
             adr = root / "docs" / "adr"
             adr.mkdir(parents=True)
-            (adr / "0099-zeta.md").write_text("# zeta\n", encoding="utf-8")
-            r = _check(root, sid, sr)
+            adr_file = adr / "0099-zeta.md"
+            adr_file.write_text("# zeta\n", encoding="utf-8")
+            r = _check(root, sid, sr, writes=[adr_file])
             self.assertEqual(r.returncode, 2)
             self.assertIn("ADR", r.stderr, f"must name the ADR change: {r.stderr}")
 
@@ -661,9 +698,9 @@ class TestWriteOnce(unittest.TestCase):
             root = basic_repo(td, total=2, done=0)
             sid = vid()
             _snapshot(root, sid, sr)  # anchor {fp0, nh0}
-            seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # posture change, no narrative edit
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # posture change, no narrative edit
             _snapshot(root, sid, sr)  # resume/compact re-fires SessionStart -> must be a no-op
-            r = _check(root, sid, sr)
+            r = _check(root, sid, sr, writes=[issue])
             self.assertEqual(r.returncode, 2,
                              "a 2nd snapshot must not re-anchor an unacknowledged change")
 
@@ -678,6 +715,11 @@ class TestKnownGaps(unittest.TestCase):
         self.assertIn("claude code", low, "Claude-Code-only scope gap must be documented")
         self.assertIn("pure", low)
         self.assertIn("body", low)  # the uncovered pure-body-change case
+        # status-harness#04 (A7): attribution misses are documented gaps.
+        self.assertIn("bash", low, "Bash-mediated write gap must be documented")
+        self.assertIn("subagent", low, "subagent-edit gap must be documented")
+        self.assertIn("deletion", low, "issue-deletion gap must be documented")
+        self.assertIn("status-harness#01", low, "must cross-ref the #01 spec's gap table")
 
 
 # --------------------------------------------------------------------------
@@ -689,11 +731,14 @@ class TestEndToEnd(unittest.TestCase):
             root = basic_repo(td, total=1, done=0)
             sid = vid()
             _snapshot(root, sid, sr)
-            seed_issue(root, "feat", "01", "alpha", total=1, done=1)  # -> done, no narrative edit
-            self.assertEqual(_check(root, sid, sr).returncode, 2, "flip-to-done must block")
-            write_status(root, "## Current focus\n\nAlpha shipped; next is beta.\n")  # /status
-            self.assertEqual(_check(root, sid, sr).returncode, 0, "/status must clear the block")
-            self.assertEqual(_check(root, sid, sr).returncode, 0, "stays clear with no new change")
+            issue = seed_issue(root, "feat", "01", "alpha", total=1, done=1)  # -> done, no narrative edit
+            self.assertEqual(_check(root, sid, sr, writes=[issue]).returncode, 2,
+                             "flip-to-done must block")
+            st = write_status(root, "## Current focus\n\nAlpha shipped; next is beta.\n")  # /status
+            self.assertEqual(_check(root, sid, sr, writes=[issue, st]).returncode, 0,
+                             "/status must clear the block")
+            self.assertEqual(_check(root, sid, sr, writes=[issue, st]).returncode, 0,
+                             "stays clear with no new change")
 
 
 # --------------------------------------------------------------------------
@@ -744,8 +789,8 @@ class TestCrossRepoIsolation(unittest.TestCase):
             _snapshot(rootQ, sid, sr)
             self.assertEqual(len(snap_files(sr)), 2, "each (session, repo) gets its own anchor")
             # a real posture change in Q still blocks (its own anchor is intact)
-            seed_issue(rootQ, "feat", "01", "alpha", total=2, done=2)
-            self.assertEqual(_check(rootQ, sid, sr).returncode, 2)
+            issueQ = seed_issue(rootQ, "feat", "01", "alpha", total=2, done=2)
+            self.assertEqual(_check(rootQ, sid, sr, writes=[issueQ]).returncode, 2)
             # ...and P is untouched by Q's activity
             self.assertEqual(_check(rootP, sid, sr).returncode, 0)
 
@@ -765,8 +810,9 @@ class TestAdrResilience(unittest.TestCase):
             _snapshot(root, sid, sr)
             self.assertEqual(len(snap_files(sr)), 1,
                              "a broken ADR symlink must not abort the snapshot")
-            (adr / "0003-new.md").write_text("# new adr\n", encoding="utf-8")  # real posture change
-            r = _check(root, sid, sr)
+            new_adr = adr / "0003-new.md"
+            new_adr.write_text("# new adr\n", encoding="utf-8")  # real posture change
+            r = _check(root, sid, sr, writes=[new_adr])
             self.assertEqual(r.returncode, 2,
                              "an unreadable ADR must not silently disable the guard")
 
@@ -781,8 +827,8 @@ class TestDuplicateIssueNumber(unittest.TestCase):
             seed_issue(root, "feat", "01", "bravo", total=2, done=0)  # same NN, different slug
             sid = vid()
             _snapshot(root, sid, sr)
-            seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # flip alpha only
-            r = _check(root, sid, sr)
+            alpha = seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # flip alpha only
+            r = _check(root, sid, sr, writes=[alpha])
             self.assertEqual(r.returncode, 2,
                              "a posture change on a duplicate-NN issue must not be shadowed")
 
@@ -800,8 +846,8 @@ class TestIssueResilience(unittest.TestCase):
             _snapshot(root, sid, sr)
             self.assertEqual(len(snap_files(sr)), 1,
                              "an undecodable issue file must not abort the snapshot")
-            seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # real change on the good issue
-            r = _check(root, sid, sr)
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # real change on the good issue
+            r = _check(root, sid, sr, writes=[issue])
             self.assertEqual(r.returncode, 2,
                              "an undecodable issue must not silently disable the guard")
 
@@ -836,8 +882,9 @@ class TestTriageTransitions(unittest.TestCase):
             root = basic_repo(td, total=2, done=0, status_line="ready-for-agent")
             sid = vid()
             _snapshot(root, sid, sr)
-            seed_issue(root, "feat", "01", "alpha", total=2, done=0, status_line=new_status)
-            return _check(root, sid, sr).returncode
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=0,
+                               status_line=new_status)
+            return _check(root, sid, sr, writes=[issue]).returncode
 
     def test_parked_transition_fires(self):
         self.assertEqual(self._transition_fires("parked"), 2,
@@ -869,6 +916,322 @@ class TestSettingsWiring(unittest.TestCase):
         i_check = next(i for i, c in enumerate(stop) if "narrative_guard.py check" in c)
         self.assertLess(i_status, i_check,
                         "narrative_guard check must run AFTER status.py in Stop")
+
+
+# --------------------------------------------------------------------------
+# status-harness#04 — session attribution. The fingerprint reads repo-GLOBAL
+# disk state while anchors are per (session, repo), so pre-#04 every concurrent
+# session's change landed on whoever stopped first. Now the guard engages only
+# with posture changes THIS session's transcript shows it wrote (A1/A2), a
+# narrative change discharges only the session that wrote STATUS.md itself
+# (A3), unknown attribution always fails open (A4), and the transcript is
+# scanned only on would-block paths (A5).
+# --------------------------------------------------------------------------
+class TestWrittenSet(unittest.TestCase):
+    """A1 — written-set extraction from the transcript."""
+
+    def _ws(self, t):
+        import narrative_guard as ng
+        return ng.written_set({"transcript_path": str(t)})
+
+    def test_write_tools_and_backups_union_reads_never(self):
+        with tempfile.TemporaryDirectory() as td:
+            read_line = json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Read",
+                 "input": {"file_path": "/c/read-only.md"}}]}})
+            bash_line = json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash",
+                 "input": {"command": "cat /c/catted.md"}}]}})
+            edit_line = json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Edit",
+                 "input": {"file_path": "/a/edited.md", "old_string": "x",
+                           "new_string": "y"}}]}})
+            t = make_transcript(td, writes=["/a/written.md"], backups=["/b/backed.md"],
+                                extra_lines=[read_line, bash_line, edit_line])
+            ws = self._ws(t)
+            self.assertIn(os.path.realpath("/a/written.md"), ws)
+            self.assertIn(os.path.realpath("/a/edited.md"), ws)
+            self.assertIn(os.path.realpath("/b/backed.md"), ws,
+                          "trackedFileBackups keys are the second source")
+            self.assertNotIn(os.path.realpath("/c/read-only.md"), ws,
+                             "a Read must never attribute")
+            self.assertNotIn(os.path.realpath("/c/catted.md"), ws,
+                             "a Bash cat must never attribute")
+
+    def test_absent_or_unreadable_transcript_is_unknown(self):
+        import narrative_guard as ng
+        self.assertIsNone(ng.written_set({}))
+        self.assertIsNone(ng.written_set({"transcript_path": ""}))
+        self.assertIsNone(ng.written_set({"transcript_path": "/no/such/file.jsonl"}))
+
+    def test_garbage_lines_are_skipped_not_fatal(self):
+        with tempfile.TemporaryDirectory() as td:
+            t = make_transcript(td, writes=["/a/real.md"], extra_lines=[
+                'not json at all tool_use "Write"',
+                '{"type": "assistant", "message": {"content": [{"type": "tool_use", tor',
+            ])
+            self.assertIn(os.path.realpath("/a/real.md"), self._ws(t),
+                          "torn lines must not void the readable entries")
+
+
+class TestAttributionFailOpen(unittest.TestCase):
+    """A4 — no positive attribution -> the guard never blocks."""
+
+    def test_payload_without_transcript_path_fails_open(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            sid = vid()
+            _snapshot(root, sid, sr)
+            seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # would block
+            r = _check(root, sid, sr)  # no transcript_path in the payload
+            self.assertEqual(r.returncode, 0,
+                             f"unknown attribution must fail open; stderr={r.stderr}")
+
+    def test_unparseable_transcript_fails_open(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            sid = vid()
+            _snapshot(root, sid, sr)
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)
+            t = Path(sr) / "garbage.jsonl"
+            t.write_text(f'tool_use "Write" {issue} but not json\n' * 3, encoding="utf-8")
+            r = _check(root, sid, sr, transcript=t)
+            self.assertEqual(r.returncode, 0,
+                             f"an unparseable transcript attributes nothing; stderr={r.stderr}")
+
+    def test_bash_mediated_write_is_not_attributed(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            sid = vid()
+            _snapshot(root, sid, sr)
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)
+            bash_line = json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash",
+                 "input": {"command": f"sed -i 's/ ] / x /' {issue}"}}]}})
+            t = make_transcript(sr, writes=[], extra_lines=[bash_line])
+            r = _check(root, sid, sr, transcript=t)
+            self.assertEqual(r.returncode, 0,
+                             f"a Bash-mediated write is a known attribution miss "
+                             f"(fail-open); stderr={r.stderr}")
+
+    def test_issue_deletion_is_not_attributed(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            beta = seed_issue(root, "feat", "02", "beta", total=1, done=0)
+            sid = vid()
+            _snapshot(root, sid, sr)
+            beta.unlink()  # `rm` leaves no write-tool record in the transcript
+            r = _check(root, sid, sr, writes=[])
+            self.assertEqual(r.returncode, 0,
+                             f"a deletion is a known attribution miss (fail-open); "
+                             f"stderr={r.stderr}")
+
+
+class TestAttributedBlock(unittest.TestCase):
+    """A2 — block only on the written-set intersection; NAME only own items."""
+
+    def test_mixed_change_set_blocks_naming_only_own_writes(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            seed_issue(root, "feat", "02", "beta", total=2, done=0)
+            sid = vid()
+            _snapshot(root, sid, sr)
+            alpha = seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # ours
+            seed_issue(root, "feat", "02", "beta", total=2, done=2)  # another session's
+            r = _check(root, sid, sr, writes=[alpha])
+            self.assertEqual(r.returncode, 2,
+                             f"own change must still block; stderr={r.stderr}")
+            self.assertIn("feat/01-alpha", r.stderr)
+            self.assertNotIn("02-beta", r.stderr,
+                             "someone else's change must not even be mentioned "
+                             "(naming it invites narrating it)")
+
+    def test_adr_line_names_only_attributed_adrs(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            sid = vid()
+            _snapshot(root, sid, sr)
+            adr = root / "docs" / "adr"
+            adr.mkdir(parents=True)
+            ours = adr / "0001-ours.md"
+            ours.write_text("# ours\n", encoding="utf-8")
+            (adr / "0002-theirs.md").write_text("# theirs\n", encoding="utf-8")
+            r = _check(root, sid, sr, writes=[ours])
+            self.assertEqual(r.returncode, 2, f"own ADR must block; stderr={r.stderr}")
+            self.assertIn("0001-ours.md", r.stderr)
+            self.assertNotIn("0002-theirs.md", r.stderr,
+                             "the aggregate ADR line must be re-rendered with only "
+                             "the attributed names")
+
+
+class TestDischargeAttribution(unittest.TestCase):
+    """A3 — a narrative hash change discharges only the session that wrote it."""
+
+    def _snap_for(self, sr, sid):
+        fs = [f for f in snap_files(sr) if sid in f.name]
+        assert len(fs) == 1, fs
+        return fs[0]
+
+    def test_foreign_narrative_change_does_not_exempt(self):
+        import narrative_guard as ng
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            sid = vid()
+            _snapshot(root, sid, sr)
+            snap = self._snap_for(sr, sid)
+            anchor_fp = json.loads(snap.read_text())["fingerprint"]
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)  # ours
+            write_status(root, "## Current focus\n\nSomeone else's prose.\n")  # NOT ours
+            r = _check(root, sid, sr, writes=[issue])  # transcript lacks STATUS.md
+            self.assertEqual(r.returncode, 2,
+                             f"hash movement alone must not exempt; stderr={r.stderr}")
+            self.assertIn("feat/01-alpha", r.stderr)
+            data = json.loads(snap.read_text())
+            self.assertEqual(data["narrative_hash"],
+                             ng.narrative_hash(root / "STATUS.md"),
+                             "foreign narrative must be re-baselined (new reality)")
+            self.assertEqual(data["fingerprint"], anchor_fp,
+                             "the fingerprint anchor must survive a foreign "
+                             "narrative change (obligation persists)")
+
+    def test_foreign_offender_lines_rebaseline_without_lint_block(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            sid = vid()
+            _snapshot(root, sid, sr)
+            write_status(root, "## Current focus\n\nx\n\n- **완료 · feat #01:** done.\n")
+            r = _check(root, sid, sr, writes=[])  # narrative changed, but not by us
+            self.assertEqual(r.returncode, 0,
+                             f"someone else's offender line must not lint-block us; "
+                             f"stderr={r.stderr}")
+            data = json.loads(self._snap_for(sr, sid).read_text())
+            self.assertTrue(any("완료" in o for o in data["offenders"]),
+                            "their line becomes part of the accepted baseline")
+
+    def test_own_status_write_discharges_then_second_change_still_caught(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            sid = vid()
+            _snapshot(root, sid, sr)
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2)
+            st = write_status(root, "## Current focus\n\nAlpha done.\n")
+            self.assertEqual(_check(root, sid, sr, writes=[issue, st]).returncode, 0,
+                             "own STATUS.md write + hash change must discharge")
+            adr = root / "docs" / "adr"
+            adr.mkdir(parents=True)
+            adr_file = adr / "0001-x.md"
+            adr_file.write_text("# adr\n", encoding="utf-8")
+            r = _check(root, sid, sr, writes=[issue, st, adr_file])
+            self.assertEqual(r.returncode, 2,
+                             f"A5 regression: a 2nd attributed change after discharge "
+                             f"must block; stderr={r.stderr}")
+
+
+class TestIncidentReproduction(unittest.TestCase):
+    """A6 — the 2026-06-12 incident: an uninformed session must pass, and the
+    informed session must still owe the narrative even after someone else
+    touched STATUS.md (pre-#04: B was drafted, A was silently discharged)."""
+
+    def test_full_incident_flow(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            sid_a, sid_b = vid(), vid()  # A = informed closer, B = unrelated Q&A
+            _snapshot(root, sid_a, sr)
+            _snapshot(root, sid_b, sr)
+            # A files + closes the issue (merge-gate#48 style).
+            issue = seed_issue(root, "feat", "01", "alpha", total=2, done=2,
+                               resolution=True)
+            # B stops first having written nothing.
+            r_b = _check(root, sid_b, sr, writes=[])
+            self.assertEqual(r_b.returncode, 0,
+                             f"the uninformed session must not be drafted into "
+                             f"narrating; stderr={r_b.stderr}")
+            # Someone else refreshes the narrative (B's forced /status in the
+            # incident) — foreign to A.
+            write_status(root, "## Current focus\n\nUninformed guess.\n")
+            # A stops: narrative DID change, but not by A -> no exemption; A's
+            # own posture change still blocks.
+            r_a = _check(root, sid_a, sr, writes=[issue])
+            self.assertEqual(r_a.returncode, 2,
+                             f"the informed session still owes the narrative; "
+                             f"stderr={r_a.stderr}")
+            self.assertIn("feat/01-alpha", r_a.stderr)
+            # A actually runs /status -> own write discharges.
+            st = write_status(root, "## Current focus\n\nAlpha closed; beta next.\n")
+            r_a2 = _check(root, sid_a, sr, writes=[issue, st])
+            self.assertEqual(r_a2.returncode, 0, r_a2.stderr)
+
+
+class TestScanLaziness(unittest.TestCase):
+    """A5 — the transcript is read only on would-block paths."""
+
+    def _check_inprocess(self, root, sid, sr):
+        import io
+        import narrative_guard as ng
+        payload = {"session_id": sid, "cwd": str(root)}
+        old_stdin = sys.stdin
+        old_env = os.environ.get("NARRATIVE_GUARD_STATE_ROOT")
+        old_ws = ng.written_set
+
+        def boom(_payload):
+            raise AssertionError("written_set must not run on a quiet Stop")
+
+        sys.stdin = io.StringIO(json.dumps(payload))
+        os.environ["NARRATIVE_GUARD_STATE_ROOT"] = str(sr)
+        ng.written_set = boom
+        try:
+            with self.assertRaises(SystemExit) as cm:
+                ng.check()
+            return cm.exception.code or 0
+        finally:
+            sys.stdin = old_stdin
+            ng.written_set = old_ws
+            if old_env is None:
+                os.environ.pop("NARRATIVE_GUARD_STATE_ROOT", None)
+            else:
+                os.environ["NARRATIVE_GUARD_STATE_ROOT"] = old_env
+
+    def test_quiet_stop_and_pure_refresh_never_scan(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            sid = vid()
+            _snapshot(root, sid, sr)
+            self.assertEqual(self._check_inprocess(root, sid, sr), 0)  # nothing changed
+            write_status(root, "## Current focus\n\nReworded; posture untouched.\n")
+            self.assertEqual(self._check_inprocess(root, sid, sr), 0,
+                             "a pure narrative refresh (no posture diff, no new "
+                             "offenders) must not scan either")
+
+
+class TestScanPerformance(unittest.TestCase):
+    """A5 — p100-scale transcript: the scan alone stays ~100ms-class."""
+
+    def test_p100_scale_scan_under_budget(self):
+        import time
+        import narrative_guard as ng
+        with tempfile.TemporaryDirectory() as td:
+            filler = json.dumps({"type": "user", "message": {
+                "content": "lorem ipsum dolor sit amet " * 10}})
+            result = json.dumps({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "toolu_x",
+                 "content": "ok " * 40}]}})
+            write = json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Edit",
+                 "input": {"file_path": "/a/target.md", "old_string": "x",
+                           "new_string": "y"}}]}})
+            lines = [filler] * 110_000 + [result] * 4_000 + [write] * 200
+            t = Path(td) / "big.jsonl"
+            t.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            size_mb = t.stat().st_size / 1e6
+            self.assertGreater(size_mb, 25, "fixture must be p100-scale (tens of MB)")
+            t0 = time.perf_counter()
+            ws = ng.written_set({"transcript_path": str(t)})
+            dt = time.perf_counter() - t0
+            self.assertIn(os.path.realpath("/a/target.md"), ws)
+            # Spec p100 (36MB) measured 99ms cold; bound leaves CI-noise headroom
+            # while still pinning the order of magnitude.
+            self.assertLessEqual(dt, 0.4,
+                                 f"scan took {dt * 1000:.0f}ms on {size_mb:.0f}MB")
 
 
 if __name__ == "__main__":

@@ -17,12 +17,21 @@ Four argv subcommands:
   snapshot  — SessionStart: anchor {posture fingerprint, narrative hash,
               completion-offender baseline}.
   check     — Stop: block (exit 2) iff posture changed since the snapshot AND
-              the narrative is byte-unchanged since the snapshot. Also blocks
-              when the narrative DID change but carries completion-labelled
-              track lines (`- **완료 …**`) absent from the anchor's baseline —
-              done tracks are deleted, not relabelled, and you clean what YOU
-              wrote (legacy lines stay the advisory banner's job); detector
-              shared with status.py (status-harness#03).
+              the narrative is byte-unchanged since the snapshot AND the
+              session's transcript shows THIS session wrote at least one of
+              the changed files (status-harness#04: the fingerprint reads
+              repo-GLOBAL disk state while anchors are per (session, repo),
+              so without attribution every concurrent session's change landed
+              on whoever stopped first). The block names ONLY the attributed
+              items. Also blocks when the narrative DID change but carries
+              completion-labelled track lines (`- **완료 …**`) absent from the
+              anchor's baseline — done tracks are deleted, not relabelled, and
+              you clean what YOU wrote (legacy lines stay the advisory
+              banner's job); detector shared with status.py (status-harness#03).
+              A narrative change discharges the obligation only when STATUS.md
+              itself is in the session's written-set; someone else's narrative
+              edit is re-baselined (new reality accepted) WITHOUT exempting
+              this session's own posture obligations.
   pause     — drop a (session, repo) marker that makes `check` exit 0 without
               blocking. A grilling skill (grill-with-docs / harden-issue) runs
               this up front: it edits ADRs / CONTEXT / issue files inline as
@@ -47,6 +56,17 @@ Known gaps (by design):
     lifecycle *state*, not prose. This uncovered case is rare and left to the
     next-session reader; the real incident (commit 5495b88) is covered because
     it created docs/adr/0013.
+  * Attribution (status-harness#04) reads only write-tool tool_use entries and
+    trackedFileBackups keys from the Stop transcript. Bash-mediated writes
+    (`echo >`, `sed -i`, `git apply`), subagent edits (their tool_use lives in
+    the subagent's own transcript), and issue deletions (`rm`) leave no record
+    there: such posture moves are unattributable, so the guard stays silent —
+    fail-open, "귀속 불명이면 관여하지 않는다". A staleness miss there is
+    backstopped by the next session's staleness banner. The cross-session FALSE
+    attribution gap (an unrelated session drafted into narrating, the writing
+    session silently discharged — the 2026-06-12 merge-gate#48 incident) is
+    CLOSED by this attribution; cf. the known-gap table in status-harness#01's
+    spec, which documents only the cross-agent (miss) direction.
 """
 from __future__ import annotations
 
@@ -244,9 +264,97 @@ def posture_changes(old: dict, new: dict) -> list[str]:
     return changes
 
 
-def block_message(old: dict, new: dict) -> str:
-    changes = posture_changes(old, new)
-    detail = "\n".join(f"  • {c}" for c in changes) or "  • (posture fingerprint changed)"
+# --- session attribution (status-harness#04) -------------------------------
+WRITE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+_WRITE_TOKENS = tuple(f'"{t}"' for t in WRITE_TOOLS)
+
+
+def _norm(path) -> str:
+    """Canonical form for written-set membership: realpath collapses symlinked
+    prefixes so a tool-recorded path and a git-toplevel-derived path for the
+    same file compare equal."""
+    return os.path.realpath(str(path))
+
+
+def written_set(payload: dict) -> set[str] | None:
+    """Files THIS session wrote, scanned from the Stop payload's transcript (A1).
+
+    Two sources, union'd: write-tool (Edit/Write/MultiEdit/NotebookEdit)
+    tool_use inputs on `assistant` lines, and `trackedFileBackups` keys on
+    `file-history-snapshot` lines (undocumented internal format — second
+    source only, never relied on alone). Read/cat appear in neither, so a
+    session that only READ a file can never be falsely attributed.
+
+    Returns None when the transcript is absent or unreadable — the caller
+    treats unknown attribution as "do not engage" (fail-open). Individually
+    undecodable lines are skipped: a torn tail line (the file is being
+    appended to right now) must not void the rest of the transcript, and a
+    write entry lost that way only under-attributes, which fails open too.
+    Lines are substring-prefiltered before json.loads so a p100 transcript
+    stays ~100ms-class (measured 2026-06-12 over 1,100 transcripts: median
+    62KB <1ms · p90 1.1MB 3-4ms · p100 36MB cold 99ms)."""
+    tp = payload.get("transcript_path")
+    if not tp:
+        return None
+    out: set[str] = set()
+    try:
+        with open(tp, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if "file-history-snapshot" not in line and not (
+                        "tool_use" in line
+                        and any(t in line for t in _WRITE_TOKENS)):
+                    continue
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                kind = d.get("type")
+                if kind == "assistant":
+                    for b in (d.get("message") or {}).get("content") or []:
+                        if (isinstance(b, dict) and b.get("type") == "tool_use"
+                                and b.get("name") in WRITE_TOOLS):
+                            inp = b.get("input") or {}
+                            fp = inp.get("file_path") or inp.get("notebook_path")
+                            if fp:
+                                out.add(_norm(fp))
+                elif kind == "file-history-snapshot":
+                    backups = (d.get("snapshot") or {}).get("trackedFileBackups") or {}
+                    for k in backups:
+                        out.add(_norm(k))
+    except OSError:
+        return None  # unreadable mid-scan: a partial set could misattribute
+    return out
+
+
+ADR_CHANGE_PREFIX = "ADR(s) changed: "
+ISSUE_CHANGE_RE = re.compile(r"^issue ([^/]+)/(.+?): ")
+
+
+def attribute_changes(changes: list[str], written: set[str], root: Path) -> list[str]:
+    """Filter posture_changes() lines down to the ones THIS session wrote (A2):
+    each line is reverse-mapped to its file (issue <feature>/<stem> ->
+    .scratch/<feature>/issues/<stem>.md, ADR name -> docs/adr/<name>) and kept
+    only when that file is in the written-set. The aggregate ADR line is
+    re-rendered with only the attributed names — someone else's change must
+    not even be MENTIONED (naming it invites the blocked session to narrate
+    it; that change is the staleness banner's / the writing session's job)."""
+    out: list[str] = []
+    for c in changes:
+        if c.startswith(ADR_CHANGE_PREFIX):
+            names = [n for n in c[len(ADR_CHANGE_PREFIX):].split(", ")
+                     if _norm(root / "docs" / "adr" / n) in written]
+            if names:
+                out.append(ADR_CHANGE_PREFIX + ", ".join(names))
+            continue
+        m = ISSUE_CHANGE_RE.match(c)
+        if m and _norm(root / ".scratch" / m.group(1) / "issues"
+                       / f"{m.group(2)}.md") in written:
+            out.append(c)
+    return out
+
+
+def block_message(changes: list[str]) -> str:
+    detail = "\n".join(f"  • {c}" for c in changes)
     return (
         "Project posture changed this session but the STATUS.md narrative is "
         "unchanged. The narrative (Current focus / Start here / Open decisions) "
@@ -356,44 +464,74 @@ def check() -> None:
         print(f"narrative_guard: skipped ({exc})", file=sys.stderr)
         sys.exit(0)  # fail-open: never block on infra error
 
+    def rebaseline(fp, nh, off) -> None:
+        try:
+            sp.write_text(json.dumps({"fingerprint": fp,
+                                      "narrative_hash": nh,
+                                      "offenders": off}))
+        except Exception:
+            pass  # best-effort: never turn an allow into a block over a write error
+
     narrative_changed = (cur_nh != snap["narrative_hash"])
+    changes = posture_changes(snap["fingerprint"], cur_fp)
+
     if narrative_changed:
-        # Completion-label lint (status-harness#03): you clean what you wrote.
-        # Blocks only lines ABSENT from the anchor's offender baseline — a
-        # legacy offender survives even an unrelated narrative edit; it stays
-        # the advisory banner's job (75a13c0 advisory review: a full-narrative
-        # scan here re-litigated someone else's mess). An anchor predating the
-        # baseline key cannot attribute lines, so it fails open. No re-baseline
-        # on the block path: the anchor stays until the lines are gone.
+        # Completion-label lint baseline (status-harness#03): you clean what
+        # you wrote — only lines ABSENT from the anchor's offender baseline
+        # count; a legacy offender survives even an unrelated narrative edit
+        # (75a13c0 advisory review). An anchor predating the baseline key
+        # cannot attribute lines, so it fails open.
         cur_off = status.completion_offenders(
             status.read_narrative(status_path))
-        if "offenders" in snap:
-            base = set(snap["offenders"])
-            new_off = [o for o in cur_off if o not in base]
+        base = set(snap["offenders"]) if "offenders" in snap else None
+        new_off = [o for o in cur_off if o not in base] if base is not None else []
+        if not new_off and not changes:
+            # Pure narrative refresh: nothing could block, so the transcript
+            # is never read (A5 — a quiet Stop costs nothing extra).
+            rebaseline(cur_fp, cur_nh, cur_off)
+            sys.exit(0)
+        written = written_set(p)
+        if written is None:
+            # Attribution unknown (no transcript_path / unreadable): do not
+            # engage — keep the pre-#04 discharge behaviour (A4 fail-open).
+            rebaseline(cur_fp, cur_nh, cur_off)
+            sys.exit(0)
+        if _norm(status_path) in written:
+            # THIS session wrote the narrative. Lint first: a new offender
+            # line blocks with NO re-baseline (the anchor stays until the
+            # lines are gone). Otherwise the narrative edit discharges:
+            # re-baseline everything so a *second* posture change later in
+            # the same session is still caught (A5).
             if new_off:
                 print(completion_block_message(new_off), file=sys.stderr)
                 sys.exit(2)
-        # The agent touched the narrative this session (did their job, or ran
-        # /status). Re-baseline to {current fingerprint, current narrative,
-        # current offenders} so a *second* posture change later in the same
-        # session is still caught (A5). Checked before posture so re-baseline
-        # beats block when both moved.
-        try:
-            sp.write_text(json.dumps({"fingerprint": cur_fp,
-                                      "narrative_hash": cur_nh,
-                                      "offenders": cur_off}))
-        except Exception:
-            pass  # best-effort: never turn an allow into a block over a write error
+            rebaseline(cur_fp, cur_nh, cur_off)
+            sys.exit(0)
+        # Someone ELSE moved the narrative (status-harness#04 incident): accept
+        # the new reality for the hash + offender baseline — their prose, their
+        # lint — but grant NO exemption. The fingerprint anchor is kept, so this
+        # session's own posture obligations keep biting (a repeat block costs at
+        # most one turn via stop_hook_active).
+        rebaseline(snap["fingerprint"], cur_nh, cur_off)
+        attributed = attribute_changes(changes, written, root)
+        if attributed:
+            print(block_message(attributed), file=sys.stderr)
+            sys.exit(2)
         sys.exit(0)
 
-    posture_changed = (json.dumps(cur_fp, sort_keys=True)
-                       != json.dumps(snap["fingerprint"], sort_keys=True))
-    if posture_changed:
-        # Do NOT re-baseline on the block path: leaving the original anchor in
-        # place means the next Stop still sees the change until the narrative
-        # actually moves.
-        print(block_message(snap["fingerprint"], cur_fp), file=sys.stderr)
-        sys.exit(2)
+    if changes:
+        # Would-block path: posture moved, narrative untouched. Only NOW is the
+        # transcript scanned (A5), and the block fires only for changes whose
+        # files THIS session wrote (A2) — unknown attribution never engages
+        # (A4). No re-baseline on the block path: the anchor stays until the
+        # narrative actually moves.
+        written = written_set(p)
+        if written is None:
+            sys.exit(0)
+        attributed = attribute_changes(changes, written, root)
+        if attributed:
+            print(block_message(attributed), file=sys.stderr)
+            sys.exit(2)
     sys.exit(0)
 
 
