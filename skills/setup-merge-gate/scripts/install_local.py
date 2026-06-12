@@ -43,9 +43,9 @@ LOCAL_BLOCK = """\
 enforcement_policy  = "advisory"        # advisory | client-side-blocking
 freshness_policy    = "content"         # content | tool-strict
 base_ref            = "auto"
-artifact_root       = ".codex-review/local"
+artifact_root       = ".merge-gate/local"
 review_globs        = ["**/*"]
-ignore_globs        = [".codex-review/**"]   # minimal; lockfiles stay IN scope
+ignore_globs        = [".merge-gate/**"]   # minimal; lockfiles stay IN scope
 blocking_severities = ["critical", "high"]
 bypass_trailer      = "Merge-Gate-Bypass"
 
@@ -215,7 +215,7 @@ def install_post_commit(repo_root: Path, template: Path) -> Path:
 # --------------------------------------------------------------------------
 # .gitignore
 # --------------------------------------------------------------------------
-def ensure_gitignore(repo_root: Path, entry: str = ".codex-review/") -> bool:
+def ensure_gitignore(repo_root: Path, entry: str = ".merge-gate/") -> bool:
     gi = repo_root / ".gitignore"
     lines = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []
     if any(ln.strip() == entry for ln in lines):

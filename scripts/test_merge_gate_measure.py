@@ -890,7 +890,7 @@ class TestFreshWithFindingsRowEndToEnd(unittest.TestCase):
         (self.root / "harness.toml").write_text(
             '[merge-gate]\nprofile = "local"\n\n[merge-gate.local]\n'
             'review_globs = ["**/*"]\n'
-            'ignore_globs = [".codex-review/**", ".scratch/merge-gate-measurement/**"]\n')
+            'ignore_globs = [".merge-gate/**", ".scratch/merge-gate-measurement/**"]\n')
         (self.root / "a.py").write_text("base\n")
         _git(self.root, "add", "-A", env=self.env)
         _git(self.root, "commit", "-q", "-m", "base", env=self.env)

@@ -32,8 +32,8 @@ class TestHarnessMerge(unittest.TestCase):
         local = d["merge-gate"]["local"]
         self.assertEqual(local["enforcement_policy"], "advisory")
         self.assertEqual(local["base_ref"], "auto")
-        self.assertEqual(local["artifact_root"], ".codex-review/local")
-        self.assertEqual(local["ignore_globs"], [".codex-review/**"])
+        self.assertEqual(local["artifact_root"], ".merge-gate/local")
+        self.assertEqual(local["ignore_globs"], [".merge-gate/**"])
         self.assertEqual(local["scheduler"]["auto_produce"], "stop-debounced")
         self.assertEqual(local["producer"]["reviewers"], ["codex"])
         self.assertEqual(local["producer"]["codex"]["bin"], "codex")
@@ -106,7 +106,7 @@ class TestInstallActions(unittest.TestCase):
         self.assertTrue(il.ensure_gitignore(self.repo))
         self.assertFalse(il.ensure_gitignore(self.repo))  # idempotent
         body = (self.repo / ".gitignore").read_text()
-        self.assertEqual(body.count(".codex-review/"), 1)
+        self.assertEqual(body.count(".merge-gate/"), 1)
 
     def test_deregister_stale_hooks_removes_retired_pair(self):
         # #33 — the Stop scheduler + PostToolUse mark are RETIRED (ADR-0014). The

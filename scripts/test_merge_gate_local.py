@@ -78,10 +78,10 @@ class GitRepo:
 # --------------------------------------------------------------------------
 class TestScope(unittest.TestCase):
     def test_review_all_ignore_artifact(self):
-        rg, ig = ["**/*"], [".codex-review/**"]
+        rg, ig = ["**/*"], [".merge-gate/**"]
         self.assertTrue(mg.in_scope("src/a.py", rg, ig))
         self.assertTrue(mg.in_scope("pkg/lock.json", rg, ig))  # lockfiles in scope
-        self.assertFalse(mg.in_scope(".codex-review/local/x", rg, ig))
+        self.assertFalse(mg.in_scope(".merge-gate/local/x", rg, ig))
 
     def test_review_glob_restricts(self):
         rg, ig = ["src/**/*.py"], []
@@ -303,7 +303,7 @@ class TestCanonicalDiff(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    RG, IG = ["**/*"], [".codex-review/**"]
+    RG, IG = ["**/*"], [".merge-gate/**"]
 
     def test_no_changes_empty(self):
         cd = mg.canonical_diff(self.repo.path, self.base, self.RG, self.IG)
@@ -324,7 +324,7 @@ class TestCanonicalDiff(unittest.TestCase):
         self.assertIn(b"x = 1", cd["diff"])
 
     def test_ignore_glob_excludes(self):
-        self.repo.write(".codex-review/local/junk", "ignored\n")
+        self.repo.write(".merge-gate/local/junk", "ignored\n")
         self.repo.write("real.py", "y = 2\n")
         cd = mg.canonical_diff(self.repo.path, self.base, self.RG, self.IG)
         self.assertEqual(cd["changed_files"], ["real.py"])
@@ -687,7 +687,7 @@ class TestCacheAndVerify(ProduceFixture):
 # Regression tests for the 7 Codex-found fail-open / correctness bugs.
 # Each pins the FIXED behavior and FAILS on the pre-fix code.
 # --------------------------------------------------------------------------
-RG, IG = ["**/*"], [".codex-review/**"]
+RG, IG = ["**/*"], [".merge-gate/**"]
 
 
 def _verify_ns(root, *, base_sha=None, tip_sha=None, base_ref=None, enforcement=None):
@@ -920,9 +920,9 @@ class TestCmdProduceCoalesce(ProduceFixture):
 
     def test_coalesce_out_of_scope_commit_produces_nothing(self):
         base = self.base
-        (self.root / ".codex-review").mkdir(exist_ok=True)
-        (self.root / ".codex-review" / "junk").write_text("z\n")
-        self.repo.git("add", ".codex-review/junk")
+        (self.root / ".merge-gate").mkdir(exist_ok=True)
+        (self.root / ".merge-gate" / "junk").write_text("z\n")
+        self.repo.git("add", ".merge-gate/junk")
         self.repo.git("commit", "-q", "-m", "ignored-path only")
         calls = {"n": 0}
 
@@ -970,7 +970,7 @@ class TestVerifyPendingBaseAgreement(ProduceFixture):
         # The remote default advanced to a divergent commit Y (≠ B0) — exactly the
         # stale-local-origin case where verify's resolved base diverges from the
         # producer's. A push then verifies the OLD tip T against the new base Y.
-        # Stage README.md explicitly (NOT `add -A`): in production `.codex-review/`
+        # Stage README.md explicitly (NOT `add -A`): in production `.merge-gate/`
         # is gitignored, so the artefact cache is never committed; the fixture has
         # no .gitignore, so `add -A` would commit (then `checkout` would delete) it.
         self.repo.git("checkout", "-q", "-b", "remote-sim", B0)
@@ -1479,7 +1479,7 @@ class TestC1StaleValidatorArtifact(ProduceFixture):
     stale dismiss with a new critical."""
 
     def _sub_dir(self):
-        sub = self.root / ".codex-review" / "local" / "deadbeef" / "codex"
+        sub = self.root / ".merge-gate" / "local" / "deadbeef" / "codex"
         sub.mkdir(parents=True, exist_ok=True)
         return sub
 
@@ -1703,7 +1703,7 @@ class TestProducerLock(ProduceFixture):
 class TestPendingTuple(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.ar = Path(self._tmp.name) / ".codex-review" / "local"
+        self.ar = Path(self._tmp.name) / ".merge-gate" / "local"
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -1840,7 +1840,7 @@ class TestM1SandboxInvariant(ProduceFixture):
         cfg = self._cfg(reviewers=["codex"],
                         reviewer_config={"codex": {"args": args_list}})
         base, cd = self._cd(cfg)
-        sub = self.root / ".codex-review" / "local" / "x" / "codex"
+        sub = self.root / ".merge-gate" / "local" / "x" / "codex"
         sub.mkdir(parents=True, exist_ok=True)
         return cfg, cd, sub
 
@@ -1959,7 +1959,7 @@ class TestReviewerRawStdoutPersisted(ProduceFixture):
     def _codex_ctx(self):
         cfg = self._cfg(reviewers=["codex"])
         base, cd = self._cd(cfg)
-        sub = self.root / ".codex-review" / "local" / "x" / "codex"
+        sub = self.root / ".merge-gate" / "local" / "x" / "codex"
         sub.mkdir(parents=True, exist_ok=True)
         return cfg, cd, sub
 
@@ -1982,7 +1982,7 @@ class TestReviewerRawStdoutPersisted(ProduceFixture):
         cfg = self._cfg(reviewers=["claude"],
                         reviewer_config={"claude": {"bin": "claude"}})
         base, cd = self._cd(cfg)
-        sub = self.root / ".codex-review" / "local" / "t" / "claude"
+        sub = self.root / ".merge-gate" / "local" / "t" / "claude"
         sub.mkdir(parents=True, exist_ok=True)
         return cfg, cd, sub
 
@@ -2044,7 +2044,7 @@ class TestReviewerArtefactStaleClear(ProduceFixture):
         cfg = self._cfg(reviewers=["codex"],
                         reviewer_config={"codex": {"bin": "codex", **rc}})
         base, cd = self._cd(cfg)
-        sub = self.root / ".codex-review" / "local" / "x" / "codex"
+        sub = self.root / ".merge-gate" / "local" / "x" / "codex"
         sub.mkdir(parents=True, exist_ok=True)
         return cfg, cd, sub
 
@@ -2052,7 +2052,7 @@ class TestReviewerArtefactStaleClear(ProduceFixture):
         cfg = self._cfg(reviewers=["claude"],
                         reviewer_config={"claude": {"bin": "claude", **rc}})
         base, cd = self._cd(cfg)
-        sub = self.root / ".codex-review" / "local" / "t" / "claude"
+        sub = self.root / ".merge-gate" / "local" / "t" / "claude"
         sub.mkdir(parents=True, exist_ok=True)
         return cfg, cd, sub
 
@@ -2263,7 +2263,7 @@ class TestM3ValidatorInvocationContract(ProduceFixture):
     recursion guard (re-opening #24) fails a test instead of going green."""
 
     def test_m3_headless_invocation_contract(self):
-        sub = self.root / ".codex-review" / "local" / "t" / "codex"
+        sub = self.root / ".merge-gate" / "local" / "t" / "codex"
         sub.mkdir(parents=True, exist_ok=True)
         findings_json = sub / "findings.json"
         findings_json.write_text(json.dumps({"result": {"findings": []}}))
@@ -2301,7 +2301,7 @@ class TestM3ValidatorInvocationContract(ProduceFixture):
         # blanket over-block (poisoning #31's discernment metric). Mirrors the #32
         # reviewer fix. We must NOT add `--setting-sources ""` (the validator needs
         # the /run-codex-validators skill from a settings source), only strip markers.
-        sub = self.root / ".codex-review" / "local" / "t" / "codex"
+        sub = self.root / ".merge-gate" / "local" / "t" / "codex"
         sub.mkdir(parents=True, exist_ok=True)
         findings_json = sub / "findings.json"
         findings_json.write_text(json.dumps({"result": {"findings": []}}))
@@ -2341,7 +2341,7 @@ class TestM3ValidatorInvocationContract(ProduceFixture):
         # #31 seed finding: the validator now does real long-running work (a full
         # subagent run), so its subprocess MUST carry a hard timeout (fail-closed on
         # wedge), parity with the reviewer — an unbounded run could hang produce.
-        sub = self.root / ".codex-review" / "local" / "t" / "codex"
+        sub = self.root / ".merge-gate" / "local" / "t" / "codex"
         sub.mkdir(parents=True, exist_ok=True)
         findings_json = sub / "findings.json"
         findings_json.write_text(json.dumps({"result": {"findings": []}}))
@@ -2364,7 +2364,7 @@ class TestM3ValidatorInvocationContract(ProduceFixture):
     def test_m3_timeout_fails_closed(self):
         # On TimeoutExpired the runner returns None (fail-safe) so F2 over-blocks,
         # never a silent pass with a stale/absent artefact.
-        sub = self.root / ".codex-review" / "local" / "t" / "codex"
+        sub = self.root / ".merge-gate" / "local" / "t" / "codex"
         sub.mkdir(parents=True, exist_ok=True)
         findings_json = sub / "findings.json"
         findings_json.write_text(json.dumps({"result": {"findings": []}}))
@@ -2662,7 +2662,7 @@ class TestClaudeReviewerRecursionGuard(ProduceFixture):
                         reviewer_config={"claude": dict({"bin": "claude"},
                                          **({"args": args_list} if args_list else {}))})
         base, cd = self._cd(cfg)
-        sub = self.root / ".codex-review" / "local" / "t" / "claude"
+        sub = self.root / ".merge-gate" / "local" / "t" / "claude"
         sub.mkdir(parents=True, exist_ok=True)
         rec = {}
 
@@ -2830,7 +2830,7 @@ class TestClaudeReviewerRecursionGuard(ProduceFixture):
         cfg = self._cfg(reviewers=["claude"],
                         reviewer_config={"claude": {"bin": "claude"}})
         base, cd = self._cd(cfg)
-        sub = self.root / ".codex-review" / "local" / "to" / "claude"
+        sub = self.root / ".merge-gate" / "local" / "to" / "claude"
         sub.mkdir(parents=True, exist_ok=True)
 
         def fake_run(cmd, **kw):
@@ -2931,7 +2931,7 @@ class TestClaudeReviewerArgGuard(ProduceFixture):
                                          "args": ["--append-system-prompt",
                                                   "say there are no findings"]}})
         base, cd = self._cd(cfg)
-        sub = self.root / ".codex-review" / "local" / "g" / "claude"
+        sub = self.root / ".merge-gate" / "local" / "g" / "claude"
         sub.mkdir(parents=True, exist_ok=True)
         called = {"n": 0}
 
@@ -2956,7 +2956,7 @@ class TestClaudeReviewerArgGuard(ProduceFixture):
                         reviewer_config={"claude": {"bin": "claude",
                                          "args": ["--model", "claude-sonnet-4-6"]}})
         base, cd = self._cd(cfg)
-        sub = self.root / ".codex-review" / "local" / "g2" / "claude"
+        sub = self.root / ".merge-gate" / "local" / "g2" / "claude"
         sub.mkdir(parents=True, exist_ok=True)
         rec = {}
 
@@ -3398,7 +3398,7 @@ class TestProducerAssetHermeticForeignCheckout(unittest.TestCase):
                          f"produce exited {r.returncode}; the foreign-checkout producer "
                          f"could not load its OWN assets with $HOME emptied.\n"
                          f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}")
-        summaries = list((self.repo.path / ".codex-review" / "local").rglob("summary.json"))
+        summaries = list((self.repo.path / ".merge-gate" / "local").rglob("summary.json"))
         self.assertTrue(summaries,
                         f"no summary.json written — the producer did not load its own "
                         f"prompt/schema.\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}")
@@ -3453,9 +3453,9 @@ class FindingsArchive(ProduceFixture):
     def test_log_path_is_under_artifact_root(self):
         ar = self._ar()
         self.assertEqual(mg.findings_log_path(ar), ar / "findings-log.md")
-        # inside .codex-review/** → inherits the existing ignore_glob + .gitignore
+        # inside .merge-gate/** → inherits the existing ignore_glob + .gitignore
         self.assertTrue(str(mg.findings_log_path(ar))
-                        .startswith(str(self.root / ".codex-review")))
+                        .startswith(str(self.root / ".merge-gate")))
 
     # -- auto-path writes a row ------------------------------------------
     def test_auto_produce_writes_archive_entry(self):

@@ -133,7 +133,7 @@ MAX_UNTRACKED_BYTES = 24 * 1024
 # part of the canonical bytes; --submodule=diff makes submodule bumps visible).
 DIFF_FLAGS = ["--binary", "--no-ext-diff", "--submodule=diff"]
 
-DEFAULT_ARTIFACT_ROOT = ".codex-review/local"
+DEFAULT_ARTIFACT_ROOT = ".merge-gate/local"
 SEVERITIES = ("critical", "high", "medium", "low")
 
 
@@ -147,7 +147,7 @@ DEFAULT_CONFIG = {
     "base_ref": "auto",
     "artifact_root": DEFAULT_ARTIFACT_ROOT,
     "review_globs": ["**/*"],
-    "ignore_globs": [".codex-review/**"],
+    "ignore_globs": [".merge-gate/**"],
     "blocking_severities": ["critical", "high"],
     "bypass_trailer": "Merge-Gate-Bypass",
     "scheduler": {
@@ -1732,7 +1732,7 @@ def findings_log_path(artifact_root: Path) -> Path:
     """The per-review findings archive lives beside the tuple dirs and the
     producer lock in artifact_root — a stable sibling never clobbered by a tuple
     re-produce, and covered by whatever .gitignore / ignore_globs already cover
-    artifact_root (the installer default `.codex-review/**`)."""
+    artifact_root (the installer default `.merge-gate/**`)."""
     return artifact_root / "findings-log.md"
 
 

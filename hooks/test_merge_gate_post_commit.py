@@ -138,7 +138,7 @@ class TestPostCommitMain(unittest.TestCase):
 
     def test_out_of_scope_commit_produces_nothing(self):
         # A commit touching ONLY an ignored path → no launch, no pending.
-        commit(self.root, self.env, ".codex-review/junk", "z\n", "ignored only")
+        commit(self.root, self.env, ".merge-gate/junk", "z\n", "ignored only")
         code = self._run_main()
         self.assertEqual(code, 0)
         self.assertEqual(self.launched, [])

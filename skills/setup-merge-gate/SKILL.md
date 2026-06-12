@@ -18,7 +18,7 @@ The local profile installs:
 |---|---|---|
 | pre-push hook | `<repo>/.git/hooks/pre-push` | calls `merge-gate-local verify` only |
 | `[merge-gate]` + `[merge-gate.local*]` | `<repo>/harness.toml` | profile + local config (D8) |
-| `.codex-review/` ignore | `<repo>/.gitignore` | the artefact cache is not committed (D3) |
+| `.merge-gate/` ignore | `<repo>/.gitignore` | the artefact cache is not committed (D3) |
 | global Stop + PostToolUse hooks | `~/.claude/settings.json` | the cheap auto-`produce` scheduler (D2) |
 
 The wrapper itself (`~/.claude/scripts/merge_gate_local.py`) and its hooks ship

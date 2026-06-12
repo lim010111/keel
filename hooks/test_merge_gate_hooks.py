@@ -199,8 +199,8 @@ class TestSchedulerMain(unittest.TestCase):
     def test_no_inscope_diff_no_launch(self):
         # dirty but only an ignored-path change
         self._seed_state()
-        (self.root / ".codex-review").mkdir(exist_ok=True)
-        (self.root / ".codex-review" / "junk").write_text("z\n")
+        (self.root / ".merge-gate").mkdir(exist_ok=True)
+        (self.root / ".merge-gate" / "junk").write_text("z\n")
         self._run({"cwd": str(self.root)})
         self.assertEqual(self.launched, [])
 
