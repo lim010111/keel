@@ -587,8 +587,31 @@ class TestSymlinkForeignHook(unittest.TestCase):
         self.assertTrue(self.dest.is_symlink())
         self.assertEqual(self.dest.read_text(), "#!/bin/sh\necho managed hook\n")
         self.assertEqual(os.stat(self.target).st_mode & 0o777, 0o700)
-        self.assertFalse(self.backup.is_symlink() and False)  # backup consumed:
-        self.assertFalse(os.path.lexists(self.backup))
+        self.assertFalse(os.path.lexists(self.backup))       # backup consumed
+
+    def test_identical_regenerated_symlink_does_not_grow_backup_chain(self):
+        # b421d9b review (codex+claude, medium) — a manager that re-creates the
+        # SAME symlink every cycle must dedup like the regular-file path; the
+        # live link is removed (never written through), not re-backed-up.
+        link = Path("..") / ".." / "hookmgr" / "pre-push.sh"
+        for _ in range(3):
+            if not self.dest.is_symlink():
+                self.dest.unlink()
+                self.dest.symlink_to(link)   # manager clobbers our hook
+            il.install_pre_push(self.repo, TEMPLATE)
+        self.assertTrue(self.backup.is_symlink())
+        self.assertFalse(os.path.lexists(self.hooks / "pre-push.pre-merge-gate.1"))
+        self.assertEqual(self.target.read_text(), "#!/bin/sh\necho managed hook\n")
+        self.assertIn(il.PRE_PUSH_MARKER, self.dest.read_text())
+        # a link to a DIFFERENT target still gets its own backup
+        other = self.repo / "hookmgr" / "v2.sh"
+        other.write_text("#!/bin/sh\necho v2\n")
+        self.dest.unlink()
+        self.dest.symlink_to(Path("..") / ".." / "hookmgr" / "v2.sh")
+        il.install_pre_push(self.repo, TEMPLATE)
+        escalated = self.hooks / "pre-push.pre-merge-gate.1"
+        self.assertTrue(escalated.is_symlink())
+        self.assertEqual(escalated.read_text(), "#!/bin/sh\necho v2\n")
 
     def test_broken_symlink_does_not_create_target(self):
         # write_text through a BROKEN link would create the missing target.

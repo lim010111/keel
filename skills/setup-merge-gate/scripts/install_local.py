@@ -230,18 +230,27 @@ def _install_hook(repo_root: Path, hook_name: str, marker: str, template: Path):
         if marker not in existing:
             prior = _hook_backups(hooks_dir, hook_name)
             newest = prior[-1][1] if prior else None
-            if (newest is not None
-                    and not dest.is_symlink() and not newest.is_symlink()
-                    and newest.read_bytes() == dest.read_bytes()
-                    and os.stat(newest).st_mode & 0o777
-                        == os.stat(dest).st_mode & 0o777):
-                # The newest backup already preserves exactly these bytes+mode —
-                # a manager regenerating the same hook every cycle (husky on
-                # npm install) must not grow the chain unboundedly (2903e83
-                # review, claude:finding-1). Restore semantics are unchanged:
-                # restoring that backup IS this hook. Lossy GC of DIFFERING
-                # backups stays out — that is the #42 footgun itself.
-                pass
+            if dest.is_symlink() and newest is not None:
+                same = (newest.is_symlink()
+                        and os.readlink(dest) == os.readlink(newest))
+            elif not dest.is_symlink() and newest is not None:
+                same = (not newest.is_symlink()
+                        and newest.read_bytes() == dest.read_bytes()
+                        and os.stat(newest).st_mode & 0o777
+                            == os.stat(dest).st_mode & 0o777)
+            else:
+                same = False
+            if same:
+                # The newest backup already preserves exactly this hook — same
+                # bytes+mode, or a symlink to the same target — so a manager
+                # regenerating it every cycle (husky on npm install) must not
+                # grow the chain unboundedly (2903e83 + b421d9b reviews).
+                # Restore semantics are unchanged: restoring that backup IS
+                # this hook. Lossy GC of DIFFERING backups stays out — that is
+                # the #42 footgun itself. A deduped LINK is removed, never
+                # written through (the write below would corrupt its target).
+                if dest.is_symlink():
+                    dest.unlink()
             else:
                 # max+1 (not first gap) keeps indices monotone, so the NEWEST
                 # backup is always the highest number — what uninstall's restore
