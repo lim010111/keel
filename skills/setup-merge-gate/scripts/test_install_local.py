@@ -676,19 +676,33 @@ class TestUninstall(unittest.TestCase):
 class Test46ManualDefaultOutDirIgnored(unittest.TestCase):
     """#46 — a manual `/run-codex-validators` run relying on the skill's
     default `--out-dir` must leave no committable, review-in-scope artefact
-    on a fresh install. The default lives as prose in that skill's SKILL.md;
-    this guards the coupling between that prose and the installer's ignore
-    surface (gitignore entry + rendered ignore_globs) so a future rename of
-    either side cannot silently reopen the seam (the #43 → #46 bug class)."""
+    on a fresh install. The default lives as prose in that skill's SKILL.md
+    — in SEVERAL places (contract bullet, output-files line, and the
+    executable workflow step the LLM actually follows) — so the guard
+    collects every default mention and asserts they agree before checking
+    the agreed value against the installer's ignore surface (gitignore
+    entry + rendered ignore_globs). A drift of ANY single mention, or of
+    the installer side, fails here (the #43 → #46 bug class; the
+    one-mention pin was 7788ada review claude:finding-0)."""
 
     SKILL_MD = HERE.parents[1] / "run-codex-validators" / "SKILL.md"
     AGGREGATE = HERE.parents[1] / "run-codex-validators" / "scripts" / "aggregate.py"
 
     def skill_default_out_dir(self) -> str:
-        m = re.search(r"`--out-dir` \(optional\) default `\./([^`/]+)/`",
-                      self.SKILL_MD.read_text())
-        self.assertIsNotNone(m, "cannot find the --out-dir default in SKILL.md")
-        return m.group(1)
+        # Every "default `<value>`" mention; dot-dir values are out-dir
+        # defaults (the --codex-json default is a .json file, filtered out).
+        vals = re.findall(r"default[ \n]+`([^`]+)`", self.SKILL_MD.read_text())
+        dirs = [re.sub(r"^\./", "", v).rstrip("/") for v in vals]
+        dirs = [d for d in dirs if d.startswith(".")]
+        self.assertGreaterEqual(
+            len(dirs), 3,
+            "out-dir default mentions in SKILL.md dropped below the known "
+            "surface (contract bullet / output-files line / workflow step) — "
+            "rephrased? Update the regex so every mention stays pinned.")
+        self.assertEqual(
+            len(set(dirs)), 1,
+            f"SKILL.md states conflicting --out-dir defaults: {sorted(set(dirs))}")
+        return dirs[0]
 
     def test_manual_default_run_leaves_no_committable_in_scope_artefact(self):
         sys.path.insert(0, str(HERE.parents[2] / "scripts"))
