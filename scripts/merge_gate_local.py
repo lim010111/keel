@@ -122,6 +122,19 @@ ADVERSARIAL_PROMPT_PATH = ASSETS_DIR / "adversarial-review.md"
 # The schema is reused (not re-vendored) from the byte-identical template copy
 # — see merge-gate-assets/PROVENANCE.md.
 SCHEMA_PATH = CLAUDE_DIR / "skills" / "setup-merge-gate" / "templates" / "review-output.schema.json"
+# The validator agent definition. UNLIKE the prompt + schema (producer-READ
+# assets the producer loads from CLAUDE_DIR), the agent is resolved by the
+# dispatched headless `claude -p /run-codex-validators` from the ~/.claude
+# SETTINGS sources — NOT the producer's checkout (the dispatcher cannot isolate
+# settings; see default_validator_runner). So the hash must track the file that
+# ACTUALLY executes: root it at $HOME, never CLAUDE_DIR, else a checkout-vs-home
+# skew would hash one file while a different agent judges. Its frontmatter
+# `model:` is the EFFECTIVE validator model when the
+# `[merge-gate.local.validator].model` pin is unset, so its content enters the
+# scope hash via validator_agent_sha. It is deliberately NOT in
+# RUNTIME_SET_RELPATHS — the producer never reads it, so it must not gate the
+# checkout-vs-home pin decision.
+VALIDATOR_AGENT_PATH = HOME / ".claude" / "agents" / "codex-review-validator.md"
 
 # Ported from codex-plugin-cc git.mjs formatUntrackedFile: untracked files
 # larger than this are excluded from the review tree and recorded, rather than
@@ -686,6 +699,17 @@ def review_scope_hash(cfg: Config) -> str:
         # content change, incl. the schema, which has no manual version).
         "adversarial_prompt_sha": _asset_sha(ADVERSARIAL_PROMPT_PATH),
         "schema_sha": _asset_sha(SCHEMA_PATH),
+        # #37 CONTENT identity, extended to the validator agent — but rooted at
+        # the agent's EXECUTION source ($HOME, see VALIDATOR_AGENT_PATH), not
+        # CLAUDE_DIR, since the headless validator loads it from ~/.claude. Its
+        # frontmatter `model:` is the EFFECTIVE validator model whenever the
+        # `validator_model` pin below is unset — so a default bump (e.g.
+        # sonnet→opus) changes which model judges yet leaves `validator_model` at
+        # None. Hashing the executed agent's content closes that gap (the #47
+        # "change any model setting → re-review" rule must hold for the frontmatter
+        # fallback too) and auto-busts on any output_contract edit, complementing
+        # the manual VALIDATOR_CONTRACT_VERSION above.
+        "validator_agent_sha": _asset_sha(VALIDATOR_AGENT_PATH),
         "reviewer_args": {r: cfg.reviewer_args(r) for r in cfg.reviewers},
         # A different reviewer binary or custom command is a different reviewer
         # implementation and MUST invalidate the cache (one-time bust on upgrade).

@@ -3273,16 +3273,29 @@ class TestAssetIdentityInScopeHash(unittest.TestCase):
         return mg.Config(mg._merge_defaults(mg.DEFAULT_CONFIG, {}))
 
     @contextlib.contextmanager
-    def _assets(self, prompt_bytes, schema_bytes):
-        op, os_ = mg.ADVERSARIAL_PROMPT_PATH, mg.SCHEMA_PATH
+    def _assets(self, prompt_bytes, schema_bytes, agent_bytes=b"---\nmodel: sonnet\n---\n"):
+        op, os_, oa = (mg.ADVERSARIAL_PROMPT_PATH, mg.SCHEMA_PATH,
+                       mg.VALIDATOR_AGENT_PATH)
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "adversarial-review.md"; p.write_bytes(prompt_bytes)
             s = Path(d) / "review-output.schema.json"; s.write_bytes(schema_bytes)
-            mg.ADVERSARIAL_PROMPT_PATH, mg.SCHEMA_PATH = p, s
+            a = Path(d) / "codex-review-validator.md"; a.write_bytes(agent_bytes)
+            mg.ADVERSARIAL_PROMPT_PATH, mg.SCHEMA_PATH, mg.VALIDATOR_AGENT_PATH = p, s, a
             try:
                 yield
             finally:
-                mg.ADVERSARIAL_PROMPT_PATH, mg.SCHEMA_PATH = op, os_
+                (mg.ADVERSARIAL_PROMPT_PATH, mg.SCHEMA_PATH,
+                 mg.VALIDATOR_AGENT_PATH) = op, os_, oa
+
+    def test_validator_agent_model_change_busts_hash(self):
+        # The finding: a frontmatter `model:` bump (sonnet→opus) with the pin
+        # unset changes the effective validator model and MUST re-review.
+        cfg = self._cfg()
+        with self._assets(b"P", b"{}", agent_bytes=b"---\nmodel: sonnet\n---\nbody"):
+            ha = mg.review_scope_hash(cfg)
+        with self._assets(b"P", b"{}", agent_bytes=b"---\nmodel: opus\n---\nbody"):
+            hb = mg.review_scope_hash(cfg)
+        self.assertNotEqual(ha, hb)
 
     def test_prompt_content_change_busts_hash(self):
         cfg = self._cfg()
@@ -3315,6 +3328,19 @@ class TestAssetIdentityInScopeHash(unittest.TestCase):
         # verify must stay deterministic on a broken install: a missing asset hashes
         # to a sentinel (never matches a real produce → stale), not a traceback.
         self.assertEqual(mg._asset_sha(Path("/nonexistent/asset")), "missing")
+
+    def test_validator_agent_rooted_at_home_not_checkout(self):
+        # codex:finding-0 (validator-agent-hash round): UNLIKE the prompt + schema
+        # (producer-read, CLAUDE_DIR-rooted), the validator agent is resolved by the
+        # headless `claude -p` from ~/.claude settings sources, NOT the producer's
+        # checkout. So its hash source MUST be $HOME-rooted — else a checkout-vs-home
+        # skew hashes one file while a different agent actually judges.
+        self.assertEqual(mg.VALIDATOR_AGENT_PATH,
+                         mg.HOME / ".claude" / "agents" / "codex-review-validator.md")
+        # And it must NOT gate the producer's checkout-completeness decision (the
+        # producer never reads it), so it stays out of RUNTIME_SET_RELPATHS.
+        self.assertNotIn(("agents", "codex-review-validator.md"),
+                         mg.RUNTIME_SET_RELPATHS)
 
 
 class TestProducerAssetHermeticForeignCheckout(unittest.TestCase):
