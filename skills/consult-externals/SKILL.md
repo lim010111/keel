@@ -1,6 +1,7 @@
 ---
 name: consult-externals
 description: During a grilling session (e.g. /grill-me, /grill-with-docs), consult two external agents — Codex and agy — in parallel about a specific decision point. Each agent independently thinks about the recommended option, judges it, and proposes a better alternative if one exists. Returns a side-by-side comparison so the Main Session can decide. Use when the user invokes /consult-externals, says "외부 의견 받아줘", "코덱스랑 agy한테 물어봐", "second opinion", or when the Main agent is unsure which option to recommend at a grilling branch.
+disable-model-invocation: true
 ---
 
 # consult-externals
