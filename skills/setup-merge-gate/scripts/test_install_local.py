@@ -39,26 +39,32 @@ class TestHarnessMerge(unittest.TestCase):
         self.assertEqual(local["producer"]["codex"]["bin"], "codex")
 
     def test_fresh_file_ships_commented_model_keys(self):
-        # #47 — the model knobs ship COMMENTED (unset = each tool's own
-        # default) so harness.toml self-documents; the validator table itself
-        # is comment-only, so it must not parse as a real table on a fresh
-        # install (load_config sees no validator keys → None → tool defaults).
+        # #47/#48 — the model/effort knobs ship COMMENTED (unset = each tool's
+        # own default) so harness.toml self-documents; the validator table
+        # itself is comment-only, so it must not parse as a real table on a
+        # fresh install (load_config sees no validator keys → tool defaults).
         out = il.merge_harness_toml("")
-        self.assertIn('# model = "gpt-5.3-codex"', out)
+        self.assertIn('# model            = "gpt-5.5"', out)
+        self.assertIn('# reasoning_effort = "high"', out)
         self.assertIn("[merge-gate.local.validator]", out)
-        self.assertIn('# model            = "sonnet"', out)
-        self.assertIn('# dispatcher_model = "haiku"', out)
+        self.assertIn('# model             = "sonnet"', out)
+        self.assertIn('# dispatcher_model  = "opus"', out)
+        self.assertIn('# dispatcher_effort = "medium"', out)
+        # official-name guides present (#48)
+        self.assertIn("gpt-5.4-mini", out)
+        self.assertIn("claude-opus-4-8", out)
         d = self._parse(out)
         self.assertEqual(d["merge-gate"]["local"].get("validator", {}), {})
         self.assertNotIn("model", d["merge-gate"]["local"]["producer"]["codex"])
+        self.assertNotIn("claude", d["merge-gate"]["local"]["producer"])
 
     def test_reinstall_preserves_customized_validator_table(self):
         # C2 extension (#47): a repo that set real validator models must not be
         # reverted to the commented defaults on reinstall.
         once = il.merge_harness_toml("")
         custom = once.replace(
-            '# model            = "sonnet"           # validator AGENT (judgment subagent) — tier alias only: haiku|sonnet|opus; unset = agent default (#47)',
-            'model            = "opus"')
+            '# model             = "sonnet"          # validator AGENT (judgment subagent) — tier alias only: haiku|sonnet|opus|fable; unset = agent default',
+            'model             = "opus"')
         self.assertNotEqual(once, custom)  # the replace actually hit
         again = il.merge_harness_toml(custom)
         d = self._parse(again)

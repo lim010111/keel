@@ -31,27 +31,42 @@ registers the global hooks if absent.
 must be a git repo with `AGENTS.md` at the root (run `/setup-agents-md` first
 if missing — the validator reads project context from there).
 
-**2 — Ask the one model question (#47).** Before running the installer, ask
-once (AskUserQuestion) whether to pin models or keep tool defaults:
+**2 — Ask the one model question (#47/#48).** Before running the installer,
+ask once (AskUserQuestion) whether to pin models/effort or keep tool defaults:
 
-- **Tool defaults (recommended, default)** — every model knob stays unset:
-  Codex uses its own configured default, the Claude reviewer / validator
-  dispatcher use the CLI default, the validator agent uses its frontmatter
-  default. The installer's LOCAL_BLOCK ships the knobs as comments, so
-  `harness.toml` self-documents where to set them later.
+- **Tool defaults (recommended, default)** — every knob stays unset: Codex
+  uses its own configured default, the Claude reviewer / validator dispatcher
+  use the CLI default, the validator agent uses its frontmatter default. The
+  installer's LOCAL_BLOCK ships the knobs as comments, so `harness.toml`
+  self-documents where to set them later.
 - **Customize** — collect a value per slot the user wants pinned, and after
-  step 3's install **edit `harness.toml`**: uncomment/set only the chosen keys.
-  The four slots:
-  - `[merge-gate.local.producer.codex] model` — free-form (e.g. `gpt-5.3-codex`)
-  - `[merge-gate.local.producer.claude] model` — free-form (alias or full id);
-    only relevant when the repo opts into the claude reviewer (ADR-0010)
+  step 3's install **edit `harness.toml`**: uncomment/set only the chosen
+  keys. **Offer the official value menus below** (sourced from the vendors'
+  docs — refresh against them if they look stale):
+  - `[merge-gate.local.producer.codex] model` — official picks
+    (developers.openai.com/codex/models): `gpt-5.5` (recommended) ·
+    `gpt-5.4` · `gpt-5.4-mini` · `gpt-5.3-codex` · `gpt-5.2`
+  - `[merge-gate.local.producer.codex] reasoning_effort` —
+    `minimal`/`low`/`medium`/`high`/`xhigh` (codex default `medium`;
+    `xhigh` model-dependent)
+  - `[merge-gate.local.producer.claude] model` — alias
+    `sonnet`/`opus`/`haiku`/`fable` or full id (e.g. `claude-opus-4-8`,
+    `claude-sonnet-4-6` — code.claude.com/docs/en/model-config); only
+    relevant when the repo opts into the claude reviewer (ADR-0010)
+  - `[merge-gate.local.producer.claude] reasoning_effort` —
+    `low`/`medium`/`high`/`xhigh`/`max` (model-dependent: e.g. Sonnet 4.6
+    has no `xhigh`)
   - `[merge-gate.local.validator] model` — the validator **agent** (judgment
-    subagent); **tier alias only**: `haiku`/`sonnet`/`opus` (`produce` refuses
-    anything else, fail-closed)
+    subagent); **tier alias only**: `haiku`/`sonnet`/`opus`/`fable`
+    (`produce` refuses anything else, fail-closed). Its effort has no
+    per-repo knob (Agent tool exposes only `model`; effort is the agent
+    frontmatter's, global).
   - `[merge-gate.local.validator] dispatcher_model` — the headless
-    orchestration session; free-form
+    orchestration session; alias or full id
+  - `[merge-gate.local.validator] dispatcher_effort` —
+    `low`/`medium`/`high`/`xhigh`/`max`
 
-Any model change later (edit `harness.toml` directly) busts
+Any model/effort change later (edit `harness.toml` directly) busts
 `review_scope_hash` — the next verify re-reviews; that is intended.
 
 **3 — Install.** Run the helper (deterministic; safe to re-run — idempotent):

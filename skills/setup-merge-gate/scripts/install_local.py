@@ -58,13 +58,26 @@ min_interval_seconds = 600
 [merge-gate.local.producer]
 reviewers = ["codex"]                   # ordered reviewer set (ADR-0010)
 
+# Model/effort knobs (#47/#48): unset = each tool's own default; changing ANY
+# of them busts review_scope_hash → next verify re-reviews (intended).
 [merge-gate.local.producer.codex]
 bin = "codex"
-# model = "gpt-5.3-codex"               # unset = codex's own default (#47); any model change → re-review
+# model            = "gpt-5.5"          # official picks (developers.openai.com/codex/models):
+#                                       #   gpt-5.5 (recommended) | gpt-5.4 | gpt-5.4-mini | gpt-5.3-codex | gpt-5.2
+# reasoning_effort = "high"             # minimal|low|medium|high|xhigh (codex default: medium; xhigh model-dependent)
+
+# Optional second reviewer (opt-in, ADR-0010): add "claude" to reviewers above
+# and uncomment. Aliases: sonnet|opus|haiku|fable; full ids also accepted
+# (e.g. claude-opus-4-8, claude-sonnet-4-6 — code.claude.com/docs/en/model-config).
+# [merge-gate.local.producer.claude]
+# bin              = "claude"
+# model            = "opus"
+# reasoning_effort = "high"             # low|medium|high|xhigh|max (model-dependent)
 
 [merge-gate.local.validator]
-# model            = "sonnet"           # validator AGENT (judgment subagent) — tier alias only: haiku|sonnet|opus; unset = agent default (#47)
-# dispatcher_model = "haiku"            # validator DISPATCHER (headless orchestration session); unset = CLI default
+# model             = "sonnet"          # validator AGENT (judgment subagent) — tier alias only: haiku|sonnet|opus|fable; unset = agent default
+# dispatcher_model  = "opus"            # validator DISPATCHER (headless orchestration session); alias or full id; unset = CLI default
+# dispatcher_effort = "medium"          # low|medium|high|xhigh|max (model-dependent); agent effort is frontmatter-only (no per-repo knob)
 """
 
 

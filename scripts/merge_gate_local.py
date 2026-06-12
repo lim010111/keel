@@ -252,6 +252,17 @@ class Config:
         m = rc.get("model")
         return m if isinstance(m, str) and m else None
 
+    def reviewer_reasoning_effort(self, name: str) -> str | None:
+        """First-class per-reviewer `reasoning_effort` key (#48), or None when
+        unset. codex → `-c model_reasoning_effort=<v>` (official values:
+        minimal/low/medium/high/xhigh); claude → `--effort <v>` (official
+        values: low/medium/high/xhigh/max, model-dependent). Validated loudly
+        at cmd_produce (enum-shaped knob, #47 posture). Enters
+        review_scope_hash."""
+        rc = self._d.get("reviewer_config", {}).get(name, {})
+        v = rc.get("reasoning_effort")
+        return v if isinstance(v, str) and v else None
+
     @property
     def validator_model(self) -> str | None:
         """The validator AGENT's tier alias (#47) — the judgment subagent's
@@ -267,6 +278,16 @@ class Config:
         CLI default. Enters review_scope_hash."""
         m = self._d.get("validator", {}).get("dispatcher_model")
         return m if isinstance(m, str) and m else None
+
+    @property
+    def validator_dispatcher_effort(self) -> str | None:
+        """The validator DISPATCHER's `--effort` (#48; official values
+        low/medium/high/xhigh/max). The validator AGENT has no per-dispatch
+        effort surface (Agent tool exposes only `model`; effort is the agent
+        frontmatter's, global by design) — so the agent deliberately has no
+        effort key here. None = the CLI default. Enters review_scope_hash."""
+        v = self._d.get("validator", {}).get("dispatcher_effort")
+        return v if isinstance(v, str) and v else None
 
 
 def _merge_defaults(base: dict, override: dict) -> dict:
@@ -679,6 +700,10 @@ def review_scope_hash(cfg: Config) -> str:
         "reviewer_model": {r: cfg.reviewer_model(r) for r in cfg.reviewers},
         "validator_model": cfg.validator_model,
         "validator_dispatcher_model": cfg.validator_dispatcher_model,
+        # #48: reasoning-effort knobs follow the same one rule.
+        "reviewer_reasoning_effort": {r: cfg.reviewer_reasoning_effort(r)
+                                      for r in cfg.reviewers},
+        "validator_dispatcher_effort": cfg.validator_dispatcher_effort,
     }
     blob = json.dumps(components, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return _hash(blob)
@@ -946,6 +971,23 @@ def _model_from_args(args: list[str]) -> str | None:
             return str(args[i + 1]) if i + 1 < n else None
         i += 1
     return None
+
+
+def _config_key_in_args(args: list[str], key: str) -> bool:
+    """True when a codex `-c`/`--config` reviewer_arg sets `key` (#48 — the
+    two-writer conflict check for reasoning_effort). Mirrors
+    _unsafe_reviewer_arg's `-c key=val` / `-c=key=val` token handling."""
+    i, n = 0, len(args)
+    while i < n:
+        head, eq, inline = str(args[i]).partition("=")
+        if head in ("-c", "--config"):
+            kv = inline if eq else (str(args[i + 1]) if i + 1 < n else "")
+            if kv.split("=", 1)[0].strip() == key:
+                return True
+            i += 1 if eq else 2
+            continue
+        i += 1
+    return False
 
 
 def _configured_reviewer_model(cfg: Config, reviewer: str) -> str | None:
@@ -1348,12 +1390,21 @@ def default_reviewer_runner(name: str, cfg: Config, cd: dict, sub_dir: Path,
         if model and _model_from_args(extra):
             return ("refusing codex reviewer config: both the `model` key and a "
                     "`--model`/`-m` reviewer_arg are set — set exactly one (#47)", 2)
+        effort = cfg.reviewer_reasoning_effort("codex")
+        # #48: same two-writers rule for the effort knob — the args side spells
+        # it `-c model_reasoning_effort=<v>`.
+        if effort and _config_key_in_args(extra, "model_reasoning_effort"):
+            return ("refusing codex reviewer config: both the `reasoning_effort` "
+                    "key and a `-c model_reasoning_effort=` reviewer_arg are set "
+                    "— set exactly one (#48)", 2)
         cmd = [cfg.reviewer_bin("codex"), "exec", "--json",
                "--output-schema", str(SCHEMA_PATH),
                "--sandbox", "read-only", "--skip-git-repo-check",
                "-C", str(cwd)]
         if model:
             cmd += ["--model", model]
+        if effort:
+            cmd += ["-c", f"model_reasoning_effort={effort}"]
         if extra:
             cmd += extra
     elif name == "claude":
@@ -1449,13 +1500,28 @@ _CLAUDE_REVIEWER_TIMEOUT_S = 600
 
 # Known tier aliases the Agent tool's `model` param accepts (#47). The
 # validator AGENT is spawned via the Agent tool, whose model param is an
-# alias enum — NOT the free-form `--model` string the reviewer/dispatcher
-# CLIs take. An off-enum value would fail only deep inside the headless
-# dispatch (Agent tool error → validators.json absent → F2 blanket
+# alias enum (observed: sonnet/opus/haiku/fable) — NOT the free-form
+# `--model` string the reviewer/dispatcher CLIs take (the sub-agents doc
+# claims full IDs too, but the live tool schema is the enum; fail-closed
+# keeps the alias set). An off-enum value would fail only deep inside the
+# headless dispatch (Agent tool error → validators.json absent → F2 blanket
 # over-block), the exact silent-diagnosis class #31 spent sessions on — so
 # cmd_produce refuses it loudly up front instead. New tier ships → add one
-# entry here.
-_VALIDATOR_MODEL_ALIASES = {"haiku", "sonnet", "opus"}
+# entry here. `fable` availability is account-dependent.
+_VALIDATOR_MODEL_ALIASES = {"haiku", "sonnet", "opus", "fable"}
+
+# Enum-shaped reasoning-effort knobs (#48), validated loudly at cmd_produce
+# (same posture as the validator alias: a typo must not become a deep
+# reviewer-failure / F2 over-block diagnosis). Free-form MODEL strings stay
+# unvalidated by contrast — their value space is huge and the CLI fails with
+# recorded evidence. New level ships → add one token here.
+#   codex: developers.openai.com/codex/config-reference (model_reasoning_effort;
+#          xhigh is model-dependent, bundled models default to medium)
+_CODEX_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+#   claude: code.claude.com/docs/en/cli-reference `--effort` (model-dependent:
+#           e.g. Sonnet 4.6 has no xhigh — a mismatch fails at the CLI with
+#           stderr evidence; this set only catches off-enum typos)
+_CLAUDE_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
 
 def _invalid_validator_model(cfg: Config) -> str | None:
@@ -1468,6 +1534,25 @@ def _invalid_validator_model(cfg: Config) -> str | None:
     return (f"refusing validator.model {m!r}: not a known tier alias "
             f"({allowed}) — the validator agent is dispatched via the Agent "
             "tool, which takes an alias, not a full model id (#47)")
+
+
+def _invalid_reasoning_effort(cfg: Config) -> str | None:
+    """Refusal message for the first off-enum reasoning-effort knob (#48),
+    else None. Unset keys pass (tool defaults). Checks the codex/claude
+    reviewer `reasoning_effort` keys and the validator `dispatcher_effort`."""
+    v = cfg.reviewer_reasoning_effort("codex")
+    if v is not None and v not in _CODEX_REASONING_EFFORTS:
+        return (f"refusing codex reasoning_effort {v!r}: not an official "
+                f"model_reasoning_effort value "
+                f"({'/'.join(sorted(_CODEX_REASONING_EFFORTS))}) (#48)")
+    for label, val in (("claude reasoning_effort",
+                        cfg.reviewer_reasoning_effort("claude")),
+                       ("validator.dispatcher_effort",
+                        cfg.validator_dispatcher_effort)):
+        if val is not None and val not in _CLAUDE_EFFORTS:
+            return (f"refusing {label} {val!r}: not an official --effort "
+                    f"value ({'/'.join(sorted(_CLAUDE_EFFORTS))}) (#48)")
+    return None
 
 
 # Hard wall-clock bound for the VALIDATOR subprocess (#31 seed finding). The validator
@@ -1608,6 +1693,12 @@ def _run_claude_reviewer(name: str, cfg: Config, prompt: str, sub_dir: Path,
            "--strict-mcp-config"]
     if model:
         cmd += ["--model", model]
+    # #48: first-class effort knob (`--effort`, verified to apply in -p mode).
+    # No two-writer conflict is possible here: the claude args allowlist only
+    # admits --model/-m, so an args-supplied --effort is already refused above.
+    effort = cfg.reviewer_reasoning_effort("claude")
+    if effort:
+        cmd += ["--effort", effort]
     cmd += extra
     # `--tools` is the positive availability allowlist (only these built-in tools
     # exist) — the PRIMARY read-only gate; `--allowedTools` permits those reads under
@@ -1704,6 +1795,10 @@ def default_validator_runner(name: str, findings_json: Path, sub_dir: Path,
         # full model IDs alike. Absent → the CLI default.
         if cfg is not None and cfg.validator_dispatcher_model:
             dispatcher_cmd += ["--model", cfg.validator_dispatcher_model]
+        # #48: dispatcher effort (`--effort`). The validator AGENT has no
+        # per-dispatch effort surface (frontmatter-only) — deliberately absent.
+        if cfg is not None and cfg.validator_dispatcher_effort:
+            dispatcher_cmd += ["--effort", cfg.validator_dispatcher_effort]
         proc = _run_reaped(dispatcher_cmd,
                            cwd=str(cwd), env=env, capture_output=True,
                            timeout=_CLAUDE_VALIDATOR_TIMEOUT_S)
@@ -2505,10 +2600,10 @@ def cmd_produce(args, *, reviewer_runner=default_reviewer_runner,
         err("not a git repository")
         return 1
     cfg = load_config(root)
-    # #47: refuse a non-alias validator.model BEFORE any review spend or
-    # artefact write — every produce path (manual, force, coalesce, the Stop
-    # scheduler's CLI call) funnels through here.
-    bad_model = _invalid_validator_model(cfg)
+    # #47/#48: refuse a non-alias validator.model or an off-enum reasoning
+    # effort BEFORE any review spend or artefact write — every produce path
+    # (manual, force, coalesce, the Stop scheduler's CLI call) funnels here.
+    bad_model = _invalid_validator_model(cfg) or _invalid_reasoning_effort(cfg)
     if bad_model:
         err(bad_model)
         return 1

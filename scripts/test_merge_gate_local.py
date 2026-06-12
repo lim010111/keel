@@ -3789,5 +3789,137 @@ class Test47PerComponentModelKeys(ProduceFixture):
         self.assertIsNone(summary["validator_dispatcher_model"])
 
 
+class Test48ReasoningEffortKeys(Test47PerComponentModelKeys):
+    """#48 — first-class reasoning-effort knobs riding the #47 surface:
+    [merge-gate.local.producer.<r>] `reasoning_effort` (codex →
+    `-c model_reasoning_effort=<v>`, claude → `--effort <v>`) and
+    [merge-gate.local.validator] `dispatcher_effort` (dispatcher `--effort`).
+    Enum-shaped → validated loudly at cmd_produce; all knobs enter
+    review_scope_hash. The validator AGENT has no per-dispatch effort surface
+    (frontmatter-only) — deliberately no key. Inherits the #47 fixture/helpers
+    (and re-runs its cases against the #48 code, which must not regress)."""
+
+    def test_load_config_reads_effort_keys(self):
+        (self.root / "harness.toml").write_text(
+            '[merge-gate]\nprofile = "local"\n\n'
+            '[merge-gate.local.producer.codex]\nreasoning_effort = "xhigh"\n\n'
+            '[merge-gate.local.producer.claude]\nreasoning_effort = "high"\n\n'
+            '[merge-gate.local.validator]\ndispatcher_effort = "max"\n')
+        cfg = mg.load_config(self.root)
+        self.assertEqual(cfg.reviewer_reasoning_effort("codex"), "xhigh")
+        self.assertEqual(cfg.reviewer_reasoning_effort("claude"), "high")
+        self.assertEqual(cfg.validator_dispatcher_effort, "max")
+        self.assertIsNone(self._cfg().reviewer_reasoning_effort("codex"))
+        self.assertIsNone(self._cfg().validator_dispatcher_effort)
+
+    def test_each_effort_key_busts_scope_hash(self):
+        base = self._cfg(reviewers=["codex", "claude"])
+        for over in ({"reviewer_config": {"codex": {"bin": "codex",
+                                                    "reasoning_effort": "high"}}},
+                     {"reviewer_config": {"claude": {"bin": "claude",
+                                                     "reasoning_effort": "high"}}},
+                     {"validator": {"dispatcher_effort": "high"}}):
+            changed = self._cfg(reviewers=["codex", "claude"], **over)
+            self.assertNotEqual(mg.review_scope_hash(base),
+                                mg.review_scope_hash(changed), over)
+
+    def test_codex_runner_injects_effort_config(self):
+        cfg = self._cfg(reviewer_config={"codex": {"bin": "codex",
+                                                   "reasoning_effort": "xhigh"}})
+        out, rc, rec = self._run_reviewer("codex", cfg)
+        cmd = rec["cmd"]
+        i = cmd.index("-c")
+        self.assertEqual(cmd[i + 1], "model_reasoning_effort=xhigh")
+        self.assertEqual(cmd[cmd.index("--sandbox") + 1], "read-only")
+
+    def test_codex_runner_refuses_effort_key_plus_args_config(self):
+        cfg = self._cfg(reviewer_config={"codex": {
+            "bin": "codex", "reasoning_effort": "high",
+            "args": ["-c", "model_reasoning_effort=low"]}})
+        out, rc, rec = self._run_reviewer("codex", cfg)
+        self.assertEqual(rc, 2)
+        self.assertIn("exactly one", out)
+        self.assertEqual(rec["calls"], 0)
+
+    def test_codex_args_other_config_keys_do_not_conflict(self):
+        # A benign -c on a DIFFERENT key must not trip the #48 conflict check.
+        cfg = self._cfg(reviewer_config={"codex": {
+            "bin": "codex", "reasoning_effort": "high",
+            "args": ["-c", "model_verbosity=low"]}})
+        out, rc, rec = self._run_reviewer("codex", cfg)
+        self.assertEqual(rec["calls"], 1)
+        self.assertIn("model_reasoning_effort=high", rec["cmd"])
+
+    def test_claude_runner_injects_effort_flag(self):
+        cfg = self._cfg(reviewers=["claude"],
+                        reviewer_config={"claude": {"bin": "claude",
+                                                    "reasoning_effort": "max"}})
+        out, rc, rec = self._run_reviewer("claude", cfg)
+        cmd = rec["cmd"]
+        self.assertEqual(cmd[cmd.index("--effort") + 1], "max")
+        self.assertEqual(cmd[cmd.index("--tools") + 1], mg._CLAUDE_REVIEWER_TOOLS)
+
+    def test_validator_dispatcher_effort_reaches_cmd(self):
+        cfg = self._cfg(validator={"dispatcher_model": "opus",
+                                   "dispatcher_effort": "high"})
+        cmd = self._run_validator(cfg)
+        self.assertEqual(cmd[cmd.index("--effort") + 1], "high")
+        self.assertEqual(cmd[cmd.index("--model") + 1], "opus")
+        self.assertNotIn("--agent-model", cmd[2])  # agent knobs untouched
+
+    def test_invalid_effort_values_refused(self):
+        cases = (
+            ({"reviewer_config": {"codex": {"bin": "codex",
+                                            "reasoning_effort": "ultra"}}},
+             "codex reasoning_effort"),
+            ({"reviewer_config": {"claude": {"bin": "claude",
+                                             "reasoning_effort": "minimal"}}},
+             "claude reasoning_effort"),   # minimal is codex-only — off-enum for claude
+            ({"validator": {"dispatcher_effort": "extreme"}},
+             "dispatcher_effort"),
+        )
+        for over, label in cases:
+            bad = mg._invalid_reasoning_effort(
+                self._cfg(reviewers=["codex", "claude"], **over))
+            self.assertIsNotNone(bad, over)
+            self.assertIn(label, bad)
+        ok = self._cfg(reviewers=["codex", "claude"],
+                       reviewer_config={"codex": {"bin": "codex",
+                                                  "reasoning_effort": "xhigh"},
+                                        "claude": {"bin": "claude",
+                                                   "reasoning_effort": "max"}},
+                       validator={"dispatcher_effort": "low"})
+        self.assertIsNone(mg._invalid_reasoning_effort(ok))
+
+    def test_cmd_produce_refuses_bad_effort_before_spend(self):
+        (self.root / "harness.toml").write_text(
+            '[merge-gate]\nprofile = "local"\n\n'
+            '[merge-gate.local.producer.codex]\nreasoning_effort = "ultra"\n')
+        ns = type("NS", (), {})()
+        ns.cwd = str(self.root)
+        ns.base_ref = None
+        ns.tip_sha = None
+        ns.coalesce = False
+        ns.force = False
+        ns.intent = None
+        ns.intent_from = None
+
+        def reviewer_must_not_run(*a, **kw):
+            self.fail("reviewer ran despite an invalid reasoning_effort")
+
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            rc = mg.cmd_produce(ns, reviewer_runner=reviewer_must_not_run,
+                                validator_runner=fake_validator_uphold_all)
+        self.assertEqual(rc, 1)
+        self.assertIn("ultra", buf.getvalue())
+
+    def test_validator_alias_set_includes_fable(self):
+        # #48 widened the Agent tool alias set; the refusal message must track it.
+        self.assertIn("fable", mg._VALIDATOR_MODEL_ALIASES)
+        self.assertIsNone(mg._invalid_validator_model(
+            self._cfg(validator={"model": "fable"})))
+
+
 if __name__ == "__main__":
     unittest.main()
