@@ -451,7 +451,7 @@ def make_fake_reviewer(findings_by_name):
     return runner
 
 
-def fake_validator_uphold_all(name, findings_json, sub_dir, cwd, intent_file):
+def fake_validator_uphold_all(name, findings_json, sub_dir, cwd, intent_file, cfg=None):
     """Validator stand-in: reads the namespaced findings.json, upholds every
     finding, blocks crit/high — what /run-codex-validators would write."""
     doc = json.loads(Path(findings_json).read_text())
@@ -466,7 +466,7 @@ def fake_validator_uphold_all(name, findings_json, sub_dir, cwd, intent_file):
     return vj
 
 
-def fake_validator_dismiss_all(name, findings_json, sub_dir, cwd, intent_file):
+def fake_validator_dismiss_all(name, findings_json, sub_dir, cwd, intent_file, cfg=None):
     """Validator stand-in that DISMISSES every finding (even critical). A genuine
     validator dismiss must un-block — the block decision is
     (severity in blocking) AND (verdict in uphold/unsure), so dismiss → no block."""
@@ -701,7 +701,7 @@ def _verify_ns(root, *, base_sha=None, tip_sha=None, base_ref=None, enforcement=
     return ns
 
 
-def fake_validator_none(name, findings_json, sub_dir, cwd, intent_file):
+def fake_validator_none(name, findings_json, sub_dir, cwd, intent_file, cfg=None):
     """Validator stand-in for a WHOLESALE failure: writes nothing and returns
     None (default_validator_runner's failure path). The wrapper must then treat
     every finding as fail-safe unsure (Finding 2), not silently un-block."""
@@ -2565,7 +2565,7 @@ class TestNormalizeClaude(unittest.TestCase):
         self.assertEqual(mg._reviewer_model("claude", env), "claude-opus-4-8[1m]")
 
 
-def fake_validator_uphold_no_severity(name, findings_json, sub_dir, cwd, intent_file):
+def fake_validator_uphold_no_severity(name, findings_json, sub_dir, cwd, intent_file, cfg=None):
     """A validator that UPHOLDS every finding but cannot determine severity (the
     finding omitted it, as a soft-schema Claude reviewer can) — so its aggregate
     entry carries NO severity. build_summary must then treat the finding as
@@ -3410,7 +3410,7 @@ class TestProducerAssetHermeticForeignCheckout(unittest.TestCase):
         self.assertIn("review_scope_hash", summary)
 
 
-def fake_validator_uphold_with_citation(name, findings_json, sub_dir, cwd, intent_file):
+def fake_validator_uphold_with_citation(name, findings_json, sub_dir, cwd, intent_file, cfg=None):
     """Like uphold_all but writes a real validators.json `lines[]` citation per
     finding (`[sev] verdict id=<fid> file:line — <citation>`), so the archive's
     disk-read citation snapshot has something to join on (the empty-lines fakes
@@ -3582,6 +3582,211 @@ class FindingsArchive(ProduceFixture):
         cd = mg.canonical_diff_at_commit(self.root, base, c1, cfg.review_globs, cfg.ignore_globs)
         self.assertTrue((mg.tuple_dir(self._ar(), base, cd["diff_hash"]) / "summary.json").exists(),
                         "the real artefact must still be written when the archive fails")
+
+
+class Test47PerComponentModelKeys(ProduceFixture):
+    """#47 — first-class per-component model keys: [merge-gate.local.producer.<r>]
+    `model` + [merge-gate.local.validator] `model`/`dispatcher_model`. Each knob
+    is translated to the right flag by its runner, refuses to coexist with an
+    args-supplied --model (two writers of one flag), enters review_scope_hash
+    ("change any model setting → re-review"), and lands in summary provenance.
+    validator.model is a tier alias (the Agent tool enum) refused loudly at
+    cmd_produce — never the deep F2 over-block diagnosis class (#31)."""
+
+    # -- config surface ------------------------------------------------------
+    def test_unset_keys_default_none(self):
+        cfg = self._cfg()
+        self.assertIsNone(cfg.reviewer_model("codex"))
+        self.assertIsNone(cfg.reviewer_model("claude"))
+        self.assertIsNone(cfg.validator_model)
+        self.assertIsNone(cfg.validator_dispatcher_model)
+
+    def test_load_config_reads_model_keys(self):
+        (self.root / "harness.toml").write_text(
+            '[merge-gate]\nprofile = "local"\n\n'
+            '[merge-gate.local.producer]\nreviewers = ["codex", "claude"]\n\n'
+            '[merge-gate.local.producer.codex]\nmodel = "gpt-5.3-codex"\n\n'
+            '[merge-gate.local.producer.claude]\nmodel = "opus"\n\n'
+            '[merge-gate.local.validator]\n'
+            'model = "sonnet"\ndispatcher_model = "haiku"\n')
+        cfg = mg.load_config(self.root)
+        self.assertEqual(cfg.reviewer_model("codex"), "gpt-5.3-codex")
+        self.assertEqual(cfg.reviewer_model("claude"), "opus")
+        self.assertEqual(cfg.validator_model, "sonnet")
+        self.assertEqual(cfg.validator_dispatcher_model, "haiku")
+
+    def test_each_model_key_busts_scope_hash(self):
+        # All FOUR knobs enter review_scope_hash — one rule, no exceptions.
+        base = self._cfg(reviewers=["codex", "claude"])
+        for over in ({"reviewer_config": {"codex": {"bin": "codex", "model": "x"}}},
+                     {"reviewer_config": {"claude": {"bin": "claude", "model": "x"}}},
+                     {"validator": {"model": "opus"}},
+                     {"validator": {"dispatcher_model": "haiku"}}):
+            changed = self._cfg(reviewers=["codex", "claude"], **over)
+            self.assertNotEqual(mg.review_scope_hash(base),
+                                mg.review_scope_hash(changed), over)
+
+    def test_configured_reviewer_model_prefers_key_over_args(self):
+        # Verify-side provenance/freshness probes never refuse, so precedence
+        # matters there: the first-class key wins.
+        cfg = self._cfg(reviewer_config={
+            "codex": {"bin": "codex", "model": "key-model",
+                      "args": ["--model", "args-model"]}})
+        self.assertEqual(mg._configured_reviewer_model(cfg, "codex"), "key-model")
+
+    # -- reviewer runners ----------------------------------------------------
+    def _run_reviewer(self, name, cfg):
+        base, cd = self._cd(cfg)
+        sub = self.root / ".merge-gate" / "local" / "x" / name
+        sub.mkdir(parents=True, exist_ok=True)
+        rec = {"calls": 0}
+
+        def fake_run(cmd, **kw):
+            rec["calls"] += 1
+            rec["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"{}", stderr=b"")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            out, rc = mg.default_reviewer_runner(name, cfg, cd, sub, self.root, "")
+        finally:
+            mg._run_reaped = orig
+        return out, rc, rec
+
+    def test_codex_runner_injects_model_flag(self):
+        cfg = self._cfg(reviewer_config={"codex": {"bin": "codex",
+                                                   "model": "gpt-5.3-codex"}})
+        out, rc, rec = self._run_reviewer("codex", cfg)
+        cmd = rec["cmd"]
+        i = cmd.index("--model")
+        self.assertEqual(cmd[i + 1], "gpt-5.3-codex")
+        # the model key must not displace the sandbox invariant (M1)
+        self.assertEqual(cmd[cmd.index("--sandbox") + 1], "read-only")
+
+    def test_codex_runner_refuses_model_key_plus_args_model(self):
+        cfg = self._cfg(reviewer_config={"codex": {"bin": "codex", "model": "a",
+                                                   "args": ["--model", "b"]}})
+        out, rc, rec = self._run_reviewer("codex", cfg)
+        self.assertEqual(rc, 2)
+        self.assertIn("exactly one", out)
+        self.assertEqual(rec["calls"], 0)  # codex never invoked
+
+    def test_claude_runner_injects_model_flag(self):
+        cfg = self._cfg(reviewers=["claude"],
+                        reviewer_config={"claude": {"bin": "claude",
+                                                    "model": "opus"}})
+        out, rc, rec = self._run_reviewer("claude", cfg)
+        cmd = rec["cmd"]
+        i = cmd.index("--model")
+        self.assertEqual(cmd[i + 1], "opus")
+        # read-only tool allowlist (the primary gate) survives the injection
+        self.assertEqual(cmd[cmd.index("--tools") + 1], mg._CLAUDE_REVIEWER_TOOLS)
+
+    def test_claude_runner_refuses_model_key_plus_args_model(self):
+        cfg = self._cfg(reviewers=["claude"],
+                        reviewer_config={"claude": {"bin": "claude", "model": "a",
+                                                    "args": ["-m", "b"]}})
+        out, rc, rec = self._run_reviewer("claude", cfg)
+        self.assertEqual(rc, 2)
+        self.assertIn("exactly one", out)
+        self.assertEqual(rec["calls"], 0)
+
+    # -- validator runner ----------------------------------------------------
+    def _run_validator(self, cfg):
+        sub = self.root / ".merge-gate" / "local" / "t" / "codex"
+        sub.mkdir(parents=True, exist_ok=True)
+        findings_json = sub / "findings.json"
+        findings_json.write_text(json.dumps({"result": {"findings": []}}))
+        rec = {}
+
+        def fake_run(cmd, **kw):
+            rec["cmd"] = cmd
+            (sub / "validators.json").write_text(json.dumps({"aggregate": []}))
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            mg.default_validator_runner("codex", findings_json, sub, self.root,
+                                        None, cfg)
+        finally:
+            mg._run_reaped = orig
+        return rec["cmd"]
+
+    def test_validator_models_reach_dispatcher_and_slash(self):
+        cfg = self._cfg(validator={"model": "opus", "dispatcher_model": "haiku"})
+        cmd = self._run_validator(cfg)
+        # dispatcher session model → claude -p --model
+        self.assertEqual(cmd[cmd.index("--model") + 1], "haiku")
+        # validator AGENT model → slash --agent-model (the skill's only carrier)
+        self.assertIn("--agent-model opus", cmd[2])
+
+    def test_validator_cmd_unchanged_when_models_unset(self):
+        # Both knobs absent → byte-identical to the pre-#47 invocation.
+        cmd = self._run_validator(self._cfg())
+        self.assertEqual([c for c in cmd if c == "--model"], [])
+        self.assertNotIn("--agent-model", cmd[2])
+        self.assertEqual(cmd[3:], ["--permission-mode", "bypassPermissions"])
+
+    # -- produce-time alias validation ----------------------------------------
+    def test_invalid_validator_model_message(self):
+        bad = mg._invalid_validator_model(self._cfg(validator={"model": "gpt-4o"}))
+        self.assertIsNotNone(bad)
+        self.assertIn("gpt-4o", bad)
+        for alias in sorted(mg._VALIDATOR_MODEL_ALIASES):
+            self.assertIn(alias, bad)
+        for ok in (None, "haiku", "sonnet", "opus"):
+            cfg = self._cfg(validator=({"model": ok} if ok else {}))
+            self.assertIsNone(mg._invalid_validator_model(cfg), ok)
+
+    def test_cmd_produce_refuses_bad_validator_model_before_spend(self):
+        (self.root / "harness.toml").write_text(
+            '[merge-gate]\nprofile = "local"\n\n'
+            '[merge-gate.local.validator]\nmodel = "gpt-4o"\n')
+        ns = type("NS", (), {})()
+        ns.cwd = str(self.root)
+        ns.base_ref = None
+        ns.tip_sha = None
+        ns.coalesce = False
+        ns.force = False
+        ns.intent = None
+        ns.intent_from = None
+
+        def reviewer_must_not_run(*a, **kw):
+            self.fail("reviewer ran despite an invalid validator.model")
+
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            rc = mg.cmd_produce(ns, reviewer_runner=reviewer_must_not_run,
+                                validator_runner=fake_validator_uphold_all)
+        self.assertEqual(rc, 1)
+        self.assertIn("gpt-4o", buf.getvalue())
+        # no artefact written anywhere under the artifact root
+        ar = self.root / ".merge-gate"
+        self.assertFalse(list(ar.rglob("summary.json")) if ar.exists() else [])
+
+    # -- provenance ------------------------------------------------------------
+    def test_summary_records_validator_models(self):
+        cfg = self._cfg(reviewers=["codex"],
+                        validator={"model": "opus", "dispatcher_model": "haiku"})
+        base, cd = self._cd(cfg)
+        summary = mg.produce(
+            self.root, cfg, base, cd,
+            reviewer_runner=make_fake_reviewer({"codex": []}),
+            validator_runner=fake_validator_uphold_all)
+        self.assertEqual(summary["validator_model"], "opus")
+        self.assertEqual(summary["validator_dispatcher_model"], "haiku")
+
+    def test_summary_validator_models_default_none(self):
+        cfg = self._cfg(reviewers=["codex"])
+        base, cd = self._cd(cfg)
+        summary = mg.produce(
+            self.root, cfg, base, cd,
+            reviewer_runner=make_fake_reviewer({"codex": []}),
+            validator_runner=fake_validator_uphold_all)
+        self.assertIsNone(summary["validator_model"])
+        self.assertIsNone(summary["validator_dispatcher_model"])
 
 
 if __name__ == "__main__":

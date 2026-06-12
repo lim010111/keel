@@ -36,6 +36,7 @@ LOCAL_TABLES = (
     "[merge-gate.local.scheduler]",
     "[merge-gate.local.producer]",
     "[merge-gate.local.producer.codex]",
+    "[merge-gate.local.validator]",
 )
 
 LOCAL_BLOCK = """\
@@ -59,6 +60,11 @@ reviewers = ["codex"]                   # ordered reviewer set (ADR-0010)
 
 [merge-gate.local.producer.codex]
 bin = "codex"
+# model = "gpt-5.3-codex"               # unset = codex's own default (#47); any model change → re-review
+
+[merge-gate.local.validator]
+# model            = "sonnet"           # validator AGENT (judgment subagent) — tier alias only: haiku|sonnet|opus; unset = agent default (#47)
+# dispatcher_model = "haiku"            # validator DISPATCHER (headless orchestration session); unset = CLI default
 """
 
 

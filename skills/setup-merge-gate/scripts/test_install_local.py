@@ -38,6 +38,33 @@ class TestHarnessMerge(unittest.TestCase):
         self.assertEqual(local["producer"]["reviewers"], ["codex"])
         self.assertEqual(local["producer"]["codex"]["bin"], "codex")
 
+    def test_fresh_file_ships_commented_model_keys(self):
+        # #47 — the model knobs ship COMMENTED (unset = each tool's own
+        # default) so harness.toml self-documents; the validator table itself
+        # is comment-only, so it must not parse as a real table on a fresh
+        # install (load_config sees no validator keys → None → tool defaults).
+        out = il.merge_harness_toml("")
+        self.assertIn('# model = "gpt-5.3-codex"', out)
+        self.assertIn("[merge-gate.local.validator]", out)
+        self.assertIn('# model            = "sonnet"', out)
+        self.assertIn('# dispatcher_model = "haiku"', out)
+        d = self._parse(out)
+        self.assertEqual(d["merge-gate"]["local"].get("validator", {}), {})
+        self.assertNotIn("model", d["merge-gate"]["local"]["producer"]["codex"])
+
+    def test_reinstall_preserves_customized_validator_table(self):
+        # C2 extension (#47): a repo that set real validator models must not be
+        # reverted to the commented defaults on reinstall.
+        once = il.merge_harness_toml("")
+        custom = once.replace(
+            '# model            = "sonnet"           # validator AGENT (judgment subagent) — tier alias only: haiku|sonnet|opus; unset = agent default (#47)',
+            'model            = "opus"')
+        self.assertNotEqual(once, custom)  # the replace actually hit
+        again = il.merge_harness_toml(custom)
+        d = self._parse(again)
+        self.assertEqual(d["merge-gate"]["local"]["validator"]["model"], "opus")
+        self.assertEqual(again.count("[merge-gate.local.validator]"), 1)
+
     def test_lockfiles_stay_in_scope(self):
         d = self._parse(il.merge_harness_toml(""))
         # default review_globs catch everything; ignore_globs only the cache

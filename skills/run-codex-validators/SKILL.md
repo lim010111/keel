@@ -33,6 +33,13 @@ claude -p "/run-codex-validators --codex-json <path> --soft-mode <true|false>" \
   The local profile has no PR body, so the producer supplies this written
   intent for the validator to weigh like a PR description (D11). Pass it
   through to `build-input` as `--durable-context-from` (step 4).
+- `--agent-model <alias>` (optional, claude-harness-work#47) — tier alias
+  (`haiku`/`sonnet`/`opus`) for the **validator agent** (the judgment
+  subagent). The producer reads it from `[merge-gate.local.validator] model`
+  in harness.toml and passes it here — this CLI arg is the only carrier (this
+  skill reads no project config, see "What this skill must not do"). When
+  absent, the agent definition's own frontmatter `model:` applies. Consumed
+  in step 5.
 
 ## Always exit 0
 
@@ -158,9 +165,11 @@ ADR-0021.) Below, `$AGG` stands for that resolved path;
 
 1. **Parse arguments.** Extract `--codex-json` (default
    `./codex-review.json`), `--soft-mode`, `--out-dir` (default
-   `.codex-review` → call it `$OUT_DIR`), and the optional `--intent-from`
-   (call it `$INTENT_FROM`, unset if absent) from the slash-command
-   invocation. If `--soft-mode` is missing or not `true|false`, run
+   `.codex-review` → call it `$OUT_DIR`), the optional `--intent-from`
+   (call it `$INTENT_FROM`, unset if absent), and the optional
+   `--agent-model` (call it `$AGENT_MODEL`, unset if absent) from the
+   slash-command invocation. If `--soft-mode` is missing or not
+   `true|false`, run
    `python3 "$AGG" write-fallback --reason "soft-mode flag missing or invalid" --out-dir "$OUT_DIR"`
    and return.
 
@@ -188,9 +197,12 @@ ADR-0021.) Below, `$AGG` stands for that resolved path;
 
 5. **Dispatch the validator subagent.** Use the Agent tool with
    `subagent_type: codex-review-validator` and pass the contents of
-   `$INPUT_TMP` (the JSON payload) as the agent prompt body. The
-   subagent runs in its own context window per PRD design intent.
-   Capture its full response into `$VALIDATOR_OUT_TMP`.
+   `$INPUT_TMP` (the JSON payload) as the agent prompt body. **If
+   `$AGENT_MODEL` is set**, also pass it as the Agent tool's `model`
+   parameter; when unset, omit the parameter so the agent definition's
+   frontmatter default applies (#47). The subagent runs in its own
+   context window per PRD design intent. Capture its full response
+   into `$VALIDATOR_OUT_TMP`.
 
 6. **Write outputs.** Run
    `python3 "$AGG" write-outputs --codex-json "$CODEX_JSON" --validator-output "$VALIDATOR_OUT_TMP" --soft-mode "$SOFT_MODE" --out-dir "$OUT_DIR"`.

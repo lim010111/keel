@@ -159,6 +159,12 @@ DEFAULT_CONFIG = {
     "reviewer_config": {
         "codex": {"bin": "codex"},
     },
+    # [merge-gate.local.validator] (#47): `model` = the validator AGENT's tier
+    # alias (the judgment subagent — produce passes it through as the slash
+    # `--agent-model`); `dispatcher_model` = the headless `claude -p` session
+    # that orchestrates the skill. Unset keys mean "the tool's own default"
+    # (agent frontmatter / CLI default).
+    "validator": {},
 }
 
 
@@ -237,6 +243,31 @@ class Config:
             return [cmd]
         return None
 
+    def reviewer_model(self, name: str) -> str | None:
+        """First-class per-reviewer `model` key (#47), or None when unset.
+        Translated to the reviewer CLI's `--model` by the runner; coexisting
+        with an args-supplied `--model` is refused fail-closed (set exactly
+        one). Enters review_scope_hash."""
+        rc = self._d.get("reviewer_config", {}).get(name, {})
+        m = rc.get("model")
+        return m if isinstance(m, str) and m else None
+
+    @property
+    def validator_model(self) -> str | None:
+        """The validator AGENT's tier alias (#47) — the judgment subagent's
+        model, passed through as the slash `--agent-model`. None = the agent
+        frontmatter default. Enters review_scope_hash."""
+        m = self._d.get("validator", {}).get("model")
+        return m if isinstance(m, str) and m else None
+
+    @property
+    def validator_dispatcher_model(self) -> str | None:
+        """The validator DISPATCHER's model (#47) — the headless `claude -p`
+        session that orchestrates the skill; pipeline, not judge. None = the
+        CLI default. Enters review_scope_hash."""
+        m = self._d.get("validator", {}).get("dispatcher_model")
+        return m if isinstance(m, str) and m else None
+
 
 def _merge_defaults(base: dict, override: dict) -> dict:
     """Shallow+one-level-nested merge of override onto base (copy of base)."""
@@ -302,6 +333,10 @@ def load_config(repo_root: Path) -> Config:
             rc[name] = val
     if rc:
         data["reviewer_config"] = {**data.get("reviewer_config", {}), **rc}
+    # [merge-gate.local.validator] (#47): validator agent/dispatcher models.
+    validator = local.get("validator", {})
+    if isinstance(validator, dict) and validator:
+        data["validator"] = {**data.get("validator", {}), **validator}
     return Config(data)
 
 
@@ -635,6 +670,15 @@ def review_scope_hash(cfg: Config) -> str:
         # implementation and MUST invalidate the cache (one-time bust on upgrade).
         "reviewer_bin": {r: cfg.reviewer_bin(r) for r in cfg.reviewers},
         "reviewer_cmd": {r: cfg.reviewer_cmd(r) for r in cfg.reviewers},
+        # #47: ALL four model knobs enter the hash — one rule, "change any
+        # model setting → re-review". The dispatcher is pipeline, not judge
+        # (CONTEXT.md `validator`), but the scope hash identifies the produce
+        # PIPELINE, not just the verdict; excluding it would buy a rare cache
+        # hold at the cost of a permanent exception rule. Adding these keys is
+        # itself a one-time global bust on upgrade (accepted — #37 precedent).
+        "reviewer_model": {r: cfg.reviewer_model(r) for r in cfg.reviewers},
+        "validator_model": cfg.validator_model,
+        "validator_dispatcher_model": cfg.validator_dispatcher_model,
     }
     blob = json.dumps(components, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return _hash(blob)
@@ -888,12 +932,11 @@ def _reviewer_model(reviewer: str, raw: str) -> str | None:
     return m if isinstance(m, str) else None
 
 
-def _configured_reviewer_model(cfg: Config, reviewer: str) -> str | None:
-    """The `--model`/`-m` value from a reviewer's configured args, else None —
-    the operator-visible model record when the tool output doesn't carry one
-    (e.g. Codex). Mirrors _unsafe_reviewer_arg's `key[=val]` / `key val`
-    handling for the model flag only."""
-    args = cfg.reviewer_args(reviewer) or []
+def _model_from_args(args: list[str]) -> str | None:
+    """The `--model`/`-m` value from a raw args list, else None. Mirrors
+    _unsafe_reviewer_arg's `key[=val]` / `key val` handling for the model flag
+    only. Shared by the provenance record below and the runners' model-key/args
+    conflict checks (#47)."""
     i, n = 0, len(args)
     while i < n:
         head, eq, inline = str(args[i]).partition("=")
@@ -903,6 +946,15 @@ def _configured_reviewer_model(cfg: Config, reviewer: str) -> str | None:
             return str(args[i + 1]) if i + 1 < n else None
         i += 1
     return None
+
+
+def _configured_reviewer_model(cfg: Config, reviewer: str) -> str | None:
+    """The operator-configured model for a reviewer, else None — the
+    operator-visible model record when the tool output doesn't carry one
+    (e.g. Codex). The first-class `model` key (#47) wins over an args-supplied
+    `--model`/`-m` (the runners refuse the combination anyway, so precedence
+    here only matters for verify-side freshness probes that never refuse)."""
+    return cfg.reviewer_model(reviewer) or _model_from_args(cfg.reviewer_args(reviewer) or [])
 
 
 # --------------------------------------------------------------------------
@@ -1289,10 +1341,19 @@ def default_reviewer_runner(name: str, cfg: Config, cd: dict, sub_dir: Path,
             return (f"refusing reviewer_args {bad!r}: not provably sandbox-neutral; "
                     "the local reviewer is read-only-sandboxed by invariant and "
                     "must not be bypassed (M1)", 2)
+        model = cfg.reviewer_model("codex")
+        # #47: the first-class `model` key and an args `--model`/`-m` are two
+        # writers of the same flag — refuse the combination fail-closed rather
+        # than letting clap's duplicate-flag handling pick a winner silently.
+        if model and _model_from_args(extra):
+            return ("refusing codex reviewer config: both the `model` key and a "
+                    "`--model`/`-m` reviewer_arg are set — set exactly one (#47)", 2)
         cmd = [cfg.reviewer_bin("codex"), "exec", "--json",
                "--output-schema", str(SCHEMA_PATH),
                "--sandbox", "read-only", "--skip-git-repo-check",
                "-C", str(cwd)]
+        if model:
+            cmd += ["--model", model]
         if extra:
             cmd += extra
     elif name == "claude":
@@ -1385,6 +1446,29 @@ _CLAUDE_REVIEWER_DENIED_TOOLS = ",".join([
 # timeout the run fails CLOSED (exit 124 → normalize codex-failed → verdict error),
 # never a silent pass or an indefinitely-wedged produce.
 _CLAUDE_REVIEWER_TIMEOUT_S = 600
+
+# Known tier aliases the Agent tool's `model` param accepts (#47). The
+# validator AGENT is spawned via the Agent tool, whose model param is an
+# alias enum — NOT the free-form `--model` string the reviewer/dispatcher
+# CLIs take. An off-enum value would fail only deep inside the headless
+# dispatch (Agent tool error → validators.json absent → F2 blanket
+# over-block), the exact silent-diagnosis class #31 spent sessions on — so
+# cmd_produce refuses it loudly up front instead. New tier ships → add one
+# entry here.
+_VALIDATOR_MODEL_ALIASES = {"haiku", "sonnet", "opus"}
+
+
+def _invalid_validator_model(cfg: Config) -> str | None:
+    """Refusal message when `validator.model` is set to a non-alias (#47),
+    else None. Unset passes (the agent frontmatter default applies)."""
+    m = cfg.validator_model
+    if m is None or m in _VALIDATOR_MODEL_ALIASES:
+        return None
+    allowed = "/".join(sorted(_VALIDATOR_MODEL_ALIASES))
+    return (f"refusing validator.model {m!r}: not a known tier alias "
+            f"({allowed}) — the validator agent is dispatched via the Agent "
+            "tool, which takes an alias, not a full model id (#47)")
+
 
 # Hard wall-clock bound for the VALIDATOR subprocess (#31 seed finding). The validator
 # runs a full subagent (heavier than the reviewer's single turn), so a more generous
@@ -1486,6 +1570,12 @@ def _run_claude_reviewer(name: str, cfg: Config, prompt: str, sub_dir: Path,
         return (f"refusing claude reviewer_args {bad!r}: only --model/-m is "
                 "allowlisted; the reviewer is read-only-sandboxed by invariant "
                 "and must not load tool/permission/MCP/config surfaces (#32 C2)", 2)
+    model = cfg.reviewer_model("claude")
+    # #47: same two-writers refusal as the codex runner — the `model` key and
+    # an args `--model`/`-m` must not coexist.
+    if model and _model_from_args(extra):
+        return ("refusing claude reviewer config: both the `model` key and a "
+                "`--model`/`-m` reviewer_arg are set — set exactly one (#47)", 2)
     # Inline schema CONTENT, not a path — a path makes `claude -p --json-schema`
     # exit 0 with EMPTY output (verified, AC#2); empty output then fails closed
     # (missing-result → reviewer failure) but never actually reviews. The schema
@@ -1516,6 +1606,8 @@ def _run_claude_reviewer(name: str, cfg: Config, prompt: str, sub_dir: Path,
            # settings source, so it is unaffected (verified: exit 0 under isolation).
            "--setting-sources", "",
            "--strict-mcp-config"]
+    if model:
+        cmd += ["--model", model]
     cmd += extra
     # `--tools` is the positive availability allowlist (only these built-in tools
     # exist) — the PRIMARY read-only gate; `--allowedTools` permits those reads under
@@ -1553,9 +1645,12 @@ def _run_claude_reviewer(name: str, cfg: Config, prompt: str, sub_dir: Path,
 
 
 def default_validator_runner(name: str, findings_json: Path, sub_dir: Path,
-                             cwd: Path, intent_file: Path | None) -> dict | None:
+                             cwd: Path, intent_file: Path | None,
+                             cfg: Config | None = None) -> dict | None:
     """Run the validator in its OWN headless context (#24/#26/#29). Returns the
-    parsed validators.json (with `aggregate`) or None on failure."""
+    parsed validators.json (with `aggregate`) or None on failure. `cfg` (#47)
+    carries the two validator model knobs; None (a legacy direct caller) means
+    both unset — the tool defaults."""
     # Clear any leftover artefact from a prior produce of the same tuple
     # (produce mkdir's sub_dir with exist_ok=True and never clears it). After
     # this, ANY validators.json present afterward was written THIS run, so a
@@ -1572,6 +1667,14 @@ def default_validator_runner(name: str, findings_json: Path, sub_dir: Path,
              f"--soft-mode false --out-dir {sub_dir}")
     if intent_file is not None:
         slash += f" --intent-from {intent_file}"
+    # #47: the validator AGENT's model rides the slash invocation (the skill
+    # passes it to the Agent tool's `model:` param) — the skill reads no
+    # harness.toml by contract, so the CLI arg is the only carrier. Absent →
+    # the agent frontmatter default (`model: sonnet`). cmd_produce already
+    # refused non-alias values (_VALIDATOR_MODEL_ALIASES), so this is clean.
+    agent_model = cfg.validator_model if cfg is not None else None
+    if agent_model:
+        slash += f" --agent-model {agent_model}"
     # Strip nested-session markers so the validator's headless `claude -p` runs as a
     # FRESH top-level session and actually executes. produce may run INSIDE a Claude
     # session (the Stop scheduler), and a child inheriting CLAUDECODE / CLAUDE_CODE_*
@@ -1595,7 +1698,13 @@ def default_validator_runner(name: str, findings_json: Path, sub_dir: Path,
         # unbounded subprocess could wedge produce indefinitely. Fail CLOSED on timeout
         # (return None → F2 over-blocks), parity with the reviewer's bound. _run_reaped
         # so the timeout SIGKILLs the whole process group, not just the direct child.
-        proc = _run_reaped(["claude", "-p", slash, "--permission-mode", "bypassPermissions"],
+        dispatcher_cmd = ["claude", "-p", slash, "--permission-mode", "bypassPermissions"]
+        # #47: the DISPATCHER's own model (orchestration session — pipeline,
+        # not judge). Free-form string: `claude -p --model` accepts aliases and
+        # full model IDs alike. Absent → the CLI default.
+        if cfg is not None and cfg.validator_dispatcher_model:
+            dispatcher_cmd += ["--model", cfg.validator_dispatcher_model]
+        proc = _run_reaped(dispatcher_cmd,
                            cwd=str(cwd), env=env, capture_output=True,
                            timeout=_CLAUDE_VALIDATOR_TIMEOUT_S)
     except subprocess.TimeoutExpired:
@@ -1859,7 +1968,7 @@ def produce(cwd: Path, cfg: Config, base_sha: str, cd: dict, *,
         reviewer_elapsed = time.time() - t0
         t_v = time.time()
         validators = validator_runner(reviewer, sub_dir / "findings.json", sub_dir,
-                                      cwd, intent_file)
+                                      cwd, intent_file, cfg)
         validator_elapsed = time.time() - t_v
         per_reviewer.append({
             "reviewer": reviewer,
@@ -1988,6 +2097,10 @@ def build_summary(cfg: Config, base_sha: str, cd: dict, scope_hash: str,
         "reviewer_models": reviewer_models,
         "claude_version": _claude_version(),
         "validator_agent_version": VALIDATOR_CONTRACT_VERSION,
+        # #47: validator model provenance (configured values; None = tool
+        # default). Recorded-only, mirrors the reviewer_models record above.
+        "validator_model": cfg.validator_model,
+        "validator_dispatcher_model": cfg.validator_dispatcher_model,
         "reviewers": cfg.reviewers,
         "changed_files": cd["changed_files"],
         "skipped_untracked": cd["skipped_untracked"],
@@ -2392,6 +2505,13 @@ def cmd_produce(args, *, reviewer_runner=default_reviewer_runner,
         err("not a git repository")
         return 1
     cfg = load_config(root)
+    # #47: refuse a non-alias validator.model BEFORE any review spend or
+    # artefact write — every produce path (manual, force, coalesce, the Stop
+    # scheduler's CLI call) funnels through here.
+    bad_model = _invalid_validator_model(cfg)
+    if bad_model:
+        err(bad_model)
+        return 1
     base = resolve_base_sha(root, args.base_ref or cfg.base_ref)
     if base is None:
         err("could not resolve base ref; pass --base-ref or set up an upstream")

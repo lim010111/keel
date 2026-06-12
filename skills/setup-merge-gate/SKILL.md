@@ -31,7 +31,30 @@ registers the global hooks if absent.
 must be a git repo with `AGENTS.md` at the root (run `/setup-agents-md` first
 if missing — the validator reads project context from there).
 
-**2 — Install.** Run the helper (deterministic; safe to re-run — idempotent):
+**2 — Ask the one model question (#47).** Before running the installer, ask
+once (AskUserQuestion) whether to pin models or keep tool defaults:
+
+- **Tool defaults (recommended, default)** — every model knob stays unset:
+  Codex uses its own configured default, the Claude reviewer / validator
+  dispatcher use the CLI default, the validator agent uses its frontmatter
+  default. The installer's LOCAL_BLOCK ships the knobs as comments, so
+  `harness.toml` self-documents where to set them later.
+- **Customize** — collect a value per slot the user wants pinned, and after
+  step 3's install **edit `harness.toml`**: uncomment/set only the chosen keys.
+  The four slots:
+  - `[merge-gate.local.producer.codex] model` — free-form (e.g. `gpt-5.3-codex`)
+  - `[merge-gate.local.producer.claude] model` — free-form (alias or full id);
+    only relevant when the repo opts into the claude reviewer (ADR-0010)
+  - `[merge-gate.local.validator] model` — the validator **agent** (judgment
+    subagent); **tier alias only**: `haiku`/`sonnet`/`opus` (`produce` refuses
+    anything else, fail-closed)
+  - `[merge-gate.local.validator] dispatcher_model` — the headless
+    orchestration session; free-form
+
+Any model change later (edit `harness.toml` directly) busts
+`review_scope_hash` — the next verify re-reviews; that is intended.
+
+**3 — Install.** Run the helper (deterministic; safe to re-run — idempotent):
 
 ```
 python3 ~/.claude/skills/setup-merge-gate/scripts/install_local.py \
@@ -49,7 +72,7 @@ trigger self-gated on the session cwd and never fired under the two-repo
 workflow). It no longer registers any global hooks. It prints a JSON summary;
 surface it.
 
-**3 — Seed the first review and print next steps.** The pre-push gate is
+**4 — Seed the first review and print next steps.** The pre-push gate is
 **advisory** by default — it reports but never blocks (ADR-0009: what makes it a
 gate is the independent, recorded, freshness-covering verdict, not blocking).
 Tell the user:
