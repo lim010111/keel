@@ -41,7 +41,7 @@ transitions** an artifact crosses on its way to a wider audience, see
 | Kind | Items |
 |---|---|
 | Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `consult-externals`, `daily-dev-log`, `daily-token-report`, `harden-issue`, `harness-doctor`, `run-codex-validators`, `session-dev-log`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
-| Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `narrative_guard`, `merge_gate_post_commit` · `merge_gate_scheduler`, `self_verification` · `self_verification_pretooluse` |
+| Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `narrative_guard`, `merge_gate_post_commit` · `merge_gate_scheduler` |
 | Scripts | `status.py`, `sound_complete.sh` · `sound_permission.sh` · `classify_sound.py`, `merge_gate_local.py` · `merge_gate_adjudicate.py` · `merge_gate_measure.py`, `harness_doctor.py`, `toml_sections.py` |
 | Agents | `ci-researcher`, `codex-review-validator` |
 | Config | `CLAUDE.md`, `statusline.sh`, `settings.json` |
@@ -183,12 +183,6 @@ existed and was removed outright.)
   read-only diagnosis engine; `scripts/toml_sections.py` is the shared
   section-scoped TOML text library the house installers use to edit
   `harness.toml` without disturbing sibling sections.
-- `self_verification.py` / `self_verification_pretooluse.py` — **dormant**
-  oracle-integrity gate: a `commit-msg` hook that re-runs the verification
-  oracle and blocks the commit on mismatch (with an audited bypass trailer
-  lane), plus a `PreToolUse(Bash)` recorder that logs — never blocks — the
-  Claude-visible evasions to an out-of-repo append-only audit log. Ships as
-  files only; not wired into `settings.json` yet.
 - `setup-agents-md` — bootstraps the `AGENTS.md` ↔ `CLAUDE.md` relationship
   in a target repo. `AGENTS.md` is the canonical agent guidance read
   directly by Codex / antigravity; `CLAUDE.md` `@import`s it so Claude Code

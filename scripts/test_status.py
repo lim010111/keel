@@ -71,7 +71,7 @@ class TestCompletionOffenders(unittest.TestCase):
     def test_legitimate_lines_do_not_fire(self):
         for line in [
             "- **능동 · merge-gate #43:** rename 작업",
-            "- **병행 · self-verify#01:** activation 이슈 신설",
+            "- **병행 · keel mirror:** lockstep — 미러 편집과 같은 세션",
             "- **휴면 · publication-gate:** #03 parked — 손대지 않음",
             "- **#25 trust-boundary mitigation (ADR-0007 미작성)** — open decision",
             "- **post-v1 hardening 백로그** — 2nd validator",

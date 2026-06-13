@@ -129,34 +129,12 @@ class TestMergeGateEnforcement(unittest.TestCase):
         self.assertIn("measurement", mg["detail"].lower())  # surfaced as detail
 
 
-SELF_VERIFY_TOML = ('[self-verification]\ntest = "python3 -m pytest -q"\n'
-                    'bypass_trailer = "Self-Verify-Bypass"\n')
-
-
-class TestSelfVerificationParked(unittest.TestCase):
-    def test_present_is_parked_and_probed_unwired_without_hook(self):
-        repo = _new_repo(SELF_VERIFY_TOML)
-        rec = _record(harness_doctor.diagnose(repo), "self-verification")
-        self.assertIsNotNone(rec)
-        self.assertEqual(rec["intent"], "present")
-        self.assertEqual(rec["applicability"], "parked")  # dormant per ADR
-        self.assertEqual(rec["enforcement"], "unwired")   # honestly probed
-
-    def test_commit_msg_marker_probed_wired_yet_still_parked(self):
-        repo = _new_repo(SELF_VERIFY_TOML)
-        _write_hook(repo, "commit-msg", "#!/bin/sh\n# SELF_VERIFICATION_COMMIT_MSG\n")
-        rec = _record(harness_doctor.diagnose(repo), "self-verification")
-        self.assertEqual(rec["enforcement"], "wired")
-        self.assertEqual(rec["applicability"], "parked")
-
-
 class TestReadOnlyInvariant(unittest.TestCase):
     def test_diagnose_mutates_no_file_on_any_path(self):
         states = {
             "bare": None,
             "local": LOCAL_TOML,
             "legacy-gha": LEGACY_GHA_TOML,
-            "self-verify": SELF_VERIFY_TOML,
             "unknown-gate": '[deploy-gate]\nprofile = "local"\n',
         }
         for name, toml in states.items():
@@ -302,23 +280,6 @@ class TestProposeProfile(unittest.TestCase):
         self.assertIn("agents-md", profile["scaffold"])
         self.assertIn("status-harness", profile["scaffold"])
 
-
-    def test_test_suite_surfaces_self_verification_candidate(self):
-        # A test suite surfaces the dormant self-verification opt-in row (AC5).
-        # Bounded heuristic (documented imprecision): a tests/|test/ dir or a
-        # recognized test-file name. A repo with code but no recognized test
-        # layout does NOT propose it (the absent branch is pinned, not just present).
-        with_tests = _new_repo()
-        (with_tests / "tests").mkdir()
-        (with_tests / "tests" / "test_core.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
-        self.assertIn("self-verification",
-                      harness_doctor.propose_profile(with_tests)["scaffold"])
-        no_tests = _new_repo()
-        (no_tests / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
-        (no_tests / "main.py").write_text("print(1)\n", encoding="utf-8")
-        self.assertNotIn("self-verification",
-                         harness_doctor.propose_profile(no_tests)["scaffold"])
-
     def test_build_manifest_surfaces_ci_recommendation(self):
         # Buildable code (a build manifest) surfaces the CI judgment row (AC4).
         # ci is a recommendation flag, NEVER a scaffold member (no detector → it
@@ -349,7 +310,7 @@ def _install_status_harness(repo: Path) -> None:
 
 class TestComputeCoverage(unittest.TestCase):
     def test_fraction_counts_present_concerns_over_applicable(self):
-        # Coverage = |installed ∩ (scaffold\parked)| ÷ |scaffold\parked|, where
+        # Coverage = |installed ∩ scaffold| ÷ |scaffold|, where
         # installed = intent==present (the INTENT axis; enforcement wired/unwired
         # is phase-2, AC12). A repo with all three base+gate concerns present →
         # fully covered, regardless of whether the pre-push hook is wired.
@@ -365,25 +326,21 @@ class TestComputeCoverage(unittest.TestCase):
         self.assertEqual(set(cov["applicable"]), {"agents-md", "status-harness", "merge-gate"})
 
 
-    def test_parked_self_verification_excluded_but_unrecognized_merge_gate_stays(self):
-        # AC12 + two panel blockers. (a) self-verification is the one
-        # legitimately-parked-in-scaffold concern (no installer) → out of the
-        # denominator, surfaced as "opted-in, parked". (b) A merge-gate the
-        # operator WANTED but whose [merge-gate] resolves to an unrecognized
-        # profile (e.g. a leftover github-actions value — removed, ADR-0021)
-        # must NOT vanish from the denominator — parked is the static
-        # no-installer set, NOT "any non-local record". Its intent is partial,
-        # so it stays an open coverage gap, never silently covered.
-        repo = _new_repo('[merge-gate]\nprofile = "github-actions"\n\n' + SELF_VERIFY_TOML)
+    def test_unrecognized_merge_gate_profile_stays_in_denominator_as_a_gap(self):
+        # Panel blocker (b): a merge-gate the operator WANTED but whose
+        # [merge-gate] resolves to an unrecognized profile (e.g. a leftover
+        # github-actions value — removed, ADR-0021) must NOT vanish from the
+        # denominator. Its intent is partial, so it stays an open coverage gap,
+        # never silently covered (it must not vanish from the denominator).
+        # agents-md + status-harness are genuinely present, so merge-gate is
+        # the lone gap.
+        repo = _new_repo('[merge-gate]\nprofile = "github-actions"\n')
         (repo / "AGENTS.md").write_text("# proj\n", encoding="utf-8")
         (repo / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
         _install_status_harness(repo)
         records = harness_doctor.diagnose(repo)
         cov = harness_doctor.compute_coverage(records, {
-            "scaffold": ["agents-md", "status-harness", "merge-gate", "self-verification"],
-            "ci": False})
-        self.assertNotIn("self-verification", cov["applicable"])      # parked → out of denom
-        self.assertIn("self-verification", cov["parked_opted_in"])    # surfaced as opted-in/parked
+            "scaffold": ["agents-md", "status-harness", "merge-gate"], "ci": False})
         self.assertIn("merge-gate", cov["applicable"])                # stays in denom
         self.assertNotIn("merge-gate", cov["covered"])                # open gap, not covered
 
@@ -411,7 +368,7 @@ class TestComputeCoverage(unittest.TestCase):
         self.assertEqual(cov["fraction"], (0, 0))
 
     def test_duplicate_scaffold_slugs_do_not_inflate_the_fraction(self):
-        # Coverage is set-valued (|scaffold\parked|). A hand-edited [harness]
+        # Coverage is set-valued (|scaffold|). A hand-edited [harness]
         # with a repeated slug must not double-count: agents-md present → 1/1,
         # not 2/2 (impl review finding).
         repo = _new_repo()
@@ -454,7 +411,6 @@ class TestNewReadPathsReadOnly(unittest.TestCase):
             "bare": None,
             "local": LOCAL_TOML,
             "recorded": '[harness]\nscaffold = ["agents-md", "merge-gate"]\nci = true\n',
-            "self-verify": SELF_VERIFY_TOML,
         }
         for name, toml in states.items():
             repo = _new_repo(toml)
@@ -530,7 +486,7 @@ class TestScaffoldSlugContract(unittest.TestCase):
         # slug must be a concern diagnose() actually emits, the merge-gate ≠
         # merge-gate-local trap must hold, and ci (a judgment, no probe) must NOT
         # be a scaffold concern.
-        repo = _new_repo(LOCAL_TOML + "\n" + SELF_VERIFY_TOML)
+        repo = _new_repo(LOCAL_TOML)
         emitted = {r["concern"] for r in harness_doctor.diagnose(repo)}
         missing = set(harness_doctor.SCAFFOLD_CONCERNS) - emitted
         self.assertEqual(missing, set(), msg=f"scaffold slugs diagnose never emits: {missing}")
@@ -636,31 +592,6 @@ class TestReusedDetectorCrashDegrades(unittest.TestCase):
         rec = _record(records, "agents-md")
         self.assertIsNotNone(rec)
         self.assertEqual(rec["intent"], "n/a")
-
-
-class TestHasTestSuiteSymlinks(unittest.TestCase):
-    # claude:finding-1: the recursive scan used p.is_dir() (which FOLLOWS symlinks)
-    # with prune-by-basename only, so a symlinked dir either escaped the repo
-    # (scanning arbitrary FS for test-file names) or, pointing at an ancestor,
-    # cycled forever — hanging propose_profile. The walk must not descend symlinks.
-    def test_does_not_follow_symlinked_dir_out_of_repo(self):
-        # A symlink to an OUTSIDE dir holding a test file must NOT be followed —
-        # the heuristic is repo-scoped, so this repo (no in-tree tests) reads absent.
-        outside = Path(tempfile.mkdtemp())
-        (outside / "test_escape.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
-        repo = _new_repo()
-        (repo / "src.py").write_text("x = 1\n", encoding="utf-8")  # a real dir entry to walk
-        (repo / "link").symlink_to(outside, target_is_directory=True)
-        self.assertFalse(harness_doctor._has_test_suite(repo))
-
-    def test_symlink_cycle_terminates(self):
-        # A self-referential symlink (loop -> repo root) must not be descended into,
-        # so the bounded walk terminates instead of hanging (the guard makes it safe
-        # to even run this test).
-        repo = _new_repo()
-        (repo / "src.py").write_text("x = 1\n", encoding="utf-8")
-        (repo / "loop").symlink_to(repo, target_is_directory=True)
-        self.assertFalse(harness_doctor._has_test_suite(repo))
 
 
 class TestMarkerRegistryContract(unittest.TestCase):

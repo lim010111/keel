@@ -434,17 +434,6 @@ class TestGlobalBootstrap(unittest.TestCase):
 
 
 class TestReportOnlyConcerns(unittest.TestCase):
-    def test_self_verification_is_report_only_never_activated(self):
-        # AC (parked): self-verification is dormant and has NO installer to delegate
-        # to — report-only, never auto-activated, regardless of a declared section.
-        repo = _new_repo(_recorded(["self-verification"])
-                         + "\n[self-verification]\nattest = true\n")
-        plan = auto_fill.build_plan(repo)
-        sv = [r for r in plan["records"] if r["concern"] == "self-verification"]
-        self.assertEqual([r["consent_tier"] for r in sv], ["refuse"])
-        res = auto_fill.apply(repo)
-        self.assertNotIn("self-verification", res["applied"])
-
     def test_orphan_recorded_slug_is_report_only_not_silently_dropped(self):
         # AC (inputs): a recorded scaffold slug with no auto-fill path (the
         # merge-gate-local slug trap / a hand-edit) is SURFACED report-only, never
@@ -460,7 +449,7 @@ class TestPlanContract(unittest.TestCase):
     def test_no_record_carries_a_callable(self):
         # AC (record shape): no Python callable crosses the script↔skill seam — every
         # record value is JSON-able (refuse/parked records carry no invokable apply).
-        repo = _new_repo(_recorded(["agents-md", "merge-gate", "self-verification"]))
+        repo = _new_repo(_recorded(["agents-md", "merge-gate", "merge-gate-local"]))
         (repo / "CLAUDE.md").write_text("real content\n", encoding="utf-8")  # migrate
         for r in auto_fill.build_plan(repo)["records"]:
             for v in r.values():
@@ -469,7 +458,7 @@ class TestPlanContract(unittest.TestCase):
     def test_plan_is_json_serializable(self):
         # AC (plan transport): the whole plan survives json.dumps (no callable).
         repo = _new_repo(_recorded(["agents-md", "status-harness", "merge-gate",
-                                    "self-verification"]))
+                                    "merge-gate-local"]))
         json.dumps(auto_fill.build_plan(repo))      # must not raise
 
     def test_apply_confirmed_runs_a_confirm_tier_migrate_by_id(self):

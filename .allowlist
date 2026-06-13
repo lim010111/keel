@@ -36,9 +36,6 @@ hooks/test_merge_gate_post_commit.py
 hooks/test_merge_gate_hooks.py
 hooks/narrative_guard.py
 hooks/test_narrative_guard.py
-hooks/self_verification.py
-hooks/self_verification_pretooluse.py
-hooks/test_self_verification.py
 
 # --- Scripts ---
 scripts/status.py

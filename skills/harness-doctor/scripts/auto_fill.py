@@ -295,11 +295,6 @@ def build_plan(repo):
             records += _merge_gate_records(repo, diag[concern])
         elif concern == "status-harness":
             records += _status_harness_records(repo)
-        elif concern == "self-verification":
-            records.append(_report_only(
-                "self-verification", "dormant per ADR-0009 and has no installer to "
-                "delegate to (only hooks/templates/commit-msg) — report-only, never "
-                "auto-activated"))
         else:
             # A recorded slug with no auto-fill path (the merge-gate-local slug trap,
             # a hand-edit, a future concern): surfaced report-only, NEVER silently

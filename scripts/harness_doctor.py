@@ -19,7 +19,7 @@ from pathlib import Path
 # change without notice.
 __all__ = [
     "CLAUDE_ROOT", "GATE_ENFORCEMENT", "MEASUREMENT_HOOK",
-    "SCAFFOLD_CONCERNS", "PARKED_CONCERNS",
+    "SCAFFOLD_CONCERNS",
     "find_repo_root", "diagnose", "propose_profile", "read_recorded_profile",
     "compute_coverage", "render_table", "render_coverage",
     "import_setup", "resolve_hooks_dir", "hook_has_marker", "main",
@@ -104,17 +104,12 @@ def _status_harness_record(repo_root):
 # test_harness_doctor pins the two equal.
 GATE_ENFORCEMENT = {
     "merge-gate": ("pre-push", "MERGE_GATE_WRAPPER"),
-    "self-verification": ("commit-msg", "SELF_VERIFICATION_COMMIT_MSG"),
 }
 
 # The #33 measurement producer trigger (post-commit). NOT a gate — it is wiring
 # that feeds #31 evidence — so it is folded into merge-gate's detail, never its
 # own concern. The merge-gate enforcement verdict keys on pre-push, not this.
 MEASUREMENT_HOOK = ("post-commit", "MERGE_GATE_POST_COMMIT")
-
-# Gates that are deliberately dormant per ADR (probed read-only for honesty, but
-# never nagged-to-install): reported applicability=parked, never missing.
-PARKED_GATES = {"self-verification"}  # dormant per ADR — no installer skill to fill
 
 # Top-level harness.toml sections that are NOT gates, so the generic gate
 # iteration must skip them (no enforcement marker, no unknown-class report).
@@ -126,15 +121,7 @@ NON_GATE_SECTIONS = {"harness"}  # ADR-0020 §3 intended-profile meta (#03)
 # deliberately absent: it is a judgment row with no mechanical detector, recorded
 # as a [harness] bool and reported "wanted / not-yet-measurable", never a term in
 # the coverage fraction. A `scaffold` slug outside this set is `unrecognized`.
-SCAFFOLD_CONCERNS = ("agents-md", "status-harness", "merge-gate", "self-verification")
-
-# The single legitimately-parked-in-scaffold concern (#03 AC12): a concern with
-# no installer skill to fill it. Excluded from the coverage denominator (reporting
-# it as a gap would nag you to install what you deliberately parked). This is NOT
-# widened to "any record whose applicability == parked" — a wanted merge-gate
-# whose section resolves to an unrecognized profile must stay in the
-# denominator, not silently vanish from the fraction.
-PARKED_CONCERNS = {"self-verification"}
+SCAFFOLD_CONCERNS = ("agents-md", "status-harness", "merge-gate")
 
 
 def resolve_hooks_dir(repo_root):
@@ -211,13 +198,9 @@ def _merge_gate_record(repo_root, mg):
 
 def _gate_record(repo_root, section):
     """A declared gate section resolved generically through GATE_ENFORCEMENT:
-    probe its hook-marker, mark parked gates as such (still probed for honesty)."""
+    probe its hook-marker (a registered gate is reported intent=present)."""
     hook, marker = GATE_ENFORCEMENT[section]
     enforcement = "wired" if hook_has_marker(repo_root, hook, marker) else "unwired"
-    if section in PARKED_GATES:
-        return _record(section, intent="present", enforcement=enforcement,
-                       applicability="parked",
-                       detail="dormant per ADR — no installer to fill")
     return _record(section, intent="present", enforcement=enforcement)
 
 
@@ -271,49 +254,6 @@ def _has_build_manifest(repo_root):
     return any((Path(repo_root) / m).is_file() for m in BUILD_MANIFESTS)
 
 
-# Directories whose presence at the repo root signals a test suite, and the
-# subtrees a recursive scan must skip (vendored/build output, never the repo's
-# own tests). Bounded heuristic — see _has_test_suite.
-_TEST_DIRS = ("tests", "test")
-_SCAN_PRUNE = {".git", "node_modules", "vendor", "target", ".venv", "venv",
-               "__pycache__", "dist", "build", ".tox"}
-
-
-def _looks_like_test_file(name):
-    return (name.startswith("test_") and name.endswith(".py")) or \
-        name.endswith(("_test.py", "_test.go")) or \
-        name.endswith((".test.js", ".test.ts", ".spec.js", ".spec.ts"))
-
-
-def _has_test_suite(repo_root):
-    """Bounded, read-only heuristic for "a test suite is present" (AC5): a
-    `tests/`|`test/` dir at the root, OR a conventionally-named test file
-    anywhere outside vendored/build subtrees. ACCEPTED IMPRECISION (mirrors the
-    #02 reuse-imprecision house style): non-standard layouts (Rust `#[cfg(test)]`
-    inline, tests under an unusual root) read as absent. This only surfaces an
-    opt-in *candidate* the operator can decline, so a miss is recoverable."""
-    root = Path(repo_root)
-    if any((root / d).is_dir() for d in _TEST_DIRS):
-        return True
-    stack = [root]
-    while stack:
-        d = stack.pop()
-        try:
-            entries = list(d.iterdir())
-        except OSError:
-            continue
-        for p in entries:
-            if p.is_dir():
-                # is_dir() follows symlinks; NEVER descend a symlinked dir — a
-                # cycle (link → ancestor) would hang, a link outside the repo would
-                # scan arbitrary FS. Skipping symlinks keeps the walk bounded + repo-scoped.
-                if not p.is_symlink() and p.name not in _SCAN_PRUNE:
-                    stack.append(p)
-            elif _looks_like_test_file(p.name):
-                return True
-    return False
-
-
 def propose_profile(repo_root):
     """Read-only candidate intended-scaffold for `repo_root` from mechanical
     signals (#03 AC1) — returns a proposal dict, writes nothing. The operator
@@ -321,8 +261,6 @@ def propose_profile(repo_root):
     scaffold = ["agents-md", "status-harness"]   # base doc/structure (AC2)
     if _has_git_remote(repo_root):               # remote → merge-gate candidate (AC3)
         scaffold.append("merge-gate")
-    if _has_test_suite(repo_root):               # test suite → self-verification opt-in (AC5)
-        scaffold.append("self-verification")
     return {
         "scaffold": scaffold,
         "ci": _has_build_manifest(repo_root),    # build manifest → CI row (AC4)
@@ -348,30 +286,24 @@ def read_recorded_profile(repo_root):
 
 def compute_coverage(records, profile):
     """Read-only coverage of a recorded `profile` against `diagnose()` records
-    (#03 AC12). Pure — no I/O. Coverage = |installed ∩ (scaffold\\parked)| ÷
-    |scaffold\\parked|; installed = intent==present (intent axis)."""
+    (#03 AC12). Pure — no I/O. Coverage = |installed ∩ scaffold| ÷ |scaffold|;
+    installed = intent==present (intent axis)."""
     # Coverage is set-valued — dedupe the recorded scaffold (order-preserving) so
     # a hand-edited [harness] with a repeated slug does not double-count.
     scaffold = list(dict.fromkeys(profile.get("scaffold", [])))
     rec_by = {r["concern"]: r for r in records if "concern" in r}
-    # A recorded slug outside SCAFFOLD_CONCERNS (the merge-gate-local trap, a
-    # hand-edit, or a future slug) has no diagnose record — it must be surfaced,
+    # The recognized scaffold concerns are the denominator. A recorded slug
+    # outside SCAFFOLD_CONCERNS (the merge-gate-local trap, a hand-edit, or a
+    # future slug) has no diagnose record — it is surfaced as `unrecognized`,
     # NEVER folded into the denominator where it would be an uncloseable false gap.
     recognized = [c for c in scaffold if c in SCAFFOLD_CONCERNS]
     unrecognized = [c for c in scaffold if c not in SCAFFOLD_CONCERNS]
-    # Denominator = recognized scaffold minus the static no-installer parked set.
-    # NOT widened to "any record whose applicability==parked": a wanted
-    # merge-gate whose section resolves to an unrecognized profile must stay in
-    # the denominator as an open gap, not a vanished coverage term.
-    denom = [c for c in recognized if c not in PARKED_CONCERNS]
-    covered = [c for c in denom if rec_by.get(c, {}).get("intent") == "present"]
-    parked_opted_in = [c for c in recognized if c in PARKED_CONCERNS]
+    covered = [c for c in recognized if rec_by.get(c, {}).get("intent") == "present"]
     return {
         "covered": sorted(covered),
-        "applicable": sorted(denom),
-        "fraction": (len(covered), len(denom)),
-        "measurable": len(denom) > 0,   # False on an empty/malformed scaffold (no denominator)
-        "parked_opted_in": sorted(parked_opted_in),
+        "applicable": sorted(recognized),
+        "fraction": (len(covered), len(recognized)),
+        "measurable": len(recognized) > 0,   # False on an empty/malformed scaffold (no denominator)
         "unrecognized": sorted(unrecognized),
         # Recorded judgment rows with no mechanical detector — reported "wanted /
         # not-yet-measurable", echoed from the record, never re-derived from a
@@ -381,9 +313,9 @@ def compute_coverage(records, profile):
 
 
 def _is_gap(rec):
-    """A gap = an *applicable* concern that is not fully in place. Parked / n/a
-    concerns are never gaps (reporting them as such would nag you to install what
-    you deliberately parked). unknown-class is informational, not a gap."""
+    """A gap = an *applicable* concern that is not fully in place. An `n/a`
+    concern (a reused detector that was unavailable) is never a gap;
+    unknown-class is informational, not a gap."""
     if rec["applicability"] != "applicable" or rec["state"] is not None:
         return False
     return rec["intent"] in ("absent", "partial") or rec["enforcement"] == "unwired"
@@ -410,8 +342,6 @@ def render_coverage(coverage):
             lines.append(f"  missing: {', '.join(missing)}")
     else:
         lines = ["coverage: no measurable scaffold concerns recorded"]
-    if coverage["parked_opted_in"]:
-        lines.append(f"  opted-in, parked: {', '.join(coverage['parked_opted_in'])}")
     if coverage["unrecognized"]:
         lines.append(f"  unrecognized in scaffold (no probe): "
                      f"{', '.join(coverage['unrecognized'])}")

@@ -49,7 +49,7 @@ the v1 shape `alignment → verification → merge → distribution`:
 | Trust transition | Gate | What it verifies | Status |
 |---|---|---|---|
 | Alignment (ad-hoc ask → autonomous-loop context) | Alignment gate | The human↔agent grilling converged on a rich-enough project context | **Shipped** — `/third-party-review` |
-| Verification (agent self-claim → independent oracle verdict) | Self-verification gate | The oracle behind a "tests pass" verdict was not weakened | **Designed** |
+| Verification (agent self-claim → independent oracle verdict) | — (work-interval TDD, private feedback) | The agent re-runs the deterministic oracle each turn; no recorded gate attestation is instantiated | **Not gated** |
 | Merge (ephemeral branch → main, visible to collaborators) | Merge gate | An independent reviewer read the change before it reached `main` | **In progress** |
 | Distribution (main → user runtime; v1 collapse of release + deploy) | Distribution gate | Deferred while user base = {developer} and `~/.claude/` *is* the runtime | **Deferred** |
 
@@ -68,17 +68,19 @@ hands it to outside models (Codex, Gemini), and asks whether the human↔agent
 conversation has drifted far enough to cause trouble later. Resolving a
 divergence is the pair's work, so this gate is closed largely by the human.
 
-### Self-verification gate — designed
+### Verification — not gated (work-interval TDD)
 
 When the agent runs the tests and they pass, it has *consulted an oracle*, not
 *reviewed its own work*. An **oracle** is an external, deterministic
-verdict-producer — test runner, type checker, linter, build. The agent can
-trust an oracle's verdict only if the oracle was not **weakened**: a commit
-that makes the oracle pass more easily — deleting a test, adding a skip
-directive, lowering a coverage threshold. The self-verification gate detects
-weakening *structurally*, by diffing test and config files, regardless of the
-commit's stated intent. A legitimate weakening simply travels the audited
-bypass lane. This gate is designed; it is not yet built.
+verdict-producer — test runner, type checker, linter, build. A self-verification
+gate would add a *recorded, trusted* green-tip attestation at the commit unit;
+this harness does not instantiate one. For a single-operator, accident-not-malice
+harness whose oracle is deterministic and re-runnable, that attestation has no
+consumer a cheap re-run would not provide — so the verification transition is
+served by the **work-interval TDD loop** (the agent re-runs the oracle each turn
+as private feedback), not by a gate. Oracle weakening — deleting a test, adding a
+skip directive, lowering a coverage threshold — is surfaced advisorily by the
+merge gate's diff review.
 
 ### Merge gate — in progress
 
@@ -126,7 +128,8 @@ a gate.
 ## Status
 
 The alignment gate is shipped. The merge gate is being built. The
-self-verification gate is designed and deferred. The distribution gate is
-deferred under the v1 single-user collapse. Design rationale and the
+verification transition is not gated — it is served by the work-interval TDD
+loop (private feedback). The distribution gate is deferred under the v1
+single-user collapse. Design rationale and the
 issue-level breakdown live in the planning repo; this document is the public
 summary of the model.

@@ -48,7 +48,6 @@ is consent-gated per tier. Declining at any stage costs nothing.
    | any git repo | `agents-md` + `status-harness` (base — no judgment row) |
    | a git **remote** | `merge-gate` candidate (a remote ≠ review is *wanted*) |
    | a **build manifest** (`package.json`/`pyproject.toml`/`Cargo.toml`/`go.mod`) | the **CI** judgment row |
-   | a **test suite** (`tests/`\|`test/` or a `test_*.py`/`*_test.go`/… file) | the dormant **self-verification** opt-in row |
 
 3. **Interview — the irreducible judgments, one `AskUserQuestion` at a time.**
    `wanted ≠ applicable`: a detected signal only *surfaces* a row; the operator
@@ -59,12 +58,6 @@ is consent-gated per tier. Declining at any stage costs nothing.
      recorded as a judgment and reported "wanted / not-yet-measurable" — never a
      term in the coverage fraction (until #07 gives `ci-setup` a `--json` probe).
    - **Want merge review?** → decides whether `merge-gate` enters `scaffold`.
-   - **Opt into the dormant `self-verification` concern** (so phase-2 can track
-     it) **or leave it out?** → decides `self-verification` membership. This
-     records **intent only** — it never activates the parked gate (no installer
-     exists; activation stays #04's report-only refusal). Once recorded,
-     self-verification is reported "opted-in, parked", excluded from the coverage
-     denominator (never nagged).
 
    `agents-md` and `status-harness` are the base — no row, always in `scaffold`.
 
