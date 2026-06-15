@@ -73,10 +73,22 @@ def main():
     if not file_path or os.path.splitext(file_path)[1].lower() not in CODE_EXT:
         sys.exit(0)
 
-    # 1. Stop-hook marker — record that code changed this turn.
+    # 1. Stop-hook marker — record that code changed this turn, accumulating the
+    #    DISTINCT edited file paths (newline-separated). The Stop verifier
+    #    (tdd_verify.py) resolves the oracle for EVERY repo touched this turn from
+    #    these paths, keyed off the marker rather than the session cwd — the venue
+    #    fix (ADR-0023): cwd is the wrong repo under the plan-repo-session /
+    #    code-repo-edit workflow.
     try:
         MARKER_DIR.mkdir(parents=True, exist_ok=True)
-        (MARKER_DIR / f"marker-{session_id}").write_text(file_path)
+        mf = MARKER_DIR / f"marker-{session_id}"
+        try:
+            existing = mf.read_text().splitlines() if mf.exists() else []
+        except Exception:
+            existing = []
+        if file_path not in existing:
+            existing.append(file_path)
+            mf.write_text("\n".join(existing) + "\n")
     except Exception:
         pass  # never block a tool call over a marker write
 

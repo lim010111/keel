@@ -1,0 +1,24 @@
+# Per-reviewer model (and codex-only reasoning effort) for /third-party-review.
+#
+# OPTIONAL. A missing file — or a missing reviewer entry — falls back to the
+# defaults below, so the skill works with no config at all. Edit a value to
+# change which model that reviewer runs.
+#
+# The three CLIs are NOT symmetric (see DESIGN.md § 평가자):
+#   - codex  : model + reasoning effort are both real per-invocation flags.
+#   - agy    : effort is BAKED INTO the model label (the parenthetical); the
+#              installed print mode may ignore per-invocation --model and use
+#              ~/.gemini/antigravity-cli/settings.json instead. Best-effort,
+#              not enforced — no cross-check.
+#   - claude : model only; Claude has no reasoning-effort knob.
+
+[codex]
+model  = "gpt-5.5"
+effort = "xhigh"          # minimal | low | medium | high | xhigh
+
+[agy]
+# Full label EXACTLY as `agy models` prints it — effort is the parenthetical.
+model  = "Gemini 3.5 Flash (High)"
+
+[claude]
+model  = "opus"           # alias or full id; no effort knob

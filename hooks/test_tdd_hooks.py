@@ -239,7 +239,16 @@ class TestMarkHook(HookTest):
         r = self._mark("/repo/src/foo.py")
         self.assertEqual(r.returncode, 0)
         self.assertTrue(self.marker_file().exists())
-        self.assertEqual(self.marker_file().read_text(), "/repo/src/foo.py")
+        self.assertIn("/repo/src/foo.py", self.marker_file().read_text().splitlines())
+
+    def test_marker_accumulates_distinct_paths(self):
+        # The marker accumulates the DISTINCT edited paths this turn (deduped),
+        # so the Stop verifier can resolve every repo touched — not just the last.
+        self._mark("/repo/a.py")
+        self._mark("/repo/b.py")
+        self._mark("/repo/a.py")   # duplicate -> not re-added
+        self.assertEqual(self.marker_file().read_text().splitlines(),
+                         ["/repo/a.py", "/repo/b.py"])
 
     def test_ignores_non_code(self):
         r = self._mark("/repo/notes.md")
@@ -280,43 +289,101 @@ class TestVerifyHook(HookTest):
         self.assertEqual(r.returncode, 0)
 
     def test_loop_guard(self):
-        self.write_marker()
         d = self.project("exit 1")  # would fail if it ran
+        self.write_marker(str(d / "src.py"))
         r = self._verify(d, stop_hook_active=True)
         self.assertEqual(r.returncode, 0)
         self.assertTrue(self.marker_file().exists())  # not consumed
 
     def test_green_pass(self):
-        self.write_marker()
-        r = self._verify(self.project("exit 0"))
+        d = self.project("exit 0")
+        self.write_marker(str(d / "src.py"))
+        r = self._verify(self.tmpdir())  # cwd is irrelevant; the edited repo drives
         self.assertEqual(r.returncode, 0)
         self.assertFalse(self.marker_file().exists())  # consumed
 
     def test_red_block(self):
-        self.write_marker()
-        r = self._verify(self.project("echo FAILMARK; exit 1"))
+        d = self.project("echo FAILMARK; exit 1")
+        self.write_marker(str(d / "src.py"))
+        r = self._verify(self.tmpdir())
         self.assertEqual(r.returncode, 2)
         self.assertIn("Tests are NOT green", r.stderr)
         self.assertIn("FAILMARK", r.stderr)
 
     def test_pytest_exit5_nonblocking(self):
-        self.write_marker()
         # cmd string contains the token "pytest" -> exit 5 treated as no-op
-        r = self._verify(self.project("sh -c 'exit 5'  # pytest"))
+        d = self.project("sh -c 'exit 5'  # pytest")
+        self.write_marker(str(d / "src.py"))
+        r = self._verify(self.tmpdir())
         self.assertEqual(r.returncode, 0)
 
     def test_unknown_project(self):
-        self.write_marker()
-        r = self._verify(self.tmpdir())  # bare dir, no project markers
+        d = self.tmpdir()  # bare dir, no project markers
+        self.write_marker(str(d / "src.py"))
+        r = self._verify(self.tmpdir())
         self.assertEqual(r.returncode, 0)
+
+    def test_venue_resolves_edited_repo_not_session_cwd(self):
+        # ADR-0023 / ADR-0022 §8: the oracle runs against the repo whose files
+        # CHANGED this turn (per the marker), NOT the session cwd. Under the
+        # operator's plan-repo-session / code-repo-edit workflow these differ,
+        # and cwd resolves the wrong repo. Edited repo RED + session-cwd repo
+        # GREEN -> must BLOCK on the edited repo (not pass on cwd's green).
+        edited = self.project("echo EDITEDRED; exit 1")
+        cwd_repo = self.project("exit 0")
+        self.write_marker(str(edited / "src.py"))
+        r = self._verify(cwd_repo)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("EDITEDRED", r.stderr)
+
+    def test_multi_repo_runs_each_edited_oracle(self):
+        # Multiple repos edited in one turn -> the verifier runs EACH repo's
+        # oracle; a red in ANY blocks. repoA green, repoB red -> block on B.
+        a = self.project("exit 0")
+        b = self.project("echo BRED; exit 1")
+        MARKER_DIR.mkdir(parents=True, exist_ok=True)
+        self.marker_file().write_text(f"{a / 'a.py'}\n{b / 'b.py'}\n")
+        r = self._verify(self.tmpdir())
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("BRED", r.stderr)
+
+    def test_empty_marker_degrades_to_session_cwd(self):
+        # ADR-0023 back-compat: a present-but-empty/whitespace marker (no usable
+        # paths) degrades to the SESSION CWD's oracle, so the verifier is never
+        # silently disabled by a contentless marker.
+        MARKER_DIR.mkdir(parents=True, exist_ok=True)
+        self.marker_file().write_text("   \n\n")   # whitespace only -> no paths
+        d = self.project("echo CWDRAN; exit 1")
+        r = self._verify(d)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("CWDRAN", r.stderr)
+
+    def test_hanging_suite_times_out_as_nonblocking_skip(self):
+        # tdd_verify must never freeze the turn on a hung suite: a bounded
+        # per-suite timeout kills the process group and treats the timeout as a
+        # non-blocking infra skip (Stop-time private feedback, not a red verdict).
+        # The oracle here would BLOCK (exit 1) if it ran to completion; the
+        # timeout (shortened via TDD_ORACLE_TIMEOUT_SECONDS) must pre-empt it.
+        d = self.project("sleep 10; exit 1")
+        self.write_marker(str(d / "src.py"))
+        start = time.time()
+        r = subprocess.run(
+            ["python3", str(HOOKS / "tdd_verify.py")],
+            input=json.dumps({"session_id": self.sid, "cwd": str(self.tmpdir())}),
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, "TDD_ORACLE_TIMEOUT_SECONDS": "1"},
+        )
+        elapsed = time.time() - start
+        self.assertEqual(r.returncode, 0, r.stderr)   # infra skip, NOT a block
+        self.assertLess(elapsed, 6, "suite was not killed promptly — hung past the timeout")
 
     @unittest.skipUnless(shutil.which("npm"), "npm not installed")
     def test_npm_real_detection(self):
-        self.write_marker()
         d = self.tmpdir()
         (d / "package.json").write_text(json.dumps(
             {"name": "v", "version": "0.0.0", "scripts": {"test": "exit 0"}}))
-        r = self._verify(d)
+        self.write_marker(str(d / "index.js"))
+        r = self._verify(self.tmpdir())
         self.assertEqual(r.returncode, 0)
         self.assertFalse(self.marker_file().exists())
 
