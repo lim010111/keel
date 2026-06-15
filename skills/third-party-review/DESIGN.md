@@ -67,11 +67,17 @@ read-only 집행으로 더 낫게 한다.)
 
 **권한.** 평가자는 판사이지 작업자가 아니다 → read-only. 프로젝트 *읽기*는 허용
 (축 2 판단 + Read 본문을 축소로 버렸으므로 복구 경로). `--dangerously-*` 금지.
-codex는 `--sandbox read-only`로 쓰기가 강제 차단된다. claude도
-`--tools "Read Grep Glob"`로 쓰기 도구(Edit/Write/Bash) 자체가 없어 강제 차단된다
-— codex와 동급, agy보다 강하다(쓰기 탐지 불필요). agy는 read-only 강제 플래그가
-없다(검증함 — `--sandbox`로도 프로젝트에 씀). 그래서 agy의 read-only는
-evaluator-prompt 지시에만 의존하며, 보완책으로 agy 실행 전후 `git status`
+codex는 `--sandbox read-only`로 *모델이 생성하는 셸 명령*을 OS 레벨 샌드박스로 쓰기
+차단한다(codex --help: "model-generated shell commands"; codex 프로세스 자신의 로그
+쓰기는 별개지만 평가자가 프로젝트에 쓰는 경로가 OS로 막힌다). claude는
+`--tools "Read Grep Glob"`로 *모델의* 쓰기 도구(Edit/Write/Bash)를 없앤다 — 단 codex의
+프로세스 샌드박스와 달리 운영자 SessionStart/Stop 훅(셸 — 예: `status.py`의 STATUS.md
+재생성)은 못 막는다. 이 스킬은 세션 안에서 nested(child) 세션으로 돌아 그 훅이
+발화하지 않으므로(검증: 실행 전후 STATUS.md mtime 불변) 모델-도구 레벨 read-only가
+성립한다 — codex(프로세스 샌드박스)보다 약하고 agy보다 강하다. 그래서 `CLAUDE_CODE_*`
+세션 마커는 벗기지 않는다(fresh 세션이 되면 Stop 훅이 STATUS.md를 다시 쓴다). agy는
+read-only 강제 플래그가 없다(검증함 — `--sandbox`로도 프로젝트에 씀). 그래서 agy의
+read-only는 evaluator-prompt 지시에만 의존하며, 보완책으로 agy 실행 전후 `git status`
 스냅샷을 비교해 쓰기를 *탐지*한다(예방이 아니라 탐지).
 
 **입력/출력 경로.** 페르소나 프롬프트는 codex·agy·claude에 동일 투입(다른 건
@@ -80,6 +86,9 @@ evaluator-prompt 지시에만 의존하며, 보완책으로 agy 실행 전후 `g
 effort가 둘 다 진짜 per-invocation 플래그, agy는 effort가 모델 라벨에 박혀 있고
 per-invocation `--model`이 best-effort(설치 빌드의 print 모드가 무시할 수 있음 —
 교차검증 안 함), claude는 model만 있고 effort 노브가 없다.
+프롬프트는 argv 위치인자가 아니라 stdin으로 넣는다(세 CLI 모두 위치인자가 없으면
+stdin을 읽음 — 검증) — 큰 transcript(설계 상한 ≈120k 토큰)가 단일 argv 한도
+(`MAX_ARG_STRLEN`≈128KB, 초과 시 execve E2BIG)를 넘겨 죽지 않게.
 평가는 stdout으로 나오고 셸이 파일로 캡처 — 평가자는 write 권한 0이어도 된다.
 결과는 사람이 raw로 먼저 보고, main agent 반응은 *나중에 별도로* 덧붙는다
 (출력단에서도 평가 대상이 자기 성적표를 필터링하지 못하게).
