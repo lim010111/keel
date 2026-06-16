@@ -70,7 +70,7 @@ def find_session_jsonl(session=None, jsonl=None):
     if not session:
         session = os.environ.get("CLAUDE_CODE_SESSION_ID")
     projects = os.path.expanduser("~/.claude/projects")
-    enc = os.getcwd().replace("/", "-").replace(".", "-")
+    enc = re.sub(r"[^A-Za-z0-9]", "-", os.getcwd())  # CC maps every non-alnum char (incl _) to -
     proj_dir = os.path.join(projects, enc)
     candidates = glob.glob(os.path.join(proj_dir, "*.jsonl"))
     if not candidates:

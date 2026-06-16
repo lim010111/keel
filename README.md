@@ -40,7 +40,7 @@ transitions** an artifact crosses on its way to a wider audience, see
 
 | Kind | Items |
 |---|---|
-| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `consult-externals`, `daily-dev-log`, `daily-token-report`, `harden-issue`, `harness-doctor`, `run-codex-validators`, `session-dev-log`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
+| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `consult-externals`, `daily-dev-log`, `daily-token-report`, `handle-merge-findings`, `harden-issue`, `harness-doctor`, `run-codex-validators`, `session-dev-log`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
 | Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `narrative_guard`, `merge_gate_post_commit` · `merge_gate_scheduler` |
 | Scripts | `status.py`, `sound_complete.sh` · `sound_permission.sh` · `classify_sound.py`, `merge_gate_local.py` · `merge_gate_adjudicate.py` · `merge_gate_measure.py`, `harness_doctor.py`, `toml_sections.py` |
 | Agents | `ci-researcher`, `codex-review-validator` |
@@ -133,11 +133,18 @@ existed and was removed outright.)
   finding at a time and returns `uphold`/`dismiss`/`unsure` plus a strict
   citation rule: a `dismiss` without a quoted code/doc line auto-promotes
   to `unsure`.
+- `handle-merge-findings` — the consumer-side loop for the gate's **advisory**
+  findings. After a push it reads them (via `merge_gate_local.py findings`),
+  then runs one human-gated pass that **reproduces or refutes** each finding
+  with a runnable failing test before fixing only the proven ones — the
+  validator verdict is a hint, never a filter, and the gate itself is never
+  touched (the loop only reads).
 - `merge_gate_local.py` — the local-profile wrapper, run outside any Claude
   session by the `pre-push` hook. `produce` (expensive) runs the reviewer set
   + the Claude validator and writes a cached artefact; `verify` (fast) only
   reads that artefact's summary and exits 0 (pass) or 1 (block) — no Codex, no
-  Claude, no writes; `force` re-produces ignoring the cache.
+  Claude, no writes; `findings` reads the cached artefact back (read-only) for
+  the consumer loop; `force` re-produces ignoring the cache.
 - `merge_gate_post_commit.py` — the trigger behind the background `produce`:
   a git `post-commit` hook that, when the just-made commit touched in-scope
   files, launches a backgrounded, commit-pinned `produce` for the committed

@@ -2503,6 +2503,199 @@ def cmd_verify(args) -> int:
     return 1
 
 
+# --------------------------------------------------------------------------
+# Consumer-side findings read (#49, ADR-0027). The implementing session's read
+# step for the advisory reproduce-or-refute loop: surface each finding's REVIEWER
+# CONTENT joined with the gate's verdict + validator citation, waiting for an
+# in-flight produce. WRITES NOTHING (D1, instrument-around ADR-0009) — it only
+# re-reads the tuple artefacts the gate already produced. The validator verdict
+# travels as a HINT, never a filter (#31 measured it 100% over-blocking).
+# --------------------------------------------------------------------------
+def _reviewer_finding_content(tdir: Path) -> dict:
+    """Snapshot {namespaced_fid: {title, body, recommendation, confidence,
+    line_end}} from each reviewer's findings.json under tdir — the CONTENT a
+    human/agent judges, which summary.json (the verdict spine) and findings-log.md
+    (a thin index) both omit. Best-effort + behaviour-neutral: a missing dir,
+    missing file, or bad json contributes nothing and never raises."""
+    out: dict = {}
+    try:
+        subdirs = sorted(p for p in tdir.iterdir() if p.is_dir())
+    except Exception:
+        return out
+    for sub in subdirs:
+        try:
+            doc = json.loads((sub / "findings.json").read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for f in ((doc.get("result") or {}).get("findings") or []):
+            fid = f.get("id")
+            if isinstance(fid, str):
+                out[fid] = {"title": f.get("title"), "body": f.get("body"),
+                            "recommendation": f.get("recommendation"),
+                            "confidence": f.get("confidence"),
+                            "line_end": f.get("line_end")}
+    return out
+
+
+def _join_findings(summary: dict, tdir: Path) -> list[dict]:
+    """Join summary.json's per-finding eval (the verdict spine: severity,
+    validator_verdict, block, location, producing_reviewers) with each reviewer's
+    findings.json CONTENT (title/body/recommendation/confidence) and its validator
+    citation, keyed on the namespaced finding id. A finding whose content is
+    missing still appears (content fields None) — never silently dropped."""
+    content = _reviewer_finding_content(tdir)
+    citations = read_citations(tdir)
+    joined = []
+    for fe in (summary.get("findings") or []):
+        fid = fe.get("id")
+        c = content.get(fid, {})
+        joined.append({
+            "id": fid,
+            "reviewers": fe.get("producing_reviewers") or [],
+            "file": fe.get("file"),
+            "line_start": fe.get("line_start"),
+            "line_end": c.get("line_end"),
+            "severity": fe.get("severity"),
+            "validator_verdict": fe.get("validator_verdict"),  # HINT only (#31)
+            "block": fe.get("block"),
+            "reviewer_confidence": fe.get("reviewer_confidence"),
+            "concordance_count": fe.get("concordance_count"),
+            "title": c.get("title"),
+            "body": c.get("body"),
+            "recommendation": c.get("recommendation"),
+            "citation": citations.get(fid),
+        })
+    return joined
+
+
+def _emit_findings(args, payload: dict) -> int:
+    """Print the findings payload — JSON with --json, else a compact human form —
+    and return 0 (this is a read step, never a gate)."""
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    print(f"merge-gate findings — {payload['state']}"
+          f" · verdict={payload['verdict']}"
+          f" · block_count={payload['block_count']}")
+    if payload["waited_seconds"] is not None:
+        print(f"  (waited {payload['waited_seconds']}s for in-flight produce)")
+    findings = payload["findings"]
+    if not findings:
+        print("  (no findings)")
+        return 0
+    print("  validator verdict is a HINT only (#31) — judge content as-is.")
+    for f in findings:
+        revs = "+".join(f["reviewers"]) or "?"
+        flag = " ✓block" if f["block"] else ""
+        print(f"\n- [{revs}] {f['severity']} · validator={f['validator_verdict']}"
+              f" · {f['file']}:{f['line_start']}{flag}")
+        if f.get("title"):
+            print(f"  {f['title']}")
+        if f.get("body"):
+            print(f"  {f['body']}")
+        if f.get("recommendation"):
+            print(f"  ↳ recommendation: {f['recommendation']}")
+        if f.get("citation"):
+            print(f"  ↳ validator citation: {f['citation']}")
+    return 0
+
+
+def cmd_findings(args) -> int:
+    """Read-only (#49, ADR-0027) — surface the pushed tip's advisory findings for
+    the consumer-side reproduce-or-refute loop. Resolves the artefact exactly as
+    `verify` does (remote base, then the in-flight pending tuple via
+    `_await_pending_artefact`, keyed on the pushed tip), then joins each finding's
+    reviewer CONTENT with the gate's verdict + validator citation. WRITES NOTHING
+    (D1). Always exits 0 — this is not a gate; the validator verdict is a HINT,
+    never a filter (#31)."""
+    cwd = Path(args.cwd or os.getcwd())
+    payload = {
+        "state": None, "base_sha": None, "diff_hash": None, "tip_sha": None,
+        "head_sha": None, "verdict": None, "block_count": None,
+        "produced_at_iso": None, "waited_seconds": None, "pending_tip": None,
+        "validator_verdict_note": "hint only — measured unreliable (#31); "
+                                  "never an include/exclude filter",
+        "findings": [],
+    }
+    root = repo_root(cwd)
+    if root is None:
+        payload["state"] = "not-a-repo"
+        return _emit_findings(args, payload)
+    cfg = load_config(root)
+    base = resolve_base_sha(root, args.base_ref or cfg.base_ref, args.base_sha)
+    # Resolve the tip to a canonical sha (NOT the literal ref): the documented
+    # invocation is `--tip-sha HEAD`, and the pending-tuple match
+    # (_pending_artefact) keys on the post-commit hook's resolved sha — an
+    # unresolved "HEAD" would fail that exact-match and silently skip the wait.
+    tip = rev_parse(root, args.tip_sha or "HEAD")
+    payload["tip_sha"] = tip
+    if base is None or tip is None:
+        payload["state"] = "no-base" if base is None else "no-tip"
+        return _emit_findings(args, payload)
+    cd = canonical_diff_at_commit(root, base, tip, cfg.review_globs, cfg.ignore_globs)
+    if cd.get("diff_error"):
+        payload["state"] = "unreviewable"
+        return _emit_findings(args, payload)
+    if not cd["changed_files"]:
+        payload["state"] = "no-changes"
+        return _emit_findings(args, payload)
+    scope = review_scope_hash(cfg)
+    current_tools = None
+    if cfg.freshness_policy == "tool-strict":
+        current_tools = {
+            "codex_version": _codex_version(cfg),
+            "codex_model": _configured_reviewer_model(cfg, "codex"),
+            "claude_version": _claude_version(),
+            "validator_agent_version": VALIDATOR_CONTRACT_VERSION,
+        }
+    r_base, r_dh = base, cd["diff_hash"]
+    summary = load_summary(tuple_dir(root / cfg.artifact_root, r_base, r_dh))
+    if summary is None:
+        # No artefact at the remote base — consult the in-flight produce (G2/G3),
+        # waiting (bounded by MERGE_GATE_VERIFY_WAIT_SECONDS) for the pushed tip.
+        # Time the wait locally so a matched-but-timed-out produce can report the
+        # ACTUAL elapsed wait (the helper returns a bare None for that case).
+        t0 = time.monotonic()
+        hit = _await_pending_artefact(root, cfg, scope, tip, current_tools,
+                                      remote_base=base)
+        if hit is not None:
+            summary = hit["summary"]
+            r_base, r_dh = hit["base"], hit["diff_hash"]
+            if hit["did_wait"]:
+                payload["waited_seconds"] = hit["waited"]
+        else:
+            # The shared _await collapses three situations to None — unmatched
+            # tuple, dead producer, or an in-flight produce past the wait budget.
+            # Re-probe read-only to tell them apart (#49 pass-2).
+            probe = _pending_artefact(root, cfg, tip, base)
+            if probe is not None:
+                summary2, base2, dh2, pending = probe
+                if summary2 is not None:
+                    # F-A: the producer finished between the wait-timeout and this
+                    # re-probe — load the just-arrived artefact, do not drop it.
+                    summary, r_base, r_dh = summary2, base2, dh2
+                elif pid_alive(pending.get("pid")):
+                    # F-B: only a still-ALIVE producer past the budget is genuinely
+                    # in flight; a dead producer falls through to `missing`.
+                    payload["base_sha"], payload["diff_hash"] = base2, dh2  # F-C
+                    payload["state"] = "pending-timeout"
+                    payload["waited_seconds"] = int(round(time.monotonic() - t0))
+                    payload["pending_tip"] = tip
+                    return _emit_findings(args, payload)
+    payload["base_sha"], payload["diff_hash"] = r_base, r_dh
+    if summary is None:
+        payload["state"] = "missing"
+        return _emit_findings(args, payload)
+    payload["state"] = freshness_state(summary, scope, cfg.freshness_policy, current_tools)
+    payload["verdict"] = summary.get("verdict")
+    payload["block_count"] = summary.get("block_count")
+    payload["head_sha"] = summary.get("head_sha")
+    payload["produced_at_iso"] = summary.get("produced_at_iso")
+    payload["findings"] = _join_findings(
+        summary, tuple_dir(root / cfg.artifact_root, r_base, r_dh))
+    return _emit_findings(args, payload)
+
+
 def _build_intent_file(root: Path, cfg: Config, base: str, tip: str | None,
                        args) -> Path | None:
     """Durable validator context (D11): published-range commit messages + branch
@@ -2685,6 +2878,17 @@ def main(argv=None) -> int:
     pp.add_argument("--intent-from", default=None, help="file with operator intent")
     pp.add_argument("--force", action="store_true", help="ignore cache and re-produce")
     pp.set_defaults(func=cmd_produce)
+
+    pfd = sub.add_parser("findings",
+                         help="read-only — surface the pushed tip's advisory findings "
+                              "(reviewer content + verdict + citation) for the "
+                              "consumer-side reproduce-or-refute loop (#49); waits for "
+                              "an in-flight produce; writes nothing")
+    pfd.add_argument("--base-sha", default=None, help="explicit base sha (default: resolved base_ref)")
+    pfd.add_argument("--tip-sha", default=None, help="pushed tip commit (default: HEAD)")
+    pfd.add_argument("--base-ref", default=None, help="override base_ref")
+    pfd.add_argument("--json", action="store_true", help="emit JSON instead of the text form")
+    pfd.set_defaults(func=cmd_findings)
 
     pf = sub.add_parser("force", help="alias for `produce --force`")
     pf.add_argument("--base-ref", default=None)

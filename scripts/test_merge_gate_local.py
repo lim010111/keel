@@ -3964,5 +3964,357 @@ class Test48ReasoningEffortKeys(Test47PerComponentModelKeys):
             self._cfg(validator={"model": "fable"})))
 
 
+# --------------------------------------------------------------------------
+# Consumer-side findings read interface (#49, ADR-0027). The read step surfaces
+# each finding's REVIEWER CONTENT (title/body/recommendation/confidence) joined
+# with summary.json verdicts + validator citation, waiting for an in-flight
+# produce. D1-clean: it writes nothing.
+# --------------------------------------------------------------------------
+def fake_validator_with_citation(name, findings_json, sub_dir, cwd, intent_file, cfg=None):
+    """Like uphold_all, but emits a citation line per finding so read_citations
+    has something to join (the `[SEV] verdict id=<fid> file:line — citation`
+    grammar)."""
+    doc = json.loads(Path(findings_json).read_text())
+    agg, lines = [], []
+    for f in doc["result"]["findings"]:
+        sev = (f.get("severity") or "low").lower()
+        agg.append({"finding_id": f["id"], "severity": sev,
+                    "verdict": "uphold", "block": sev in ("critical", "high")})
+        lines.append(f"[{sev}] uphold id={f['id']} {f.get('file')}:"
+                     f"{f.get('line_start')} — contradicts ADR-0009")
+    vj = {"validators": [{"name": "claude", "lines": lines}], "aggregate": agg}
+    Path(sub_dir, "validators.json").write_text(json.dumps(vj))
+    Path(sub_dir, "validators.md").write_text("# validator\n")
+    return vj
+
+
+def _findings_ns(root, *, base_sha=None, tip_sha=None, base_ref=None, as_json=False):
+    ns = type("NS", (), {})()
+    ns.cwd = str(root)
+    ns.base_sha = base_sha
+    ns.tip_sha = tip_sha
+    ns.base_ref = base_ref
+    ns.json = as_json
+    return ns
+
+
+def _tree_snapshot(root: Path) -> dict:
+    """{relpath: bytes} of every file under root — a byte-for-byte D1 witness."""
+    out = {}
+    if not root.exists():
+        return out
+    for p in sorted(root.rglob("*")):
+        if p.is_file():
+            out[str(p.relative_to(root))] = p.read_bytes()
+    return out
+
+
+class TestFindingsReadInterface(ProduceFixture):
+    def setUp(self):
+        super().setUp()
+        self.cfg = self._cfg()
+        self.ar = self.root / self.cfg.artifact_root
+
+    def _produce_committed(self, findings, validator=fake_validator_uphold_all):
+        # Commit the in-scope change as the pushed tip, then produce pinned to it
+        # so the artefact (summary + per-reviewer findings.json) lands at the
+        # committed tip's (base, diff_hash) — what `findings --tip-sha T` resolves.
+        self.repo.write("a.py", "x = 2\n")
+        tip = self.repo.commit_all("pushed tip")
+        base = self.base
+        cd = mg.canonical_diff_at_commit(self.root, base, tip, RG, IG)
+        mg.produce(self.root, self.cfg, base, cd,
+                   reviewer_runner=make_fake_reviewer({"codex": findings}),
+                   validator_runner=validator)
+        return base, tip, cd["diff_hash"]
+
+    def _findings(self, *, base, tip, as_json=True):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = mg.cmd_findings(_findings_ns(self.root, base_sha=base,
+                                              tip_sha=tip, as_json=as_json))
+        return rc, buf.getvalue()
+
+    def test_surfaces_reviewer_content_joined_with_verdict(self):
+        base, tip, dh = self._produce_committed(
+            [_finding("high")], validator=fake_validator_with_citation)
+        rc, out = self._findings(base=base, tip=tip)
+        self.assertEqual(rc, 0)
+        payload = json.loads(out)
+        self.assertEqual(len(payload["findings"]), 1)
+        f = payload["findings"][0]
+        # CONTENT from the per-reviewer findings.json (the real work — #49)
+        self.assertEqual(f["title"], "high issue")
+        self.assertEqual(f["body"], "b")
+        self.assertEqual(f["recommendation"], "r")
+        self.assertEqual(f["reviewer_confidence"], 0.8)
+        # VERDICT spine from summary.json
+        self.assertEqual(f["severity"], "high")
+        self.assertEqual(f["validator_verdict"], "uphold")
+        self.assertTrue(f["block"])
+        self.assertEqual(f["reviewers"], ["codex"])
+        # citation joined from validators.json
+        self.assertEqual(f["citation"], "contradicts ADR-0009")
+        # top-level: the hint-not-filter contract is self-documenting in output
+        self.assertIn("hint", payload["validator_verdict_note"].lower())
+
+    def test_writes_nothing_d1(self):
+        base, tip, dh = self._produce_committed([_finding("high")])
+        before = _tree_snapshot(self.ar)
+        self._findings(base=base, tip=tip)
+        self.assertEqual(_tree_snapshot(self.ar), before)  # byte-identical tree
+
+    def test_validator_dismiss_finding_still_surfaced(self):
+        # No severity/verdict filter: a DISMISSED finding is still surfaced — the
+        # verdict is a hint, never a filter (#31). Main judges content as-is.
+        base, tip, dh = self._produce_committed(
+            [_finding("high")], validator=fake_validator_dismiss_all)
+        rc, out = self._findings(base=base, tip=tip)
+        payload = json.loads(out)
+        self.assertEqual(len(payload["findings"]), 1)
+        self.assertEqual(payload["findings"][0]["validator_verdict"], "dismiss")
+        self.assertFalse(payload["findings"][0]["block"])
+
+    def test_missing_artefact_empty_findings_exit0(self):
+        # No artefact, no pending → state missing, empty findings, exit 0 (inert).
+        self.repo.write("a.py", "x = 9\n")
+        tip = self.repo.commit_all("tip with no review")
+        base = self.base
+        rc, out = self._findings(base=base, tip=tip)
+        self.assertEqual(rc, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["state"], "missing")
+        self.assertEqual(payload["findings"], [])
+
+    def test_no_inscope_changes_is_inert(self):
+        # tip identical to base (no in-scope diff) → no-changes, empty, exit 0.
+        base = self.base
+        rc, out = self._findings(base=base, tip=base)
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out)["state"], "no-changes")
+
+    def test_text_form_renders_content(self):
+        base, tip, dh = self._produce_committed(
+            [_finding("high")], validator=fake_validator_with_citation)
+        rc, out = self._findings(base=base, tip=tip, as_json=False)
+        self.assertEqual(rc, 0)
+        self.assertIn("high issue", out)          # title
+        self.assertIn("contradicts ADR-0009", out)  # citation
+        self.assertIn("HINT", out)                 # hint-not-filter framing
+
+    def _run_inflight_wait(self, tip_arg):
+        # Pending live producer, artefact not yet written: findings must WAIT
+        # (reusing _await_pending_artefact) and surface content once it appears.
+        # tip_arg=None passes the resolved tip sha; tip_arg="HEAD" the literal ref.
+        self.repo.write("a.py", "x = 7\n")
+        tip = self.repo.commit_all("pushed tip")
+        cd = mg.canonical_diff_at_commit(self.root, self.base, tip, RG, IG)
+        keys = {"MERGE_GATE_VERIFY_WAIT_POLL_SECONDS": "0.05",
+                "MERGE_GATE_VERIFY_WAIT_HEARTBEAT_SECONDS": "0.1",
+                "MERGE_GATE_VERIFY_WAIT_SECONDS": "30"}
+        saved = {k: os.environ.get(k) for k in keys}
+        os.environ.update(keys)
+
+        def _restore():
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(_restore)
+        mg.write_pending(self.ar, {"base_sha": self.base, "diff_hash": cd["diff_hash"],
+                                   "tip_sha": tip, "pid": os.getpid()})
+
+        def writer():
+            time.sleep(0.4)
+            mg.produce(self.root, self.cfg, self.base, cd,
+                       reviewer_runner=make_fake_reviewer({"codex": [_finding("high")]}),
+                       validator_runner=fake_validator_uphold_all)
+        th = threading.Thread(target=writer)
+        th.start()
+        self.addCleanup(th.join)
+        rc, out = self._findings(base=self.base, tip=(tip if tip_arg is None else tip_arg))
+        return rc, json.loads(out)
+
+    def test_waits_for_inflight_produce(self):
+        rc, payload = self._run_inflight_wait(tip_arg=None)  # resolved tip sha
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(payload["findings"]), 1)
+        self.assertIsNotNone(payload.get("waited_seconds"))
+
+    def test_waits_for_inflight_produce_literal_head(self):
+        # Regression (codex f430a71 high, reproduced+confirmed): the documented
+        # invocation passes the LITERAL "HEAD". cmd_findings must RESOLVE it before
+        # the pending-tuple match (the post-commit hook keys on a real sha), else
+        # the wait silently no-ops and reports `missing` while a produce is in
+        # flight — defeating the read step's whole purpose right after a push.
+        rc, payload = self._run_inflight_wait(tip_arg="HEAD")
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(payload["findings"]), 1)
+        self.assertIsNotNone(payload.get("waited_seconds"))
+
+    def test_inflight_wait_timeout_is_distinct_from_missing(self):
+        # Regression (finding #0): a pending tuple that MATCHES the pushed tip but
+        # whose producer never writes the terminal artefact before the wait budget
+        # elapses must NOT collapse to the same `missing` as a genuine no-review —
+        # the consumer skill would treat an in-flight (possibly blocking) review as
+        # "nothing to handle". A matched-but-timed-out produce yields a DISTINCT
+        # `pending-timeout` state, the actual elapsed wait, and the pending tip.
+        self.repo.write("a.py", "x = 7\n")
+        tip = self.repo.commit_all("pushed tip")
+        cd = mg.canonical_diff_at_commit(self.root, self.base, tip, RG, IG)
+        keys = {"MERGE_GATE_VERIFY_WAIT_POLL_SECONDS": "0.05",
+                "MERGE_GATE_VERIFY_WAIT_HEARTBEAT_SECONDS": "100",
+                "MERGE_GATE_VERIFY_WAIT_SECONDS": "1"}  # short budget — never written
+        saved = {k: os.environ.get(k) for k in keys}
+        os.environ.update(keys)
+
+        def _restore():
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(_restore)
+
+        # Live producer (this pid), tuple matches the committed tip, artefact never
+        # appears → the bounded wait elapses with the producer still "alive".
+        mg.write_pending(self.ar, {"base_sha": self.base, "diff_hash": cd["diff_hash"],
+                                   "tip_sha": tip, "pid": os.getpid()})
+        rc_a, out_a = self._findings(base=self.base, tip=tip)
+        pay_a = json.loads(out_a)
+        self.assertEqual(rc_a, 0)
+        self.assertEqual(pay_a["state"], "pending-timeout")  # NOT "missing"
+        self.assertIsNotNone(pay_a["waited_seconds"])
+        self.assertEqual(pay_a["pending_tip"], tip)
+        self.assertEqual(pay_a["findings"], [])
+        # The pending-timeout payload carries the producer's tuple coordinates
+        # (the re-probe holds them) — never null (F-C, #49 pass-2).
+        self.assertEqual(pay_a["base_sha"], self.base)
+        self.assertEqual(pay_a["diff_hash"], cd["diff_hash"])
+
+        # Genuine no-review (no pending tuple at all) still resolves to `missing` —
+        # the two are now distinguishable.
+        mg.pending_path(self.ar).unlink(missing_ok=True)
+        rc_b, out_b = self._findings(base=self.base, tip=tip)
+        pay_b = json.loads(out_b)
+        self.assertEqual(rc_b, 0)
+        self.assertEqual(pay_b["state"], "missing")
+        self.assertIsNone(pay_b["waited_seconds"])
+
+    def test_reprobe_loads_artefact_completed_in_toctou_window(self):
+        # Regression (#49 pass-2, F-A): the producer's terminal artefact can become
+        # visible in the window BETWEEN the wait timing out and the re-probe. The
+        # re-probe must LOAD that just-arrived artefact (drive freshness/verdict),
+        # not discard it to `missing`. We force the remote-base read to miss and the
+        # wait to return None, while the re-probe's _pending_artefact sees the
+        # COMPLETE artefact.
+        self.repo.write("a.py", "x = 2\n")
+        tip = self.repo.commit_all("pushed tip")
+        base = self.base
+        cd = mg.canonical_diff_at_commit(self.root, base, tip, RG, IG)
+        mg.produce(self.root, self.cfg, base, cd,
+                   reviewer_runner=make_fake_reviewer({"codex": [_finding("high")]}),
+                   validator_runner=fake_validator_uphold_all)
+
+        # First load_summary (the remote-base read) misses; subsequent loads — the
+        # re-probe's internal load — behave normally and find the artefact.
+        real_load = mg.load_summary
+        calls = {"n": 0}
+
+        def flaky_load(tdir):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return None
+            return real_load(tdir)
+        mg.load_summary = flaky_load
+        self.addCleanup(lambda: setattr(mg, "load_summary", real_load))
+
+        # The wait "times out" (artefact not yet visible to the waiter)...
+        real_await = mg._await_pending_artefact
+        mg._await_pending_artefact = lambda *a, **k: None
+        self.addCleanup(lambda: setattr(mg, "_await_pending_artefact", real_await))
+
+        # ...but the re-probe sees the COMPLETE artefact via a matching pending tuple.
+        mg.write_pending(self.ar, {"base_sha": base, "diff_hash": cd["diff_hash"],
+                                   "tip_sha": tip, "pid": os.getpid()})
+
+        rc, out = self._findings(base=base, tip=tip)
+        self.assertEqual(rc, 0)
+        payload = json.loads(out)
+        # LOADED, not dropped: a non-'missing' state and a populated verdict, with
+        # the artefact's findings joined through.
+        self.assertNotEqual(payload["state"], "missing")
+        self.assertIsNotNone(payload["verdict"])
+        self.assertEqual(len(payload["findings"]), 1)
+        self.assertEqual(payload["base_sha"], base)
+        self.assertEqual(payload["diff_hash"], cd["diff_hash"])
+
+    def test_dead_producer_is_missing_not_pending_timeout(self):
+        # Regression (#49 pass-2, F-B): a DEAD producer that left a matching tuple
+        # but no artefact must fall through to `missing`, NOT `pending-timeout` —
+        # the consumer skill reads `pending-timeout` as "a review is still running".
+        self.repo.write("a.py", "x = 7\n")
+        tip = self.repo.commit_all("pushed tip")
+        cd = mg.canonical_diff_at_commit(self.root, self.base, tip, RG, IG)
+        keys = {"MERGE_GATE_VERIFY_WAIT_POLL_SECONDS": "0.05",
+                "MERGE_GATE_VERIFY_WAIT_HEARTBEAT_SECONDS": "100",
+                "MERGE_GATE_VERIFY_WAIT_SECONDS": "1"}
+        saved = {k: os.environ.get(k) for k in keys}
+        os.environ.update(keys)
+
+        def _restore():
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(_restore)
+
+        mg.write_pending(self.ar, {"base_sha": self.base, "diff_hash": cd["diff_hash"],
+                                   "tip_sha": tip, "pid": os.getpid()})
+        # Force the producer to read as DEAD for the duration of this test.
+        real_pid_alive = mg.pid_alive
+        mg.pid_alive = lambda pid: False
+        self.addCleanup(lambda: setattr(mg, "pid_alive", real_pid_alive))
+
+        rc, out = self._findings(base=self.base, tip=tip)
+        self.assertEqual(rc, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["state"], "missing")  # NOT "pending-timeout"
+
+    def test_pending_timeout_payload_carries_base_and_diff(self):
+        # Regression (#49 pass-2, F-C): the pending-timeout early-return must carry
+        # the producer's base_sha AND diff_hash from the probe tuple — neither null.
+        self.repo.write("a.py", "x = 7\n")
+        tip = self.repo.commit_all("pushed tip")
+        cd = mg.canonical_diff_at_commit(self.root, self.base, tip, RG, IG)
+        keys = {"MERGE_GATE_VERIFY_WAIT_POLL_SECONDS": "0.05",
+                "MERGE_GATE_VERIFY_WAIT_HEARTBEAT_SECONDS": "100",
+                "MERGE_GATE_VERIFY_WAIT_SECONDS": "1"}
+        saved = {k: os.environ.get(k) for k in keys}
+        os.environ.update(keys)
+
+        def _restore():
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(_restore)
+
+        # Live producer (this pid), tuple matches, artefact never appears.
+        mg.write_pending(self.ar, {"base_sha": self.base, "diff_hash": cd["diff_hash"],
+                                   "tip_sha": tip, "pid": os.getpid()})
+        rc, out = self._findings(base=self.base, tip=tip)
+        self.assertEqual(rc, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["state"], "pending-timeout")
+        self.assertIsNotNone(payload["base_sha"])
+        self.assertIsNotNone(payload["diff_hash"])
+        self.assertEqual(payload["base_sha"], self.base)
+        self.assertEqual(payload["diff_hash"], cd["diff_hash"])
+
+
 if __name__ == "__main__":
     unittest.main()

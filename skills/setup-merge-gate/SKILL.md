@@ -103,6 +103,28 @@ Tell the user:
 - Audited bypass under blocking: add a `Merge-Gate-Bypass: <reason>` trailer to
   the tip commit. Unaudited escape hatch: `git push --no-verify`.
 
+**5 — Wire the findings-handling protocol anchor (the M1 trigger; #49/ADR-0027).**
+The gate's findings are advisory, so the implementing session handles them with the
+consumer-side reproduce-or-refute loop (`/handle-merge-findings`). That loop is
+triggered by an **operating-protocol anchor in the repo's agent guidance** — *not*
+an async hook (Stop/PostToolUse hooks no-op under a two-repo workflow). Resolve the
+target file once: **`AGENTS.md`** if it exists, else **`CLAUDE.md`** (else suggest
+`/setup-agents-md` first). The anchor is **idempotent** (skip if an equivalent line
+is already present) and added **after the user's go-ahead**; append it near the
+process / workflow section, matching the file's language and tone, e.g.:
+
+> **머지 게이트 in-scope 변경을 푸시한 뒤에는 findings 한 패스를 돌릴 것** —
+> `/handle-merge-findings` (consumer-side reproduce-or-refute 루프, ADR-0027): 어드바이저리
+> findings 를 재현해 증명되면 고치고 하나로 묶어 푸시한 뒤 핸드오프. pass 2 이후는 사람이 게이트한다.
+
+(English: "**After pushing in-scope changes, run one findings pass** —
+`/handle-merge-findings` (the consumer-side reproduce-or-refute loop, ADR-0027):
+reproduce advisory findings, fix only the proven ones, batch into one push, then
+hand off. The human gates pass 2+.") This is the only guidance edit this skill
+makes; do **not** author other guidance content. It is an **additive** line —
+re-running `install_local.py` is **not** how it is wired (that would rewrite the
+pre-push hook; see #40/#41).
+
 ### Uninstall
 
 Run the helper's uninstall path — it removes our `pre-push` and `post-commit`
