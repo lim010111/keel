@@ -45,18 +45,41 @@ def read_input():
 
 
 def find_up(start, names):
-    """Walk up from `start` to find the first dir containing any of `names`.
+    """Walk up from `start` to find the first dir containing any of `names`,
+    bounded to the edited file's own repo.
 
-    Returns (directory, matched_name) or (None, None). Stops at the
-    filesystem root and does not ascend above the user's home directory.
+    At each level the marker is checked FIRST, then the ascent stops at — and
+    including — the first directory containing `.git`, so resolution never
+    crosses up into an ancestor repo (a monorepo / submodule / $HOME-level
+    project; work-interval-tdd#01, ADR-0023). `.git` may be a *file* (git
+    worktrees and submodules), so the boundary test is `.exists()`, not
+    `.is_dir()`. The marker check runs BEFORE the `.git` stop so a marker
+    co-located with `.git` at a repo root still resolves (reordering would break
+    the common single-repo case). This `.git` stop also ends cross-repo override
+    *inheritance*: a nested repo no longer resolves an override-bearing parent's
+    `.claude/tdd-test-cmd` — that is the intended boundary, not just the $HOME
+    trade-off below.
+
+    For a path under no git repo the outer fallback is the filesystem root, but
+    $HOME is an *exclusive* ceiling: the universal ancestor of every path is
+    never treated as a project, so a marker (or repo) rooted exactly at $HOME is
+    not resolved — an edit directly at $HOME forgoes even a co-located override.
+    `home` is resolved to match `cur`, so the ceiling holds on hosts where $HOME
+    traverses a symlink.
+
+    Returns (directory, matched_name) or (None, None).
     """
-    home = Path.home()
+    home = Path.home().resolve()
     cur = Path(start).resolve()
     while True:
-        for name in names:
+        if cur == home:               # $HOME is an EXCLUSIVE ceiling
+            return None, None
+        for name in names:            # marker checked BEFORE the .git stop
             if (cur / name).exists():
                 return cur, name
-        if cur == cur.parent or cur == home:
+        if (cur / ".git").exists():   # stop at (inclusive) first repo boundary; .git may be a FILE
+            return None, None
+        if cur == cur.parent:         # outer fallback: filesystem root
             return None, None
         cur = cur.parent
 

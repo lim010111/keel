@@ -12,15 +12,23 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 HOOKS = Path(__file__).resolve().parent
 STATE_DIR = Path.home() / ".claude" / "hooks" / ".tdd-state"
 MARKER_DIR = Path.home() / ".claude" / "hooks" / ".tdd-markers"
+
+# The hook under test. find_up / detect_test_command are pure resolution
+# functions (no stdin/exit-code semantics), so the bounding logic is unit-tested
+# by importing them directly rather than through the subprocess wrapper.
+sys.path.insert(0, str(HOOKS))
+import tdd_verify  # noqa: E402
 
 
 def run_hook(script, payload, cwd=None):
@@ -109,6 +117,19 @@ class HookTest(unittest.TestCase):
         cdir.mkdir()
         (cdir / "tdd-test-cmd").write_text(test_cmd + "\n")
         return d
+
+    def inner_repo(self, parent, name="inner", git="dir"):
+        """A child dir of `parent` that is its OWN repo (carries `.git`) with no
+        oracle marker — the inner-repo `R` of work-interval-tdd#01. `git="dir"`
+        makes `.git` a directory; `git="file"` makes it a regular file (the
+        worktree / submodule shape)."""
+        r = parent / name
+        r.mkdir(parents=True)
+        if git == "file":
+            (r / ".git").write_text("gitdir: /elsewhere/worktree\n")
+        else:
+            (r / ".git").mkdir()
+        return r
 
 
 # --------------------------------------------------------------------------
@@ -358,6 +379,34 @@ class TestVerifyHook(HookTest):
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn("CWDRAN", r.stderr)
 
+    def test_ancestor_override_not_resolved_across_repo_boundary(self):
+        # work-interval-tdd#01 A2: the priority-1 `.claude/tdd-test-cmd` override
+        # of an ANCESTOR repo must NOT be resolved for an edit inside an inner
+        # repo R that has its own `.git` and no marker. A trusted, arbitrary
+        # command pulled from an unrelated parent is the worst escape — resolution
+        # is bounded to R's own repo boundary, so nothing runs.
+        ancestor = self.project("echo ANCESTOR; exit 1")
+        r = self.inner_repo(ancestor)              # R/.git dir, no marker
+        self.write_marker(str(r / "src.py"))
+        res = self._verify(self.tmpdir())
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertNotIn("ANCESTOR", res.stderr)
+
+    def test_degrade_to_cwd_is_bounded_at_cwd_git(self):
+        # work-interval-tdd#01 A6: a present-but-empty marker degrades to the
+        # session cwd (ADR-0023), and THAT cwd resolution is itself bounded at
+        # cwd's own `.git`. cwd = inner repo R (own .git, no marker) under an
+        # ancestor override -> the ancestor's command must NOT be pulled in via
+        # the degrade path. (Distinct from test_empty_marker_degrades_to_session_cwd,
+        # which only proves the degrade fires; this proves it stays bounded.)
+        ancestor = self.project("echo ANCESTOR; exit 1")
+        r = self.inner_repo(ancestor)              # R/.git dir, no marker
+        MARKER_DIR.mkdir(parents=True, exist_ok=True)
+        self.marker_file().write_text("   \n\n")   # empty -> degrade to cwd
+        res = self._verify(r)                      # cwd = inner repo R
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertNotIn("ANCESTOR", res.stderr)
+
     def test_hanging_suite_times_out_as_nonblocking_skip(self):
         # tdd_verify must never freeze the turn on a hung suite: a bounded
         # per-suite timeout kills the process group and treats the timeout as a
@@ -386,6 +435,80 @@ class TestVerifyHook(HookTest):
         r = self._verify(self.tmpdir())
         self.assertEqual(r.returncode, 0)
         self.assertFalse(self.marker_file().exists())
+
+
+# --------------------------------------------------------------------------
+# tdd_verify.find_up  (resolution bounding — work-interval-tdd#01)
+# --------------------------------------------------------------------------
+class TestFindUpBounding(HookTest):
+    """find_up resolves an oracle only within the edited file's OWN repo —
+    never an ancestor's. Unit-tests the bounded ascent directly."""
+
+    def test_inner_repo_does_not_resolve_ancestor_marker(self):
+        # A1: an edited file in inner repo R (own .git, no marker) resolves NO
+        # suite — never the conventional marker living in the ancestor above R.
+        ancestor = self.tmpdir()
+        (ancestor / "pyproject.toml").write_text("")
+        r = self.inner_repo(ancestor)          # R/.git dir, no marker
+        src = r / "pkg"
+        src.mkdir()
+        d, name = tdd_verify.find_up(str(src), ["pyproject.toml", "package.json"])
+        self.assertIsNone(d)
+        self.assertIsNone(name)
+
+    def test_git_file_bounds_worktree(self):
+        # A4: git worktrees / submodules use a `.git` *file*, not a dir, so the
+        # boundary check is `.exists()` not `.is_dir()` — a worktree edit is
+        # bounded to its own worktree and never resolves the ancestor's marker.
+        ancestor = self.tmpdir()
+        (ancestor / "pyproject.toml").write_text("")
+        r = self.inner_repo(ancestor, git="file")   # R/.git is a FILE
+        src = r / "pkg"
+        src.mkdir()
+        d, _ = tdd_verify.find_up(str(src), ["pyproject.toml"])
+        self.assertIsNone(d)
+
+    def test_marker_colocated_with_git_root_still_resolves(self):
+        # A5 (regression): a marker co-located with `.git` at the repo root — the
+        # common single-repo case — still resolves, because the marker is checked
+        # BEFORE the `.git` stop at each level. Stop-before-check would break it.
+        root = self.tmpdir()
+        (root / ".git").mkdir()
+        (root / "pyproject.toml").write_text("")
+        src = root / "pkg"
+        src.mkdir()
+        d, name = tdd_verify.find_up(str(src), ["pyproject.toml"])
+        self.assertEqual(d, root.resolve())
+        self.assertEqual(name, "pyproject.toml")
+
+    def test_non_git_project_resolves_via_ascent(self):
+        # A3: the pre-existing fs-root cap is retained as the OUTER fallback — a
+        # plain project under no git repo still resolves its marker by ascending.
+        proj = self.tmpdir()
+        (proj / "pyproject.toml").write_text("")
+        sub = proj / "a" / "b"
+        sub.mkdir(parents=True)                 # no .git anywhere in the tree
+        d, name = tdd_verify.find_up(str(sub), ["pyproject.toml"])
+        self.assertEqual(d, proj.resolve())
+        self.assertEqual(name, "pyproject.toml")
+
+    def test_home_is_exclusive_ceiling(self):
+        # A7: $HOME is the universal ancestor of every path — an EXCLUSIVE
+        # ceiling. A git-less edited file under $HOME must NOT resolve a marker
+        # living directly at $HOME. The second assertion proves we closed the
+        # CEILING, not the ascent: a marker BELOW $HOME still resolves (so the
+        # None above is the ceiling firing, not merely the fs-root fallback).
+        fake_home = self.tmpdir().resolve()
+        sub = fake_home / "proj" / "sub"
+        sub.mkdir(parents=True)                      # git-less path under $HOME
+        with mock.patch.dict(os.environ, {"HOME": str(fake_home)}):
+            (fake_home / "pyproject.toml").write_text("")        # marker AT $HOME
+            d_at_home, _ = tdd_verify.find_up(str(sub), ["pyproject.toml"])
+            self.assertIsNone(d_at_home)
+
+            (fake_home / "proj" / "pyproject.toml").write_text("")  # marker BELOW $HOME
+            d_below, _ = tdd_verify.find_up(str(sub), ["pyproject.toml"])
+            self.assertEqual(d_below, (fake_home / "proj").resolve())
 
 
 if __name__ == "__main__":
