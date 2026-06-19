@@ -158,6 +158,15 @@ def _pytest_importable():
     return proc.returncode == 0
 
 
+# Process-level latch for the transient-probe retry (work-interval-tdd#08). At
+# most ONE extra probe per process: a transient failure (the raise path) retries
+# inline once, but pytest_available() runs several times per turn (once per edited
+# dir + the skip-path probe), so an unbounded per-call retry would resurrect the
+# N-subprocess churn #07 removed (merge-gate claude:finding-0). Reset per process
+# — each Stop is a fresh process; the test suite resets it per test.
+_pytest_retry_used = False
+
+
 def pytest_available():
     """True if pytest can be imported by python3 in this environment.
 
@@ -165,14 +174,35 @@ def pytest_available():
     result cannot change within a single Stop, and the skip-path probe
     (work-interval-tdd#07) can call detect_test_command many times in one turn —
     an uncached subprocess per call is needless churn on the latency-sensitive Stop
-    hook (merge-gate claude:finding-0). A TRANSIENT failure is returned uncached so
-    one flaky 15s timeout does not fail-open every Python repo for the whole turn
-    (merge-gate re-review): the next call re-probes.
+    hook (merge-gate claude:finding-0). A TRANSIENT failure (the raise path: 15s
+    timeout, OSError, or a signal-kill returncode<0 — all load-correlated) is not
+    cached, so the next call re-probes; and it is given ONE bounded inline retry
+    here before falling open (work-interval-tdd#08), since that failure correlates
+    with exactly the high-load turns where the oracle matters most. The retry is
+    latched per PROCESS (_pytest_retry_used), not per call, so it does not
+    re-introduce #07's churn. A definitive `returncode>0` ("pytest absent") never
+    raises — it returns False directly and still skips silently with no retry,
+    refining (not reversing) ADR-0024's fail-open-on-infra-gap.
+
+    The retry budget is per process, NOT per edited repo: in a multi-repo turn the
+    FIRST transient failure spends the single retry. Because the probe tests an
+    env-global fact (`import pytest`), a recovered probe is then cached and resolves
+    every Python repo that turn; but if several repos' probes all fail transiently
+    in one turn, only the first is retried and the rest fall open exactly as pre-#08
+    (== baseline, no regression — not a per-repo guarantee). Per-repo budgeting was
+    declined to keep the per-process bound #07/A2 require.
     """
+    global _pytest_retry_used
     try:
         return _pytest_importable()
     except Exception:
-        return False
+        if _pytest_retry_used:
+            return False
+        _pytest_retry_used = True
+        try:
+            return _pytest_importable()
+        except Exception:
+            return False
 
 
 def detect_test_command(start, stop_at_git=True):

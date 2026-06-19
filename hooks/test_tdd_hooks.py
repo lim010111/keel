@@ -79,6 +79,9 @@ class HookTest(unittest.TestCase):
                    getattr(tdd_verify, "pytest_available", None)):
             if fn is not None and hasattr(fn, "cache_clear"):
                 fn.cache_clear()
+        # work-interval-tdd#08: reset the per-process transient-retry latch so each
+        # test starts fresh (the hook itself runs as a new process per Stop).
+        tdd_verify._pytest_retry_used = False
 
     def tearDown(self):
         for p in (self.mode_file(), self.edits_file(), self.marker_file()):
@@ -468,11 +471,16 @@ class TestVerifyHook(HookTest):
         # hot path) must NOT be memoized. Otherwise one flaky 15s timeout fail-opens
         # TDD verification for EVERY Python repo for the rest of the turn. A
         # definitive result is cached; a transient failure re-probes on the next call.
+        # (#08 refines this: the FIRST call now does one bounded inline retry on a
+        # transient failure. Both probes fail here, so the call still falls open to
+        # False; the property under test — a transient result is never MEMOIZED — is
+        # proven by the next call re-probing to True.)
         with mock.patch.object(
                 tdd_verify.subprocess, "run",
                 side_effect=[subprocess.TimeoutExpired(cmd="x", timeout=15),
+                             subprocess.TimeoutExpired(cmd="x", timeout=15),
                              mock.Mock(returncode=0)]):
-            first = tdd_verify.pytest_available()    # transient timeout -> False
+            first = tdd_verify.pytest_available()    # transient timeout (x2) -> False
             second = tdd_verify.pytest_available()   # must re-probe -> True
         self.assertFalse(first)
         self.assertTrue(second, "transient failure was cached — re-probe did not run")
@@ -484,14 +492,74 @@ class TestVerifyHook(HookTest):
         # that motivates caching — not a definitive import result. It completes
         # WITHOUT raising, so it must be explicitly treated as transient: not
         # memoized, re-probed on the next call (mirrors the timeout/OSError path).
+        # (#08: the first call retries the transient probe inline; both are killed
+        # here, so it still falls open to False, and the next call re-probes to True
+        # — proving the signal-killed result was not memoized.)
         with mock.patch.object(
                 tdd_verify.subprocess, "run",
                 side_effect=[mock.Mock(returncode=-9),    # killed by SIGKILL (OOM)
+                             mock.Mock(returncode=-9),    # inline retry also killed
                              mock.Mock(returncode=0)]):    # re-probe succeeds
             first = tdd_verify.pytest_available()
             second = tdd_verify.pytest_available()
         self.assertFalse(first)
         self.assertTrue(second, "signal-killed probe was cached — re-probe did not run")
+
+    def test_transient_probe_retries_then_resolves_suite(self):
+        # work-interval-tdd#08 A1: a single-file Python edit whose FIRST pytest
+        # probe fails transiently (signal-kill / timeout) but whose retry would
+        # succeed must RESOLVE the suite, not silently skip. #07 isolated the
+        # transient signal (the raise path); #08 does ONE bounded inline retry on
+        # it before the ADR-0024 fail-open, so the edited repo's oracle still runs
+        # that turn. Asserted at the public interface (detect_test_command resolving
+        # a runnable command), not on lru_cache internals.
+        proj = self.tmpdir()
+        (proj / "pyproject.toml").write_text("")
+        src = proj / "pkg"; src.mkdir()
+        with mock.patch.object(
+                tdd_verify.subprocess, "run",
+                side_effect=[mock.Mock(returncode=-9),    # first probe: SIGKILL (transient)
+                             mock.Mock(returncode=0)]):    # retry: pytest importable
+            root, cmd = tdd_verify.detect_test_command(str(src))
+        self.assertEqual(root, proj.resolve(),
+                         "transient first probe silently skipped the suite — no retry")
+        self.assertEqual(cmd, "python3 -m pytest -q")
+
+    def test_transient_retry_is_bounded_per_process(self):
+        # work-interval-tdd#08 A2: the retry budget is per PROCESS, not per call.
+        # pytest_available() runs several times per turn (once per edited dir + the
+        # skip-path probe), so a naive per-call retry would re-introduce the
+        # N-subprocess churn #07 removed (merge-gate claude:finding-0). Under
+        # sustained transient failure the WHOLE process gets at most ONE extra
+        # probe: the first call probes twice (initial + the single retry), every
+        # later call probes once (latch consumed). 3 calls => 4 probes, not 6.
+        calls = []
+        def always_killed(*a, **k):
+            calls.append(a)
+            return mock.Mock(returncode=-9)    # every probe SIGKILLed (transient)
+        with mock.patch.object(tdd_verify.subprocess, "run", side_effect=always_killed):
+            results = [tdd_verify.pytest_available() for _ in range(3)]
+        self.assertEqual(results, [False, False, False])   # always falls open
+        self.assertEqual(len(calls), 4,
+                         "transient retry not bounded to one extra probe per process")
+
+    def test_definitive_absent_does_not_retry(self):
+        # work-interval-tdd#08 A2: only the TRANSIENT signal (the raise path) is
+        # eligible for the retry. A DEFINITIVE "pytest absent" (returncode > 0,
+        # ModuleNotFoundError) is not transient — it must skip silently with NO
+        # retry and be memoized, exactly per ADR-0024 (this refines, not reverses,
+        # the fail-open philosophy). Two calls => one probe total (cached, no retry).
+        calls = []
+        def absent(*a, **k):
+            calls.append(a)
+            return mock.Mock(returncode=1)     # genuine ModuleNotFoundError
+        with mock.patch.object(tdd_verify.subprocess, "run", side_effect=absent):
+            first = tdd_verify.pytest_available()
+            second = tdd_verify.pytest_available()
+        self.assertFalse(first)
+        self.assertFalse(second)
+        self.assertEqual(len(calls), 1,
+                         "definitive 'pytest absent' triggered a retry or re-probe")
 
     def test_suppressed_diagnostic_dedups_per_repo(self):
         # work-interval-tdd#07 A1 (review F5): the `suppressed` dict is keyed by
