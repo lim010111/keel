@@ -7,6 +7,7 @@ it, and hard-blocks the turn (exit 2) if the suite is not green.
 
 Loop guard: enforces at most once per turn via `stop_hook_active`.
 """
+import functools
 import json
 import os
 import shutil
@@ -23,6 +24,12 @@ MARKER_DIR = Path.home() / ".claude" / "hooks" / ".tdd-markers"
 # fix can run several repos' suites in one Stop. A timeout is a non-blocking infra
 # skip, never a red verdict (Stop-time private feedback). Env-overridable for tests.
 ORACLE_TIMEOUT_SECONDS = int(os.environ.get("TDD_ORACLE_TIMEOUT_SECONDS", "600"))
+
+# Oracle marker names, shared by detect_test_command (resolution) and
+# _suppressed_ancestor (the skip-path probe) so the two never drift. The
+# priority-1 override is checked before conventional markers.
+OVERRIDE_NAME = ".claude/tdd-test-cmd"
+CONVENTIONAL_MARKERS = ["package.json", "pyproject.toml", "pytest.ini", "Cargo.toml", "go.mod"]
 
 
 def read_input():
@@ -44,7 +51,7 @@ def read_input():
         return {}
 
 
-def find_up(start, names):
+def find_up(start, names, stop_at_git=True):
     """Walk up from `start` to find the first dir containing any of `names`,
     bounded to the edited file's own repo.
 
@@ -59,6 +66,11 @@ def find_up(start, names):
     *inheritance*: a nested repo no longer resolves an override-bearing parent's
     `.claude/tdd-test-cmd` — that is the intended boundary, not just the $HOME
     trade-off below.
+
+    `stop_at_git=False` lifts ONLY the `.git` stop (the $HOME / fs-root caps still
+    hold) — the pre-#01 reach. The skip-path probe (`_suppressed_ancestor`) uses
+    it to ask what an unbounded ascent *would* have resolved; normal resolution
+    keeps the default bound.
 
     For a path under no git repo the outer fallback is the filesystem root, but
     $HOME is an *exclusive* ceiling: the universal ancestor of every path is
@@ -77,25 +89,93 @@ def find_up(start, names):
         for name in names:            # marker checked BEFORE the .git stop
             if (cur / name).exists():
                 return cur, name
-        if (cur / ".git").exists():   # stop at (inclusive) first repo boundary; .git may be a FILE
+        if stop_at_git and (cur / ".git").exists():  # (inclusive) first repo boundary; .git may be a FILE
             return None, None
         if cur == cur.parent:         # outer fallback: filesystem root
             return None, None
         cur = cur.parent
 
 
+def _git_boundary(start):
+    """The repo the edited file lives in: the first ancestor of `start`
+    (inclusive) containing `.git`, under the same $HOME-exclusive ceiling as
+    find_up — or None when `start` is under no repo (a git-less tree, or $HOME
+    itself). This is the boundary the #01 bound stops resolution at."""
+    home = Path.home().resolve()
+    cur = Path(start).resolve()
+    while True:
+        if cur == home:
+            return None
+        if (cur / ".git").exists():           # `.git` dir OR file
+            return cur
+        if cur == cur.parent:
+            return None
+        cur = cur.parent
+
+
+def _suppressed_ancestor(start):
+    """Skip-path probe (work-interval-tdd#07): the caller invokes this only when
+    the bounded `detect_test_command(start)` resolved no oracle. Returns
+    `(repo_root, ancestor_dir)` when LIFTING the #01 `.git` bound WOULD have
+    resolved a *runnable* oracle strictly ABOVE the edited file's repo — i.e.
+    enforcement was genuinely available and the bound suppressed it — else `None`.
+
+    Faithful by construction, and the reason this satisfies A2: it asks the SAME
+    resolver (`detect_test_command`) with the bound lifted (`stop_at_git=False` =
+    the pre-#01 reach), so it inherits every runner / test-script / override-parse
+    / override-before-conventional priority check. A bare ancestor marker whose
+    runner is absent (pytest-less pyproject.toml, a script-less package.json, …)
+    therefore resolves to NOTHING here too — exactly the ADR-0024 silent-skip
+    classes — and is never reported as suppressed. Only a genuinely runnable
+    ancestor oracle is. `root in repo_root.parents` keeps it to *strict* ancestors
+    (an in-repo oracle is never a self-suppression), independent of call context.
+    """
+    repo_root = _git_boundary(start)
+    if repo_root is None:
+        return None                           # no .git boundary -> nothing bounded
+    root, cmd = detect_test_command(start, stop_at_git=False)
+    if root and cmd and root in repo_root.parents:
+        return repo_root, root                # runnable oracle suppressed above bound
+    return None
+
+
+@functools.lru_cache(maxsize=1)
+def _pytest_importable():
+    """returncode==0 iff `import pytest` succeeds. Raises on a transient probe
+    failure so it is NOT memoized (lru_cache never caches a raise) and the next
+    call re-probes: a raising failure (timeout / OSError), AND a subprocess that
+    *completes* but was killed by a signal (returncode < 0 — OOM `-9`, segfault
+    `-11`), which is abnormal/load-correlated, not a definitive import verdict. A
+    non-negative exit is definitive (0 = importable; >0 = genuinely absent) and is
+    cached — keeping the per-process memoization that the perf fix needs.
+    """
+    proc = subprocess.run(
+        ["python3", "-c", "import pytest"],
+        capture_output=True, timeout=15,
+    )
+    if proc.returncode < 0:
+        raise RuntimeError(f"pytest probe killed by signal {-proc.returncode}")
+    return proc.returncode == 0
+
+
 def pytest_available():
-    """True if pytest can be imported by python3 in this environment."""
+    """True if pytest can be imported by python3 in this environment.
+
+    A DEFINITIVE probe (the subprocess completed) is memoized per process: the
+    result cannot change within a single Stop, and the skip-path probe
+    (work-interval-tdd#07) can call detect_test_command many times in one turn —
+    an uncached subprocess per call is needless churn on the latency-sensitive Stop
+    hook (merge-gate claude:finding-0). A TRANSIENT failure is returned uncached so
+    one flaky 15s timeout does not fail-open every Python repo for the whole turn
+    (merge-gate re-review): the next call re-probes.
+    """
     try:
-        return subprocess.run(
-            ["python3", "-c", "import pytest"],
-            capture_output=True, timeout=15,
-        ).returncode == 0
+        return _pytest_importable()
     except Exception:
         return False
 
 
-def detect_test_command(start):
+def detect_test_command(start, stop_at_git=True):
     """Return (project_root, command) for the test suite rooted at or above
     `start`, or (None, None). The command MUST be run with cwd=project_root.
 
@@ -103,10 +183,14 @@ def detect_test_command(start):
     conventional ecosystem detection. Auto-detected commands are returned
     only when their runner is actually installed -> a missing runner is an
     infra gap, not a test failure, and must not block the turn.
+
+    `stop_at_git` is forwarded to both find_up walks: the default bounds
+    resolution to the edited file's own repo (#01); the skip-path probe passes
+    False to ask what an unbounded (pre-#01) resolution would have produced.
     """
     # 1. per-project override file (first non-empty, non-comment line).
     #    The user set this explicitly, so it is trusted and returned as-is.
-    ovr_dir, _ = find_up(start, [".claude/tdd-test-cmd"])
+    ovr_dir, _ = find_up(start, [OVERRIDE_NAME], stop_at_git=stop_at_git)
     if ovr_dir:
         try:
             for line in (ovr_dir / ".claude" / "tdd-test-cmd").read_text().splitlines():
@@ -117,9 +201,7 @@ def detect_test_command(start):
             pass
 
     # 2. conventional detection by project marker file
-    root, marker = find_up(
-        start, ["package.json", "pyproject.toml", "pytest.ini", "Cargo.toml", "go.mod"]
-    )
+    root, marker = find_up(start, CONVENTIONAL_MARKERS, stop_at_git=stop_at_git)
     if not root:
         return None, None
 
@@ -215,15 +297,41 @@ def main():
     # correct here — this is Stop-time *private feedback*, not a committed-tip
     # attestation, so ADR-0014's reason for rejecting file-path resolution does
     # not apply. An empty/legacy marker degrades to the session cwd.
-    start_dirs = [str(Path(p).resolve().parent) for p in edited] or [cwd]
+    # Dedup the resolved dirs: several edited files in one dir resolve the same
+    # oracle, so detect_test_command / the skip-path probe run once per dir, not
+    # once per file — keeps the work off the Stop hot path (merge-gate finding-0).
+    start_dirs = list(dict.fromkeys(
+        str(Path(p).resolve().parent) for p in edited)) or [cwd]
 
     # Dedup by resolved project root: many edited files in one repo -> one run;
     # files spanning repos -> one run per repo (each changed repo is verified).
     targets = {}
+    suppressed = {}  # repo_root -> ancestor_dir; dedup -> one diagnostic/repo
     for start in start_dirs:
         root, cmd = detect_test_command(start)
         if root and cmd:
             targets[str(root)] = cmd
+            continue
+        # Skip path: surface a *suppressed* ancestor oracle (work-interval-tdd#07).
+        # The #01 bound resolved nothing here; if a *runnable* oracle would have
+        # resolved above the repo boundary, the bound suppressed it — make that
+        # observable so a worktree/submodule user does not lose TDD coverage
+        # unknowingly. Observability only — the ancestor's suite is still NOT run.
+        # The probe re-runs the resolver unbounded, so it stays silent for the
+        # ADR-0024 no-RUNNABLE-oracle classes (returns None there), not just the
+        # no-marker case.
+        sup = _suppressed_ancestor(start)
+        if sup:
+            repo_root, anc_dir = sup
+            suppressed[str(repo_root)] = str(anc_dir)
+
+    for repo_root, anc_dir in suppressed.items():
+        print(f"TDD hook: enforcement suppressed for {repo_root} — a runnable oracle "
+              f"resolves at ancestor {anc_dir}, but resolution is bounded to the "
+              f"edited file's own repo (work-interval-tdd#01), so it is not run here. "
+              f"Declare a `.claude/tdd-test-cmd` in {repo_root} to enable TDD coverage.",
+              file=sys.stderr)
+
     if not targets:
         sys.exit(0)  # no recognizable oracle in any edited repo -> skip silently
 
