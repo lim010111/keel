@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))                            # auto_fill, record_profile (this dir)
@@ -125,9 +126,24 @@ def _hooks_dir(repo: Path) -> Path:
 
 
 def _write_hook(repo: Path, name: str, body: str) -> None:
+    # +x to mirror a REAL installed hook (install_local chmods 0o755). The engine's
+    # phase-2 enforcement verdict (ADR-0030 §5) reports a marked-but-non-executable
+    # hook as "broken" (not "wired"), so a "wired" fixture must carry the exec bit.
     h = _hooks_dir(repo)
     h.mkdir(parents=True, exist_ok=True)
-    (h / name).write_text(body, encoding="utf-8")
+    f = h / name
+    f.write_text(body, encoding="utf-8")
+    f.chmod(0o755)
+
+
+def _write_hook_nonexec(repo: Path, name: str, body: str) -> None:
+    """A marked hook git will NOT run — present + marked but lacking the exec bit:
+    the phase-2 'broken' state the engine surfaces as a fillable gap (#06)."""
+    h = _hooks_dir(repo)
+    h.mkdir(parents=True, exist_ok=True)
+    f = h / name
+    f.write_text(body, encoding="utf-8")
+    f.chmod(0o644)
 
 
 class TestMergeGateFill(unittest.TestCase):
@@ -196,6 +212,78 @@ class TestMergeGateFill(unittest.TestCase):
         self.assertTrue((_hooks_dir(repo) / "pre-push").is_file())   # pre-push filled
         self.assertEqual((_hooks_dir(repo) / "post-commit").read_text(encoding="utf-8"),
                          pc_body)                        # post-commit untouched
+
+    @unittest.skipUnless(os.name == "posix", "exec-bit is meaningless off POSIX")
+    def test_broken_pre_push_is_repaired_by_apply_not_a_silent_no_op(self):
+        # Phase-2 regression (#06): the engine reports a marked-but-non-executable
+        # pre-push as enforcement="broken" — a fillable gap (_is_gap). auto_fill must
+        # REPAIR it (re-render → chmod 0o755), not no-op while claiming success. The
+        # fill decision must key on the enforcement verdict, not bare marker-presence
+        # (a broken hook HAS the marker), or the gap never converges: the doctor
+        # reports it, /harness-doctor "fills" it, and it persists every cycle.
+        repo = _new_repo(_recorded(["merge-gate"]) + '\n[merge-gate]\nprofile = "local"\n')
+        _write_hook_nonexec(repo, "pre-push", "#!/bin/sh\n# MERGE_GATE_WRAPPER\nexit 0\n")
+        rec = {r["concern"]: r for r in harness_doctor.diagnose(repo)}["merge-gate"]
+        self.assertEqual(rec["enforcement"], "broken")            # precondition
+        self.assertTrue(harness_doctor._is_gap(rec))              # a fillable gap
+        auto_fill.apply(repo)                                     # auto tier
+        pp = _hooks_dir(repo) / "pre-push"
+        self.assertTrue(os.access(pp, os.X_OK))                   # exec bit restored
+        rec2 = {r["concern"]: r for r in harness_doctor.diagnose(repo)}["merge-gate"]
+        self.assertEqual(rec2["enforcement"], "wired")           # gap converged
+
+    @unittest.skipUnless(os.name == "posix", "exec-bit is meaningless off POSIX")
+    def test_broken_pre_push_repair_preserves_operator_body_no_clobber(self):
+        # #06 merge-gate review (blocking): a broken (marked, non-exec) hook must be
+        # repaired by RESTORING the exec bit, never by re-rendering — auto_fill's own
+        # invariant is "never an in-place clobber of a marked hook", and operators DO
+        # prepend blocks to our marked hook (the #41/#31 tombstone is the live case).
+        # Re-rendering would drop that block; a chmod must not.
+        repo = _new_repo(_recorded(["merge-gate"]) + '\n[merge-gate]\nprofile = "local"\n')
+        block = ("# --- operator block: #31 tombstone (KEEP) ---\n"
+                 "#!/bin/sh\n# MERGE_GATE_WRAPPER\nexit 0\n")
+        _write_hook_nonexec(repo, "pre-push", block)
+        _write_hook(repo, "post-commit", "#!/bin/sh\n# MERGE_GATE_POST_COMMIT\n")  # pc wired
+        auto_fill.apply(repo)
+        pp = _hooks_dir(repo) / "pre-push"
+        self.assertTrue(os.access(pp, os.X_OK))                   # exec bit restored
+        self.assertEqual(pp.read_text(encoding="utf-8"), block)   # body NOT clobbered
+
+    @unittest.skipUnless(os.name == "posix", "exec-bit is meaningless off POSIX")
+    def test_broken_symlinked_hook_repair_never_chmods_a_foreign_target(self):
+        # #06 merge-gate review (blocking): the exec-bit repair must NOT follow a
+        # symlink. A symlinked hook points into a hook-manager's own tree (outside
+        # the repo); chmod-through-the-link would mutate that FOREIGN target's mode,
+        # breaching two-scope purity (install_local guards the same case). A
+        # symlinked broken pre-push is surfaced report-only, never auto-repaired.
+        repo = _new_repo(_recorded(["merge-gate"]) + '\n[merge-gate]\nprofile = "local"\n')
+        ext = Path(tempfile.mkdtemp()) / "foreign-hook.sh"
+        ext.write_text("#!/bin/sh\n# MERGE_GATE_WRAPPER\n", encoding="utf-8")
+        ext.chmod(0o644)
+        _hooks_dir(repo).mkdir(parents=True, exist_ok=True)
+        (_hooks_dir(repo) / "pre-push").symlink_to(ext)          # symlinked, marked, non-exec
+        before = ext.stat().st_mode
+        plan = auto_fill.build_plan(repo)
+        mg = [r for r in plan["records"] if r["concern"] == "merge-gate"]
+        self.assertEqual([r["consent_tier"] for r in mg], ["refuse"])   # report-only
+        auto_fill.apply(repo)
+        self.assertEqual(ext.stat().st_mode, before)             # foreign target UNTOUCHED
+
+    @unittest.skipUnless(os.name == "posix", "exec-bit is meaningless off POSIX")
+    def test_broken_repair_chmod_race_does_not_crash_apply(self):
+        # Finding C (merge-gate review): the exec-bit repair's stat/chmod is wrapped
+        # — a narrow race (file removed / perm flip mid-apply) must NOT propagate out
+        # of apply() and abort the fill; the gap simply stays for the next run.
+        repo = _new_repo(_recorded(["merge-gate"]) + '\n[merge-gate]\nprofile = "local"\n')
+        _write_hook_nonexec(repo, "pre-push", "#!/bin/sh\n# MERGE_GATE_WRAPPER\n")
+        _write_hook(repo, "post-commit", "#!/bin/sh\n# MERGE_GATE_POST_COMMIT\n")
+        real_chmod = Path.chmod
+        def boom(self, *a, **k):
+            if self.name == "pre-push":
+                raise OSError("simulated chmod race")
+            return real_chmod(self, *a, **k)
+        with mock.patch.object(Path, "chmod", boom):
+            auto_fill.apply(repo)                                # must not raise
 
     def test_foreign_pre_push_is_confirm_tier_not_auto_applied(self):
         # AC (merge-gate tier): a foreign pre-push (file present, our marker absent)

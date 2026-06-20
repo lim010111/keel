@@ -9,10 +9,12 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import harness_doctor
 
@@ -90,9 +92,15 @@ class TestMergeGateIntent(unittest.TestCase):
 
 
 def _write_hook(repo: Path, name: str, body: str) -> None:
+    # +x to mirror a REAL installed hook (install_local chmods 0o755); the
+    # enforcement-integrity check (ADR-0030 §5) now requires the executable bit,
+    # so a "wired" fixture must carry it. The marked-but-non-executable case has
+    # its own fixture (_write_hook_nonexec).
     hooks = repo / ".git" / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
-    (hooks / name).write_text(body, encoding="utf-8")
+    h = hooks / name
+    h.write_text(body, encoding="utf-8")
+    h.chmod(0o755)
 
 
 class TestMergeGateEnforcement(unittest.TestCase):
@@ -610,6 +618,242 @@ class TestMarkerRegistryContract(unittest.TestCase):
         m_hook, m_marker = harness_doctor.MEASUREMENT_HOOK
         self.assertEqual(m_hook, "post-commit")
         self.assertEqual(m_marker, il.POST_COMMIT_MARKER)
+
+
+# --------------------------------------------------------------------------
+# Phase-2 (scaffold-doctor #06): drift/stale on the enforcement axis, report-only
+# (ADR-0030). Drift comes from the status-harness vendored byte-equality detector.
+# --------------------------------------------------------------------------
+def _install_and_drift(repo: Path, relpath) -> None:
+    """Install the status-harness for real, then perturb ONE vendored file so it
+    differs from its ~/.claude source — a `warn` (present-but-differs) action, the
+    drift signal, never a `change` (missing file)."""
+    _install_status_harness(repo)
+    f = repo / relpath
+    f.write_text(f.read_text(encoding="utf-8") + "\n# local dogfood edit\n",
+                 encoding="utf-8")
+
+
+class TestVendoredDrift(unittest.TestCase):
+    def test_drifted_vendored_copy_is_state_drifted_not_partial(self):
+        # AC1/AC2: a vendored status.py present-but-differing surfaces as a distinct
+        # state="drifted" with intent=present (the file IS installed), NOT collapsed
+        # into intent=partial (the #02 status quo that false-flags dogfood copies).
+        repo = _new_repo()
+        _install_and_drift(repo, Path("scripts") / "status.py")
+        rec = _record(harness_doctor.diagnose(repo), "status-harness")
+        self.assertEqual(rec["state"], "drifted")
+        self.assertEqual(rec["intent"], "present")
+
+    def test_drift_plus_missing_file_stays_a_real_gap_not_masked_as_drift(self):
+        # AC2 discriminator (ADR-0030 §3): a concern with BOTH a drifted file (warn)
+        # AND a genuinely missing file (change) is a real intent gap — drift must
+        # never mask a half-install. Here status.py drifts but regen-status.yml is
+        # removed → partial gap, state None (not "drifted").
+        repo = _new_repo()
+        _install_and_drift(repo, Path("scripts") / "status.py")
+        (repo / ".github" / "workflows" / "regen-status.yml").unlink()
+        rec = _record(harness_doctor.diagnose(repo), "status-harness")
+        self.assertIsNone(rec["state"])           # NOT masked as drift
+        self.assertEqual(rec["intent"], "partial")
+        self.assertTrue(harness_doctor._is_gap(rec))
+
+    def test_drifted_but_otherwise_conforming_repo_exits_0_no_false_flag(self):
+        # AC3: drift is report-only. A repo whose ONLY deviation is a drifted
+        # vendored copy (the dogfood-richer / #31-wiring case) must NOT false-flag
+        # as a gap — it exits 0, while the drift stays visible in the record.
+        repo = _new_repo(LOCAL_TOML)
+        (repo / "AGENTS.md").write_text("# proj\n", encoding="utf-8")
+        (repo / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
+        _write_hook(repo, "pre-push", "#!/bin/sh\n# MERGE_GATE_WRAPPER\n")
+        _install_and_drift(repo, Path("scripts") / "status.py")
+        code, out, _err = _run_main([str(repo)])
+        self.assertEqual(code, 0, msg=out)
+        rec = _record(harness_doctor.diagnose(repo), "status-harness")
+        self.assertEqual(rec["state"], "drifted")           # reported, not hidden
+        self.assertFalse(harness_doctor._is_gap(rec))        # but never a gap
+
+    def test_merge_gate_never_reports_drift(self):
+        # AC4: drift scope is exactly {status.py, regen-status.yml, issue-tracker.md}
+        # — all status-harness vendored files. The merge-gate vendors NO
+        # byte-comparable file (git hooks + runtime .merge-gate/ output only), so it
+        # can never be "drifted": the "validator snapshots" target is dropped.
+        repo = _new_repo(LOCAL_TOML)
+        _write_hook(repo, "pre-push", "#!/bin/sh\n# MERGE_GATE_WRAPPER\n")
+        rec = _record(harness_doctor.diagnose(repo), "merge-gate")
+        self.assertNotEqual(rec["state"], "drifted")
+
+    def test_agents_md_conflict_warn_stays_a_gap_never_drifted(self):
+        # AC2 cross-detector guard (the load-bearing reason drift is status-harness-
+        # specific): setup_status_harness emits `warn` for DRIFT (report-only), but
+        # setup_agents_md emits `warn` for a State-4 CONFLICT (both files present,
+        # CLAUDE.md lacks @AGENTS.md) — a REAL gap the operator must merge. agents-md
+        # uses the default warn_is_drift=False, so its warn MUST stay intent=partial
+        # / state=None / a gap, never be reclassified as report-only "drifted" (which
+        # would exit 0, never auto-filled). A one-token flip of that default would
+        # silently defeat this — so it is pinned here.
+        repo = _new_repo()
+        (repo / "AGENTS.md").write_text("# agents content\n", encoding="utf-8")
+        (repo / "CLAUDE.md").write_text("# claude content, no import\n", encoding="utf-8")
+        rec = _record(harness_doctor.diagnose(repo), "agents-md")
+        self.assertIsNone(rec["state"])                 # NOT "drifted"
+        self.assertEqual(rec["intent"], "partial")
+        self.assertTrue(harness_doctor._is_gap(rec))     # a real, fillable gap
+
+
+def _write_hook_nonexec(repo: Path, name: str, body: str) -> None:
+    """A marked hook git will NOT run — present + marked but lacking the
+    user-executable bit. The enforcement-integrity 'broken' fixture (B1)."""
+    hooks = repo / ".git" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    h = hooks / name
+    h.write_text(body, encoding="utf-8")
+    h.chmod(0o644)
+
+
+class TestEnforcementIntegrity(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "exec-bit is meaningless off POSIX")
+    def test_marked_but_non_executable_hook_is_broken_not_wired(self):
+        # AC5 (B1, routed from #02): a pre-push carrying our marker but lacking the
+        # user-executable bit — git will NOT run it — is reported `broken`, never
+        # `wired`. The check is POSIX-guarded (skipped where the bit is meaningless).
+        repo = _new_repo(LOCAL_TOML)
+        _write_hook_nonexec(repo, "pre-push", "#!/bin/sh\n# MERGE_GATE_WRAPPER\nexit 0\n")
+        rec = _record(harness_doctor.diagnose(repo), "merge-gate")
+        self.assertEqual(rec["enforcement"], "broken")
+
+    @unittest.skipUnless(os.name == "posix", "exec-bit is meaningless off POSIX")
+    def test_broken_hook_is_a_gap_in_default_mode(self):
+        # A broken (marked-but-non-executable) hook is a fillable gap locally — the
+        # operator (or auto-fill re-running install → chmod) must fix it. A silently
+        # inert gate must NOT read as conforming. Here agents-md + status-harness are
+        # genuinely present, so the broken merge-gate hook is the lone gap → exit 2.
+        repo = _new_repo(LOCAL_TOML)
+        (repo / "AGENTS.md").write_text("# proj\n", encoding="utf-8")
+        (repo / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
+        _install_status_harness(repo)
+        _write_hook_nonexec(repo, "pre-push", "#!/bin/sh\n# MERGE_GATE_WRAPPER\n")
+        rec = _record(harness_doctor.diagnose(repo), "merge-gate")
+        self.assertTrue(harness_doctor._is_gap(rec))
+        code, out, _err = _run_main([str(repo)])
+        self.assertEqual(code, 2, msg=out)
+
+    @unittest.skipUnless(os.name == "posix", "exec-bit is meaningless off POSIX")
+    def test_operator_customized_hook_body_is_still_wired_not_stale(self):
+        # AC6: hook-BODY / template-version staleness is OUT of scope. A pre-push
+        # carrying the marker + an operator-customized prepended block (the #31
+        # tombstone is the live instance), executable, is reported `wired` — the
+        # body-diff is NOT flagged "stale" (it can't be honestly attested as such).
+        repo = _new_repo(LOCAL_TOML)
+        customized = ("# --- operator customization (kept) ---\n"
+                      "#!/bin/sh\n# MERGE_GATE_WRAPPER\nexit 0\n")
+        _write_hook(repo, "pre-push", customized)   # executable, marker + extra body
+        rec = _record(harness_doctor.diagnose(repo), "merge-gate")
+        self.assertEqual(rec["enforcement"], "wired")
+
+    @unittest.skipUnless(os.name == "posix", "exec-bit is meaningless off POSIX")
+    def test_enforcement_probe_stat_failure_degrades_not_crash(self):
+        # diagnose() must NEVER raise (the read-only #02 B2 contract). hook_has_marker
+        # swallows read errors, but the exec-bit probe's hook.stat() ran unguarded —
+        # a stat race (file removed / permission flip between the marker read and the
+        # stat) would escape diagnose(). Forced here: stat succeeds for the marker
+        # probe's exists(), then raises on the exec probe → degrade to "wired"
+        # (marker confirmed; the exec-check is best-effort), never a crash.
+        repo = _new_repo(LOCAL_TOML)
+        _write_hook(repo, "pre-push", "#!/bin/sh\n# MERGE_GATE_WRAPPER\n")
+        real_stat = Path.stat
+        seen = {"n": 0}
+        def flaky(self, *a, **k):
+            if self.name == "pre-push":
+                seen["n"] += 1
+                if seen["n"] >= 2:               # let exists() pass, fail the exec probe
+                    raise OSError("simulated stat race")
+            return real_stat(self, *a, **k)
+        with mock.patch.object(Path, "stat", flaky):
+            rec = _record(harness_doctor.diagnose(repo), "merge-gate")   # must not raise
+        self.assertEqual(rec["enforcement"], "wired")
+
+
+class TestCiMode(unittest.TestCase):
+    def _intent_present_enforcement_unwired(self):
+        """A repo with the full INTENT axis present but the merge-gate enforcement
+        hook absent — the fresh-clone state (ADR-0020 Decision 2: legitimate)."""
+        repo = _new_repo(LOCAL_TOML)
+        (repo / "AGENTS.md").write_text("# proj\n", encoding="utf-8")
+        (repo / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
+        _install_status_harness(repo)
+        return repo                                  # NO pre-push hook → unwired
+
+    def test_ci_flag_excludes_enforcement_from_exit_code(self):
+        # AC7 + AC9: a fresh clone (intent present, enforcement unwired) is a
+        # fillable gap locally (exit 2 — auto-fill wants to wire it), but --ci
+        # asserts the INTENT axis only and exits 0. Resolves the live _is_gap
+        # contradiction (ADR-0030 §4 / ADR-0020 Decision 2).
+        repo = self._intent_present_enforcement_unwired()
+        self.assertEqual(_run_main([str(repo)])[0], 2)            # default: gap
+        self.assertEqual(_run_main([str(repo), "--ci"])[0], 0)    # --ci: intent-only
+
+    def test_ci_does_not_relax_a_real_intent_gap(self):
+        # AC7 boundary: --ci relaxes ONLY the enforcement axis. A genuine INTENT
+        # gap (a bare repo: agents-md/status-harness/merge-gate all absent) still
+        # exits 2 under --ci — intent is exactly what CI asserts.
+        self.assertEqual(_run_main([str(_new_repo()), "--ci"])[0], 2)
+
+    def test_ci_reports_enforcement_records_labelled_out_of_scope(self):
+        # AC8: --ci is honesty, not omission. Enforcement records are STILL reported
+        # (table + JSON) — merely excluded from the exit code — and the report is
+        # explicitly labelled intent-only / out-of-scope.
+        repo = self._intent_present_enforcement_unwired()
+        code, out, _err = _run_main([str(repo), "--ci", "--json"])
+        payload = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["intent_only"])
+        mg = [c for c in payload["concerns"] if c["concern"] == "merge-gate"][0]
+        self.assertEqual(mg["enforcement"], "unwired")       # reported, not omitted
+        _c, hout, _e = _run_main([str(repo), "--ci"])
+        self.assertIn("unwired", hout)                       # enforcement still in table
+        self.assertIn("intent-only", hout.lower())           # labelled out-of-scope
+
+    def test_no_ci_flag_omits_the_intent_only_label(self):
+        # AC8 boundary: the label is --ci-only — a normal run carries no intent_only
+        # key (the JSON shape is unchanged when the flag is absent).
+        _c, out, _e = _run_main([str(_new_repo(LOCAL_TOML)), "--json"])
+        self.assertNotIn("intent_only", json.loads(out))
+
+    @unittest.skipUnless(os.name == "posix", "exec-bit is meaningless off POSIX")
+    def test_ci_also_relaxes_a_broken_hook_not_just_unwired(self):
+        # AC7 symmetry: --ci excludes the WHOLE enforcement axis. A `broken`
+        # (marked-but-non-executable) hook is an enforcement gap by default (exit 2)
+        # but is relaxed under --ci (exit 0), exactly like `unwired` — guarding a
+        # regression that relaxed only one of the two enforcement-gap states.
+        repo = _new_repo(LOCAL_TOML)
+        (repo / "AGENTS.md").write_text("# proj\n", encoding="utf-8")
+        (repo / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
+        _install_status_harness(repo)
+        _write_hook_nonexec(repo, "pre-push", "#!/bin/sh\n# MERGE_GATE_WRAPPER\n")
+        self.assertEqual(_run_main([str(repo)])[0], 2)            # default: broken is a gap
+        self.assertEqual(_run_main([str(repo), "--ci"])[0], 0)    # --ci: relaxed
+
+
+class TestPhase2ReadOnly(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "exec-bit is meaningless off POSIX")
+    def test_phase2_paths_mutate_no_file_nor_hook_mode(self):
+        # AC10: the new phase-2 read paths (drift detection, the exec-bit probe, and
+        # --ci) preserve #02's zero-filesystem-mutation invariant — including the
+        # hook's mode bits (the exec-bit probe reads st_mode; it must NEVER chmod).
+        repo = _new_repo(LOCAL_TOML)
+        (repo / "AGENTS.md").write_text("# proj\n", encoding="utf-8")
+        (repo / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
+        _install_and_drift(repo, Path("scripts") / "status.py")     # drifted copy
+        _write_hook_nonexec(repo, "pre-push", "#!/bin/sh\n# MERGE_GATE_WRAPPER\n")  # broken
+        hook = repo / ".git" / "hooks" / "pre-push"
+        before, before_mode = _snapshot(repo), hook.stat().st_mode
+        harness_doctor.diagnose(repo)
+        _run_main([str(repo)])
+        _run_main([str(repo), "--ci"])
+        _run_main([str(repo), "--json"])
+        self.assertEqual(_snapshot(repo), before)                    # no content write
+        self.assertEqual(hook.stat().st_mode, before_mode)          # probe never chmods
 
 
 if __name__ == "__main__":

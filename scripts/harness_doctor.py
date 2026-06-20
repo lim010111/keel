@@ -8,6 +8,8 @@ enforcement) with **no writes**. The reusable core CI, the /harness-doctor skill
 import argparse
 import importlib.util
 import json
+import os
+import stat
 import subprocess
 import sys
 import tomllib
@@ -22,7 +24,8 @@ __all__ = [
     "SCAFFOLD_CONCERNS",
     "find_repo_root", "diagnose", "propose_profile", "read_recorded_profile",
     "compute_coverage", "render_table", "render_coverage",
-    "import_setup", "resolve_hooks_dir", "hook_has_marker", "main",
+    "import_setup", "resolve_hooks_dir", "hook_has_marker",
+    "hook_enforcement_state", "main",
 ]
 
 CLAUDE_ROOT = Path(__file__).resolve().parent.parent
@@ -54,11 +57,29 @@ def _intent_from_kinds(kinds):
     return "partial"
 
 
-def _reused_intent_record(concern, skill, module, run):
+def _reused_intent_record(concern, skill, module, run, warn_is_drift=False):
     """Build an intent-axis record by REUSING a setup skill's own detector. `run`
     takes the imported module and returns its action list (apply=False). On import
     OR detection failure, or an `error` action, the concern is n/a, never a false
-    present/absent (a raising detector must not crash the read-only doctor)."""
+    present/absent (a raising detector must not crash the read-only doctor).
+
+    `warn_is_drift`: for the status-harness detector, a `warn` action normally
+    means "vendored file present but differs from its ~/.claude source" = DRIFT,
+    not a half-install. When every non-`ok` action is a `warn`, the concern is
+    reported `state="drifted"` (intent present — the files ARE installed) and rides
+    the engine's `state is not None → not a gap` rule: report-only, never a
+    false-flagged gap (ADR-0030 §1,3). The discriminator (§3): the moment a
+    `change` (a genuinely MISSING file) appears it stays a real intent gap. For
+    agents-md, `warn` is a CONFLICT (both files, no @import) — a real gap, NOT
+    drift — so the default `warn_is_drift=False` keeps it collapsing to partial.
+
+    KNOWN EDGE (routed to #07, near-unreachable): install_project emits ONE
+    non-drift `warn` — "doc template missing … skill installation is incomplete" —
+    when the skill's OWN bundled template is absent (a corrupted ~/.claude, the
+    tree the doctor itself runs from). That warn reads here as `drifted` rather
+    than a broken install. The honest fix needs a distinct writer-side action
+    subtype (message-sniffing is a retired anti-pattern); tracked in #07, not
+    patched in this read-only engine."""
     try:
         mod = import_setup(skill, module)
         actions = run(mod)
@@ -68,6 +89,11 @@ def _reused_intent_record(concern, skill, module, run):
     kinds = {a[0] for a in actions}
     if "error" in kinds:
         return _record(concern, intent="n/a", detail=f"{skill} reported an error")
+    non_ok = kinds - {"ok"}
+    if warn_is_drift and non_ok and non_ok <= {"warn"}:
+        return _record(concern, intent="present", enforcement="n/a", state="drifted",
+                       detail="vendored file(s) differ from ~/.claude source "
+                              "(report-only; ADR-0030)")
     return _record(concern, intent=_intent_from_kinds(kinds), enforcement="n/a")
 
 
@@ -90,7 +116,7 @@ def _status_harness_record(repo_root):
         mod.install_project(repo_root, actions, False)
         return actions
     return _reused_intent_record("status-harness", "setup-status-harness",
-                                 "setup_status_harness", run)
+                                 "setup_status_harness", run, warn_is_drift=True)
 
 
 # Declarative-by-class: a gate section is resolved to its enforcement hook +
@@ -148,6 +174,33 @@ def hook_has_marker(repo_root, hook_name, marker):
         return False
 
 
+def hook_enforcement_state(repo_root, hook_name, marker):
+    """Enforcement verdict for <hook_name> on the marker (phase-2 integrity,
+    ADR-0030 §5). One of:
+      'wired'    — marker present AND user-executable (git will run it)
+      'broken'   — marker present BUT not user-executable; git won't run it (B1)
+      'unwired'  — hook absent, unreadable, or marker-less (a fresh clone / foreign)
+
+    The executable-bit check is POSIX-guarded: where the bit is meaningless (a
+    Windows checkout, os.name != 'posix') a marked hook is 'wired' on the marker
+    alone — the honest verdict there. Hook-BODY / template-version staleness is
+    deliberately OUT of scope (ADR-0030 §5): operator customization is expected,
+    so a body-diff can't be honestly attested as stale; integrity stops here."""
+    if not hook_has_marker(repo_root, hook_name, marker):
+        return "unwired"
+    hook = resolve_hooks_dir(repo_root) / hook_name
+    try:
+        mode = hook.stat().st_mode
+    except OSError:
+        # A stat race after the marker read (file removed / permission flip): the
+        # exec-check is best-effort, so degrade to the marker-confirmed verdict
+        # rather than crash the read-only doctor (#02 B2: diagnose never raises).
+        return "wired"
+    if os.name == "posix" and not (mode & stat.S_IXUSR):
+        return "broken"
+    return "wired"
+
+
 def _load_toml(repo_root):
     """Parsed <repo>/harness.toml, or {} when absent/unparseable (read-only)."""
     path = repo_root / "harness.toml"
@@ -181,7 +234,9 @@ def _merge_gate_record(repo_root, mg):
     profile = mg.get("profile")
     if profile == "local":
         hook, marker = GATE_ENFORCEMENT["merge-gate"]
-        enforcement = "wired" if hook_has_marker(repo_root, hook, marker) else "unwired"
+        enforcement = hook_enforcement_state(repo_root, hook, marker)
+        # The #33 measurement post-commit is a producer trigger (wiring), not the
+        # enforcement gate — its detail keys on marker-presence only (no exec-bit).
         m_hook, m_marker = MEASUREMENT_HOOK
         m_state = "wired" if hook_has_marker(repo_root, m_hook, m_marker) else "unwired"
         return _record("merge-gate", intent="present", enforcement=enforcement,
@@ -200,7 +255,7 @@ def _gate_record(repo_root, section):
     """A declared gate section resolved generically through GATE_ENFORCEMENT:
     probe its hook-marker (a registered gate is reported intent=present)."""
     hook, marker = GATE_ENFORCEMENT[section]
-    enforcement = "wired" if hook_has_marker(repo_root, hook, marker) else "unwired"
+    enforcement = hook_enforcement_state(repo_root, hook, marker)
     return _record(section, intent="present", enforcement=enforcement)
 
 
@@ -312,13 +367,24 @@ def compute_coverage(records, profile):
     }
 
 
-def _is_gap(rec):
+def _is_gap(rec, ci=False):
     """A gap = an *applicable* concern that is not fully in place. An `n/a`
     concern (a reused detector that was unavailable) is never a gap;
-    unknown-class is informational, not a gap."""
+    unknown-class / drifted (state is not None) is informational, not a gap.
+
+    `ci=True` (the --ci intent-only mode, ADR-0030 §4) excludes the enforcement
+    axis: a fresh clone with intent present but the git hook unwired/broken is a
+    legitimate CI state (ADR-0020 Decision 2 — enforcement is machine-local,
+    never CI-asserted), so only the INTENT axis can make it a gap there. The
+    non-ci default is unchanged: locally an unwired/broken hook stays a fillable
+    gap (auto-fill wants to wire it)."""
     if rec["applicability"] != "applicable" or rec["state"] is not None:
         return False
-    return rec["intent"] in ("absent", "partial") or rec["enforcement"] == "unwired"
+    if rec["intent"] in ("absent", "partial"):
+        return True
+    if ci:
+        return False
+    return rec["enforcement"] in ("unwired", "broken")
 
 
 def render_table(records):
@@ -360,6 +426,12 @@ def main(argv=None):
                     help="repo to inspect (defaults to cwd's git root)")
     ap.add_argument("--json", action="store_true",
                     help="emit a machine-readable JSON report")
+    ap.add_argument("--ci", action="store_true",
+                    help="intent-axis-only mode (ADR-0030 §4): exclude the "
+                         "enforcement axis (machine-local git hooks) from the gap "
+                         "count and exit code, so a fresh clone with config present "
+                         "but hooks unwired exits 0. Enforcement is still REPORTED, "
+                         "labelled out-of-scope. The local default gates on it.")
     ap.add_argument("--non-interactive", action="store_true",
                     help="explicit headless signal (the skill passes this in CI): "
                          "suppress the interactive first-run proposal hint. The "
@@ -375,8 +447,8 @@ def main(argv=None):
         return 1
 
     records = diagnose(root)
-    gaps = [r for r in records if _is_gap(r)]
-    exit_code = 2 if gaps else 0   # exit stays keyed on #02 gaps; coverage is informational (AC: #03 adds the fraction without changing #02's exit semantics)
+    gaps = [r for r in records if _is_gap(r, ci=args.ci)]
+    exit_code = 2 if gaps else 0   # exit stays keyed on #02 gaps; coverage is informational (AC: #03 adds the fraction without changing #02's exit semantics). --ci drops the enforcement axis from the gap set (ADR-0030 §4)
 
     # A recorded [harness] profile turns on the coverage lens (AC13); with no
     # profile there is no denominator — raw per-concern presence only (AC14).
@@ -388,6 +460,8 @@ def main(argv=None):
     if args.json:
         payload = {"repo": str(root), "concerns": records, "gaps": len(gaps),
                    "exit": exit_code}
+        if args.ci:
+            payload["intent_only"] = True   # --ci: enforcement reported but not gated
         if coverage is not None:
             payload["coverage"] = coverage
         print(json.dumps(payload, indent=2))
@@ -395,6 +469,10 @@ def main(argv=None):
         print(f"harness-doctor — {root}")
         print(render_table(records))
         print()
+        if args.ci:
+            print("intent-only (--ci): the enforcement axis (machine-local git "
+                  "hooks) is REPORTED above but out of scope for the gap count "
+                  "and exit code (ADR-0030 §4).")
         print(f"{len(gaps)} gap(s) on applicable concerns."
               if gaps else "Scaffold conforms — no gaps on applicable concerns.")
         if coverage is not None:

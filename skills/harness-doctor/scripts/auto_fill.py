@@ -192,13 +192,40 @@ def _merge_gate_decision(repo, rec):
     hd = harness_doctor.resolve_hooks_dir(repo)
     foreign = ((hd / _PRE_PUSH_HOOK).exists() and not pp_present) or \
               ((hd / _POST_COMMIT_HOOK).exists() and not pc_present)
+    # A "broken" pre-push (#06: marker present but the user-exec bit missing — git
+    # won't run it) is a fillable gap, but it is OURS (it carries the marker), so it
+    # is repaired by RESTORING the exec bit, NEVER by re-rendering: re-render would
+    # clobber a marked hook in place (auto_fill's standing invariant) and drop any
+    # operator-prepended block (the #41/#31 tombstone is the live instance). A chmod
+    # converges the gap without touching the body. install_pre_push stays gated on
+    # marker-ABSENCE, so a broken hook (marker present) is never re-rendered.
+    pp_broken = rec["enforcement"] == "broken"
+    # A SYMLINKED broken pre-push points into a hook-manager's own tree (outside the
+    # repo). chmod-through-the-link would mutate that foreign target's mode —
+    # breaching two-scope purity, the exact case install_local refuses to chmod.
+    # Surface it report-only; never auto-repair a foreign target.
+    if pp_broken and (hd / _PRE_PUSH_HOOK).is_symlink():
+        return {"status": "report-only",
+                "message": "pre-push carries our marker but is a SYMLINK (a hook "
+                           "manager owns it) and is not executable — repair the link "
+                           "target manually; auto-fill won't chmod a foreign target "
+                           "(two-scope purity)"}
+    parts = []
+    if not pp_present:
+        parts.append("pre-push")
+    elif pp_broken:
+        parts.append("pre-push exec-bit (chmod; body preserved)")
+    if not pc_present:
+        parts.append("post-commit")
     return {
         "status": "fill",
         "tier": "confirm" if foreign else "auto",
-        "message": "install local merge-gate (harness.toml local profile + "
-                   "pre-push + post-commit + .gitignore)",
+        "message": "install/repair local merge-gate (harness.toml local profile"
+                   + ((" + " + " + ".join(parts)) if parts else "")
+                   + " + .gitignore)",
         "install_pre_push": not pp_present,
         "install_post_commit": not pc_present,
+        "repair_pre_push_exec": pp_broken,
     }
 
 
@@ -222,6 +249,18 @@ def _apply_merge_gate(repo, rec, tiers):
     mg.write_harness_toml(repo)                    # local profile; preserves [harness]
     if d["install_pre_push"]:
         mg.install_pre_push(repo, pp_tpl)
+    elif d.get("repair_pre_push_exec"):
+        # Marked-but-non-executable (#06 "broken"): restore the exec bit in place,
+        # NEVER re-render — preserve the operator's body (no marked-hook clobber).
+        # The decision already reports a SYMLINKED broken hook report-only; the
+        # is_symlink guard here is defense-in-depth (never chmod a foreign target).
+        # The chmod/stat is wrapped: a narrow race must not crash mid-apply.
+        hook = harness_doctor.resolve_hooks_dir(repo) / _PRE_PUSH_HOOK
+        if not hook.is_symlink():
+            try:
+                hook.chmod(hook.stat().st_mode | 0o111)
+            except OSError:
+                pass
     if d["install_post_commit"]:
         mg.install_post_commit(repo, pc_tpl)
     mg.ensure_gitignore(repo)
