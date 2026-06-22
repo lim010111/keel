@@ -55,10 +55,19 @@ project state, for any project that uses the local-markdown issue tracker
    If you're tempted to append this session's history to *Current focus*,
    append it to the issue's Resolution block instead.
 
-4. Do not invent progress. The narrative reflects reality — if nothing moved
+4. Re-arm the narrative-staleness guard now that the narrative is fresh. A
+   grilling session (`/grill-with-docs`, `/harden-issue`, `/grill-me`) pauses the
+   guard via an owned `PreToolUse` hook; clearing the marker here lets the next
+   `Stop` enforce against the refreshed posture. It is a safe no-op when no
+   marker exists, so always run it:
+   ```
+   python3 ~/.claude/hooks/narrative_guard.py resume
+   ```
+
+5. Do not invent progress. The narrative reflects reality — if nothing moved
    this session, say so plainly rather than padding it.
 
-5. Report to the user a two-line summary: the progress fraction from the table
+6. Report to the user a two-line summary: the progress fraction from the table
    and the "Start here next session" line.
 
 ## Notes

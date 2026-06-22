@@ -37,6 +37,8 @@ hooks/test_merge_gate_post_commit.py
 hooks/test_merge_gate_hooks.py
 hooks/narrative_guard.py
 hooks/test_narrative_guard.py
+hooks/grill_pause.py
+hooks/test_grill_pause.py
 
 # --- Scripts ---
 scripts/status.py
@@ -55,6 +57,8 @@ scripts/toml_sections.py
 scripts/test_toml_sections.py
 scripts/classify_sound.py
 scripts/test_classify_sound.py
+scripts/check_alignment_skill_drift.py
+scripts/test_check_alignment_skill_drift.py
 
 # --- Agents (definitions only; agent-memory/ is intentionally excluded) ---
 agents/ci-researcher.md

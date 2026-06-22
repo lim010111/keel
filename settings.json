@@ -21,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/shine/.claude/scripts/sound_permission.sh"
+            "command": "$HOME/.claude/scripts/sound_permission.sh"
           }
         ]
       }
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/shine/.claude/hooks/tdd_keyword.py"
+            "command": "python3 $HOME/.claude/hooks/tdd_keyword.py"
           }
         ]
       }
@@ -42,7 +42,16 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/shine/.claude/hooks/tdd_guard.py"
+            "command": "python3 $HOME/.claude/hooks/tdd_guard.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/grill_pause.py"
           }
         ]
       }
@@ -53,7 +62,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/shine/.claude/hooks/tdd_mark.py"
+            "command": "python3 $HOME/.claude/hooks/tdd_mark.py"
           }
         ]
       }
@@ -63,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "out=\"$(python3 /home/shine/.claude/scripts/status.py --brief 2>/dev/null)\"; if [ -n \"$out\" ]; then echo '=== Project status board (brief — actionable rows only; full board: STATUS.md) ==='; echo \"$out\"; fi"
+            "command": "out=\"$(python3 $HOME/.claude/scripts/status.py --brief 2>/dev/null)\"; if [ -n \"$out\" ]; then echo '=== Project status board (brief — actionable rows only; full board: STATUS.md) ==='; echo \"$out\"; fi"
           }
         ]
       },
@@ -71,7 +80,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/shine/.claude/hooks/narrative_guard.py snapshot"
+            "command": "python3 $HOME/.claude/hooks/narrative_guard.py snapshot"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/scripts/check_alignment_skill_drift.py"
           }
         ]
       }
@@ -81,7 +98,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/shine/.claude/scripts/sound_complete.sh",
+            "command": "$HOME/.claude/scripts/sound_complete.sh",
             "timeout": 20
           }
         ]
@@ -90,7 +107,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/shine/.claude/hooks/tdd_verify.py"
+            "command": "python3 $HOME/.claude/hooks/tdd_verify.py"
           }
         ]
       },
@@ -98,7 +115,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/shine/.claude/scripts/status.py"
+            "command": "python3 $HOME/.claude/scripts/status.py"
           }
         ]
       },
@@ -106,7 +123,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/shine/.claude/hooks/narrative_guard.py check"
+            "command": "python3 $HOME/.claude/hooks/narrative_guard.py check"
           }
         ]
       }
@@ -114,7 +131,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "bash /home/shine/.claude/statusline.sh"
+    "command": "bash $HOME/.claude/statusline.sh"
   },
   "enabledPlugins": {
     "typescript-lsp@claude-plugins-official": false,

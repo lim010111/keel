@@ -41,8 +41,8 @@ transitions** an artifact crosses on its way to a wider audience, see
 | Kind | Items |
 |---|---|
 | Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `consult-externals`, `daily-dev-log`, `daily-token-report`, `handle-merge-findings`, `harden-issue`, `harness-doctor`, `run-codex-validators`, `session-dev-log`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
-| Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `narrative_guard`, `merge_gate_post_commit` · `merge_gate_scheduler` |
-| Scripts | `status.py`, `sound_complete.sh` · `sound_permission.sh` · `classify_sound.py`, `merge_gate_local.py` · `merge_gate_adjudicate.py` · `merge_gate_measure.py`, `harness_doctor.py`, `toml_sections.py` |
+| Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `narrative_guard` · `grill_pause`, `merge_gate_post_commit` · `merge_gate_scheduler` |
+| Scripts | `status.py`, `sound_complete.sh` · `sound_permission.sh` · `classify_sound.py`, `merge_gate_local.py` · `merge_gate_adjudicate.py` · `merge_gate_measure.py`, `harness_doctor.py`, `toml_sections.py`, `check_alignment_skill_drift.py` |
 | Agents | `ci-researcher`, `codex-review-validator` |
 | Config | `CLAUDE.md`, `statusline.sh`, `settings.json` |
 
@@ -91,6 +91,15 @@ A bundle that auto-refreshes a project's root `STATUS.md` every session:
   It also blocks completion-labelled track lines written into the narrative
   (the board's labels are a closed set; finished tracks are deleted, not
   relabelled). `test_narrative_guard.py` covers it.
+- `grill_pause.py` — a `PreToolUse(Skill)` hook that pauses `narrative_guard` for
+  the duration of a grilling session (`grill-me` / `grill-with-docs` /
+  `harden-issue`), so the inline ADR/issue edits don't trip the `Stop` check
+  mid-session; `/status` re-arms it. The pause lives in this owned hook rather
+  than in the rented grilling skills' prose. `test_grill_pause.py` covers it.
+- `check_alignment_skill_drift.py` — a `SessionStart` advisory that recomputes
+  the rented alignment skills' git-tree hash and warns (only on drift) if an
+  upstream `skills` update changed them underfoot. `test_check_alignment_skill_drift.py`
+  covers it.
 
 ### 3. Dev logs
 
@@ -241,8 +250,9 @@ By hand:
    matching locations in your `~/.claude`.
 2. Merge the **harness core** block of `settings.json` (`hooks`, `statusLine`)
    into your own `~/.claude/settings.json`.
-3. The hook command paths are currently hardcoded to `/home/shine/...` — change
-   them to your own home path.
+3. The hook command paths use `$HOME` (expanded by the shell at run time), so
+   they resolve correctly once the files live under your own `~/.claude` — no
+   per-path editing needed.
 
 ---
 
@@ -269,7 +279,10 @@ hardening tasks are still open:
 - [ ] Drop the hardcoded Obsidian paths — move the memory paths in
       `daily-dev-log`, `daily-token-report`, `session-dev-log`, and
       `tech-blog` into configuration.
-- [ ] Genericize absolute paths — `/home/shine` → `$HOME`.
+- [x] Genericize the `settings.json` hook command paths — `/home/shine` → `$HOME`.
+- [ ] Genericize the remaining hardcoded absolute paths (e.g. the merge-gate
+      ledger default in `merge_gate_adjudicate.py`) — the deferred
+      arbitrary-home-layout work.
 - [ ] Split `settings.json` into a harness block and personal preference.
 - [ ] Make `sound_*.sh` cross-platform (optional).
 
