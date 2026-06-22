@@ -59,6 +59,22 @@ def has_agents_import(claude_text):
     return bool(IMPORT_RE.search(claude_text))
 
 
+def retitle_claude_h1(text):
+    """When migrating CLAUDE.md content into AGENTS.md, rewrite a leading
+    boilerplate `# CLAUDE.md` title line to `# AGENTS.md` so the new file is not
+    titled after the old one (scaffold-doctor#10). Only the document's leading H1
+    is touched, and only when it is the literal filename-title — a meaningful
+    custom title and every body mention of CLAUDE.md are preserved byte-for-byte."""
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if line.strip() == "":
+            continue              # skip leading blank lines to the title
+        if line.strip() == "# CLAUDE.md":
+            lines[i] = "# AGENTS.md"
+        break                      # inspect only the first non-blank line
+    return "\n".join(lines)
+
+
 def plan(target, actions):
     """Append (kind, msg, apply_fn) tuples describing what to do at `target`.
 
@@ -109,7 +125,7 @@ def plan(target, actions):
             return
 
         def apply_state2():
-            agents.write_text(claude_text, encoding="utf-8")
+            agents.write_text(retitle_claude_h1(claude_text), encoding="utf-8")
             claude.write_text(claude_tpl, encoding="utf-8")
         actions.append((
             "migrate",

@@ -47,13 +47,15 @@ DOC_TEMPLATE = SKILL_ROOT / "templates" / "issue-tracker.md"
 DOC_REL = Path("docs") / "agents" / "issue-tracker.md"
 
 # $HOME (not an absolute /home/<user> path) keeps hooks portable across
-# machines. Hooks run in a shell, so $HOME expands at run time.
+# machines. Hooks run in a shell, so $HOME expands at run time. The --brief
+# view (status-harness#03/#06) prints only the actionable rows, not the whole
+# board; $HOME is unquoted inside the out="$(...)" capture, where an inner quote
+# would close the shell string early. Must match the live settings.json form.
 SESSIONSTART_CMD = (
-    'root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"; '
-    'python3 "$HOME/.claude/scripts/status.py" >/dev/null 2>&1; '
-    'if [ -f "$root/STATUS.md" ]; then '
-    "echo '=== Project status board (STATUS.md) ==='; "
-    'cat "$root/STATUS.md"; fi'
+    'out="$(python3 $HOME/.claude/scripts/status.py --brief 2>/dev/null)"; '
+    'if [ -n "$out" ]; then '
+    "echo '=== Project status board (brief — actionable rows only; full board: STATUS.md) ==='; "
+    'echo "$out"; fi'
 )
 STOP_CMD = 'python3 "$HOME/.claude/scripts/status.py"'
 
@@ -85,10 +87,14 @@ jobs:
       - run: python3 scripts/status.py
       - name: Commit if changed
         run: |
-          if ! git diff --quiet STATUS.md; then
+          if [ ! -f STATUS.md ]; then exit 0; fi
+          git add STATUS.md
+          # Gate on STAGED content, not `git diff --quiet`: for an UNTRACKED
+          # first STATUS.md the latter exits 0 (clean) and the board would never
+          # land on main (status-harness#05). `--cached` sees the just-staged add.
+          if ! git diff --cached --quiet STATUS.md; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add STATUS.md
             git commit -m "Regenerate STATUS.md"
             git push
           fi
@@ -105,6 +111,30 @@ def hook_has(groups, needle):
             if needle in h.get("command", ""):
                 return True
     return False
+
+
+def _replace_hook_command(groups, needle, new_command):
+    """Replace the command of the first hook containing `needle`. Returns True
+    if a replacement happened."""
+    for group in groups:
+        for h in group.get("hooks", []):
+            if needle in h.get("command", ""):
+                h["command"] = new_command
+                return True
+    return False
+
+
+def ensure_sessionstart_hook(ss):
+    """Ensure SessionStart runs the `--brief` status board, upgrading in place a
+    bare `status.py` hook rather than duplicating it (status-harness#06). Mutates
+    `ss` and returns (kind, message, changed)."""
+    if hook_has(ss, "--brief"):
+        return ("ok", "SessionStart hook already runs status.py --brief", False)
+    if hook_has(ss, "status.py"):
+        _replace_hook_command(ss, "status.py", SESSIONSTART_CMD)
+        return ("change", "upgrade SessionStart hook to status.py --brief", True)
+    ss.append({"hooks": [{"type": "command", "command": SESSIONSTART_CMD}]})
+    return ("change", "add SessionStart hook (runs status.py --brief)", True)
 
 
 def find_repo_root():
@@ -147,13 +177,9 @@ def install_global(actions, apply):
     changed = False
 
     ss = hooks.setdefault("SessionStart", [])
-    if hook_has(ss, "status.py"):
-        actions.append(("ok", "SessionStart hook already runs status.py"))
-    else:
-        actions.append(("change", "add SessionStart hook "
-                                   "(runs status.py, prints STATUS.md)"))
-        ss.append({"hooks": [{"type": "command", "command": SESSIONSTART_CMD}]})
-        changed = True
+    kind, msg, ss_changed = ensure_sessionstart_hook(ss)
+    actions.append((kind, msg))
+    changed = changed or ss_changed
 
     st = hooks.setdefault("Stop", [])
     if hook_has(st, "status.py"):

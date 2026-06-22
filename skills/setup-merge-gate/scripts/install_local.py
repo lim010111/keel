@@ -5,9 +5,12 @@ detection); this helper does the file writes:
 
   * merge the `[merge-gate]` + `[merge-gate.local*]` sections into harness.toml
     (D8 defaults), leaving unrelated tables/comments byte-untouched;
-  * install the per-repo pre-push hook;
+  * install the per-repo pre-push hook (runs `merge-gate-local verify`);
+  * install the per-repo post-commit hook — the #33 auto-`produce` trigger;
   * add the artefact cache to .gitignore;
-  * register the global Stop / PostToolUse hooks in settings.json (idempotent).
+  * deregister any STALE global Stop / PostToolUse scheduler registrations —
+    those are RETIRED (#33 / ADR-0014); this installer registers NO global hooks
+    (the per-repo post-commit hook replaces the old global scheduler).
 
 Run: install_local.py --repo <path> [--settings <path>] [--pre-push-template <path>]
 """
@@ -409,6 +412,18 @@ def uninstall(repo_root: Path, settings_path: Path) -> dict:
     }
 
 
+def _rel_to_repo(path: Path, repo: Path) -> str:
+    """Display a backup path relative to the repo when it is inside it, else its
+    absolute path. An external/absolute core.hooksPath (husky-style) puts the
+    foreign-hook backup OUTSIDE the repo, where `relative_to(repo)` raises
+    ValueError (merge-gate#50 MISC-hookspath) — the out-of-repo backup is real and
+    must be reported, just by its absolute path."""
+    try:
+        return str(path.relative_to(repo))
+    except ValueError:
+        return str(path)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="local-profile installer helper (#30)")
     p.add_argument("--repo", required=True)
@@ -449,10 +464,10 @@ def main(argv=None) -> int:
         "repo": str(repo),
         "harness_toml": "written (local profile)",
         "pre_push": "installed",
-        "pre_push_backup": (str(pre_push_backup.relative_to(repo))
+        "pre_push_backup": (_rel_to_repo(pre_push_backup, repo)
                             if pre_push_backup else None),
         "post_commit": "installed (auto-produce trigger — #33)",
-        "post_commit_backup": (str(post_commit_backup.relative_to(repo))
+        "post_commit_backup": (_rel_to_repo(post_commit_backup, repo)
                                if post_commit_backup else None),
         "gitignore": "ensured",
         "stale_global_hooks_removed": stale_removed,
@@ -461,7 +476,7 @@ def main(argv=None) -> int:
                          (post_commit_backup, "post-commit")):
         if backup:
             print(f"\nNOTE: an existing {name} hook was backed up to "
-                  f"{backup.relative_to(repo)} before installing the merge-gate hook.")
+                  f"{_rel_to_repo(backup, repo)} before installing the merge-gate hook.")
     return 0
 
 

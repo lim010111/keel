@@ -49,6 +49,14 @@ commits `STATUS.md`. There is a ~30s–1min window after merge when `main`'s
 `STATUS.md` is stale (the workflow is still running); the trade-off is no
 multi-worktree merge conflicts ever.
 
+**No-remote / pre-CI caveat (status-harness#05):** because CI is the sole
+committer of `STATUS.md`, a repo with **no GitHub remote** (or before its first
+push to `main`) never runs the workflow — so the **first** `STATUS.md` needs a
+one-time manual `git add STATUS.md && git commit` to land on `main`. After that,
+the regen workflow's commit gate stages-then-checks (`git add` + `git diff
+--cached --quiet`), so it correctly commits even that first untracked board once
+CI is active, and never makes an empty commit when nothing changed.
+
 ## STATUS.md anatomy
 
 Two regions with different owners:

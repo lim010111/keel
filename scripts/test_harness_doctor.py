@@ -71,6 +71,26 @@ bypass_label = 'merge-gate-bypass'
 """
 
 
+class TestStrPathCoercion(unittest.TestCase):
+    """HD-typeerror (scaffold-doctor#09): the documented manual-import seam can
+    pass a *string* repo path. The engine's never-raises contract must hold — no
+    `TypeError: unsupported operand type(s) for /: 'str' and 'str'`."""
+
+    def test_read_recorded_profile_accepts_str_path(self):
+        repo = _new_repo('[harness]\nscaffold = ["agents-md"]\n')
+        prof = harness_doctor.read_recorded_profile(str(repo))  # str, not Path
+        self.assertEqual(prof, {"scaffold": ["agents-md"], "ci": None})
+
+    def test_read_recorded_profile_str_no_toml_returns_none(self):
+        repo = _new_repo()  # no harness.toml
+        self.assertIsNone(harness_doctor.read_recorded_profile(str(repo)))
+
+    def test_diagnose_accepts_str_path(self):
+        repo = _new_repo()
+        records = harness_doctor.diagnose(str(repo))  # str, not Path — must not raise
+        self.assertTrue(records, "diagnose(str) must return records, not raise")
+
+
 class TestFindRepoRoot(unittest.TestCase):
     def test_returns_none_outside_a_git_repo(self):
         d = Path(tempfile.mkdtemp())

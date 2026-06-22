@@ -38,10 +38,23 @@ is consent-gated per tier. Declining at any stage costs nothing.
    includes the **coverage** block; stop here unless the operator wants to
    re-record.
 
-2. **Propose (first run only, read-only).** If, and only if, **no `[harness]`
-   is recorded** (`harness_doctor.read_recorded_profile(repo)` is `None`) **and**
-   the session is interactive, call `harness_doctor.propose_profile(repo)`. It
-   returns a candidate `scaffold` + a `ci` recommendation from mechanical signals:
+2. **Propose (first run only, read-only).** The engine and the recorder are
+   plain modules in two different dirs — put both on `sys.path` once before
+   importing (neither is importable by default; without this the bare
+   `import` raises `ModuleNotFoundError`):
+
+   ```python
+   import sys
+   from pathlib import Path
+   sys.path.insert(0, str(Path.home() / ".claude" / "scripts"))                                # harness_doctor
+   sys.path.insert(0, str(Path.home() / ".claude" / "skills" / "harness-doctor" / "scripts"))  # record_profile (step 4)
+   import harness_doctor, record_profile
+   ```
+
+   If, and only if, **no `[harness]` is recorded**
+   (`harness_doctor.read_recorded_profile(repo)` is `None`) **and** the session
+   is interactive, call `harness_doctor.propose_profile(repo)`. It returns a
+   candidate `scaffold` + a `ci` recommendation from mechanical signals:
 
    | Signal (read-only) | Surfaces |
    |---|---|
@@ -65,7 +78,7 @@ is consent-gated per tier. Declining at any stage costs nothing.
    `{"scaffold": [...], "ci": <bool>}` and write it:
 
    ```python
-   import record_profile        # ~/.claude/skills/harness-doctor/scripts/
+   # record_profile was imported in the step-2 preamble (which put its dir on sys.path)
    record_profile.record_profile(repo, {"scaffold": [...], "ci": bool})
    ```
 

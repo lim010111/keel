@@ -301,6 +301,33 @@ class TestF1HooksDirResolution(unittest.TestCase):
         # NOT written to the assumed-but-wrong .git/hooks location.
         self.assertFalse((repo / ".git" / "hooks" / "pre-push").exists())
 
+    def test_external_absolute_hookspath_main_does_not_crash(self):
+        # merge-gate#50 (MISC-hookspath): an external/ABSOLUTE core.hooksPath
+        # (husky-style) puts the foreign-hook backup OUTSIDE the repo, where
+        # main()'s `backup.relative_to(repo)` raised ValueError. main() must
+        # complete and report the out-of-repo backup by its absolute path.
+        import contextlib
+        import io
+        repo = self.t / "repo"
+        repo.mkdir()
+        self._git("init", "-q", str(repo), cwd=self.t)
+        ext = self.t / "external-hooks"
+        ext.mkdir()
+        self._git("config", "core.hooksPath", str(ext), cwd=repo)
+        (ext / "pre-push").write_text("#!/bin/sh\necho foreign\n", encoding="utf-8")
+        settings = self.t / "settings.json"
+        post_tpl = TEMPLATE.parent / "post-commit"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = il.main(["--repo", str(repo), "--settings", str(settings),
+                          "--pre-push-template", str(TEMPLATE),
+                          "--post-commit-template", str(post_tpl)])
+        self.assertEqual(rc, 0, "main() must not raise on an external core.hooksPath")
+        report = json.loads(buf.getvalue().split("\n\n")[0])
+        # The backup is outside the repo, so it is reported absolute (not relativized).
+        self.assertEqual(report["pre_push_backup"],
+                         str(ext / "pre-push.pre-merge-gate"))
+
     def test_worktree_no_crash_installs_to_common_hooks(self):
         # In a linked worktree .git is a FILE; the old code raised
         # NotADirectoryError on mkdir. Now it must install into git's resolved

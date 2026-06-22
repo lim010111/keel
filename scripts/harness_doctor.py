@@ -226,7 +226,10 @@ def _load_toml(repo_root):
     B2 read-only contract), but the cause is DISTINGUISHED: a real TOMLDecodeError
     (syntax) vs any other read failure (permission / I/O / version-skew), so the
     report names the real fault rather than always blaming TOML syntax. Never raises."""
-    path = repo_root / "harness.toml"
+    # Coerce once here: the documented manual-import seam (and read_recorded_profile)
+    # may pass a str repo path; `str / "harness.toml"` would breach never-raises
+    # (HD-typeerror, scaffold-doctor#09). Path(Path) is idempotent.
+    path = Path(repo_root) / "harness.toml"
     if not path.exists():
         return {}
     try:
@@ -289,6 +292,8 @@ def _gate_record(repo_root, section):
 
 def diagnose(repo_root):
     """Read-only two-axis scaffold report for `repo_root` — a list of records."""
+    repo_root = Path(repo_root)  # accept a str path (import seam); the helpers below
+    #                              do `repo_root / ...`, so coerce before any of them.
     data = _load_toml(repo_root)
     records = []
 

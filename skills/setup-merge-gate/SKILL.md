@@ -17,13 +17,23 @@ The local profile installs:
 | What | Where | Purpose |
 |---|---|---|
 | pre-push hook | `<repo>/.git/hooks/pre-push` | calls `merge-gate-local verify` only |
+| post-commit hook | `<repo>/.git/hooks/post-commit` | the per-repo auto-`produce` trigger (#33; replaces the retired global scheduler) |
 | `[merge-gate]` + `[merge-gate.local*]` | `<repo>/harness.toml` | profile + local config (D8) |
 | `.merge-gate/` ignore | `<repo>/.gitignore` | the artefact cache is not committed (D3) |
-| global Stop + PostToolUse hooks | `~/.claude/settings.json` | the cheap auto-`produce` scheduler (D2) |
 
-The wrapper itself (`~/.claude/scripts/merge_gate_local.py`) and its hooks ship
-globally with this repo — the installer only wires the per-repo pieces and
-registers the global hooks if absent.
+The wrapper itself (`~/.claude/scripts/merge_gate_local.py`) and the retired
+global hooks ship globally with this repo — the installer wires only the
+per-repo pieces and **deregisters** any stale global Stop/PostToolUse scheduler
+registrations (#33 / ADR-0014). It registers **no** global hooks; auto-`produce`
+runs from the per-repo `post-commit` hook, not a global scheduler.
+
+When `core.hooksPath` points **outside** the repo (husky-style), `/setup-merge-gate`
+(the explicit, operator-invoked installer) does write the hook there and reports
+any out-of-repo backup by its absolute path. `harness-doctor`'s **auto-fill**
+stays *report-only* for that same repo — it never writes outside repo scope
+(ADR-0009 two-scope-leak guard). That divergence is **intentional**: an explicit
+install obeys the operator; an automated fill must not silently touch a foreign
+hooks dir.
 
 ### Workflow
 
