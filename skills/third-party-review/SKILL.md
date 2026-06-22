@@ -1,17 +1,22 @@
 ---
 name: third-party-review
-description: Runs an independent third-party review of the current Claude Code session. Deterministically reduces the session transcript and feeds it to external models (Codex, Gemini, and a separate Claude) so they can judge — from outside the human/main-agent pair — whether the conversation has diverged in ways that cause trouble later. Use when the user invokes /third-party-review, asks for an outside or 제3자 review of the session, wants to check whether the human and the agent are actually aligned, or mentions 후폭풍 / 세션 평가 / 제3자 시점 / 외부 모델 평가.
+description: Runs an independent third-party review by feeding the subject to external models (Codex, Gemini, and a separate Claude) so they judge — from outside the human/main-agent pair — what will cause fallout later. The default subject is the current Claude Code session (deterministically reduced transcript): whether the human and agent are aligned AND whether what they decided is sound. It can also review arbitrary targets — files, design docs, other artifacts — either alongside the transcript (pinned evidence) or on their own. Use when the user invokes /third-party-review, asks for an outside or 제3자 review of the session or of specific files/designs, wants to check alignment or whether some 내용·결과물 is sound, or mentions 후폭풍 / 세션 평가 / 제3자 시점 / 외부 모델 평가 / 대상 리뷰.
+argument-hint: "[all|both|codex|agy|claude] [대상 경로…] [only] · 예) 'codex' · 'docs/adr/0031.md 같이' · 'only src/foo.py' · 빈칸=transcript×all"
 ---
 
 # Third-Party Review
 
-세션을 main agent도 인간도 아닌 **제3자(다른 모델)**에게 평가시킨다. 평가 대상은
-코드가 아니라 *인간↔agent 대화의 궤적* — 지금 합의된 줄 알지만 나중에 후폭풍이
-날 간극을 찾는다.
+main agent도 인간도 아닌 **제3자(다른 모델)**에게 평가시킨다. 기본 대상은 세션이고 —
+*인간↔agent 대화의 궤적* **그리고 그들이 결정·산출한 내용이 타당한지** — 지금
+합의·타당해 보여도 나중에 후폭풍이 날 간극·결함을 찾는다. 파일·설계문서 등 임의 대상도
+같은 제3자 posture로 리뷰할 수 있다(§ Arguments — 평가자·대상·모드).
 
-## Argument
+## Arguments — 평가자 · 대상 · 모드
 
-`all`(기본) / `both` / `codex` / `agy` / `claude` — 평가자 선택. 인자 없으면 `all`.
+`$ARGUMENTS`는 자연어다. main agent가 읽어 **평가자 · 리뷰 대상 · 모드** 셋을 뽑아
+`prepare_review.py` 플래그로 옮긴다. 슬래시 인자든 평범한 자연어 요청이든 같은 규칙.
+
+**평가자** — `all`(기본) / `both` / `codex` / `agy` / `claude`. 없으면 `all`.
 
 - `all` — 셋 다(codex + agy + claude). 세 평결의 합집합(앙상블).
 - `both` — 교차 패밀리 쌍(codex + agy). claude 제외.
@@ -22,13 +27,44 @@ description: Runs an independent third-party review of the current Claude Code s
 `reviewers.toml`에서 선언한다(선택사항·기본값 내장). 근거는
 [DESIGN.md](DESIGN.md) § 평가자.
 
+**리뷰 대상 · 모드** — 기본 대상은 세션 transcript. 사용자가 파일·설계문서 등을
+지명하면 타깃이 된다:
+
+| 사용자 의도 | 모드 | 플래그 |
+|---|---|---|
+| (대상 미지정) | transcript-only | (없음) |
+| "X 도 같이 / 추가로" | additive — transcript + X (고신호 증거) | `--target X` |
+| "transcript 빼고 / X 만 / only X" | target-only — X만 | `--target X --only` |
+
+`--target`은 파일·디렉토리 경로(여러 개면 반복). 붙여넣은 텍스트는 먼저 파일로 떨군 뒤
+그 경로를 넘긴다. additive 타깃은 축소로 날아간 *실제 파일*을 복원해 **내용 타당성(축3)**
+판단의 증거가 된다(transcript 모드 출력 6섹션). target-only는 산출물 자체를 평가
+(출력 4섹션). 모드별 출력 구조는 [DESIGN.md](DESIGN.md) § 대상·모드.
+
+**worked examples** (자연어 → 동작):
+
+- `/third-party-review` → transcript × all
+- "codex 로만" → transcript × codex
+- "docs/adr/0031.md 도 같이 제3자 리뷰" → additive · `--target docs/adr/0031.md` · all
+- "transcript 말고 src/foo.py 만 봐줘" → only · `--target src/foo.py --only` · all
+- "이 설계 both 로 단독 리뷰" (+경로) → only · `--target <경로> --only` · both
+
+**echo-before-launch** — 비-기본 호출(타깃·only 포함)이면 평가(분 단위·비용)를 띄우기
+*전에* 해소한 계획을 한 줄로 되읽는다: 예) `transcript 제외 · 타깃=src/foo.py ·
+reviewers=all — 진행?`. 경로는 **실제 파일로 해소해 명시**한다("내가 쓴 파일" 같은 지시는
+어느 경로인지 확정). 진짜 모호할 때(additive/only 신호 없는 타깃, 경로 미해소)만 질문 1개.
+순수 기본 호출은 echo 생략. 스크립트가 타깃을 `errors`(미존재)로 보고하면 평가를 진행하지
+말고 사용자에게 알린다.
+
 ## Workflow
 
-1. **입력 준비** — `python3 <skill>/scripts/prepare_review.py` 실행. 현재 세션
-   JSONL을 찾아 결정론적으로 축소하고 `.tpr/transcript.md` + `.tpr/prompt.txt`를
-   만든다. stdout의 JSON `stats`(원본/축소 토큰, 적용 단계)를 사용자에게 한 줄로
-   보고한다. `core_exceeds_target`이 true면 "세션이 너무 커서 핵심 대화만으로도
-   예산 초과 — 평가가 부분적일 수 있음"을 알린다.
+1. **입력 준비** — `python3 <skill>/scripts/prepare_review.py` 를 위에서 파싱한 플래그
+   (`--target <path>` 반복·`--only`)와 함께 실행. transcript 모드면 세션 JSONL을 찾아
+   결정론적으로 축소하고, 타깃이 있으면 `.tpr/targets/`로 복사한 뒤 `.tpr/prompt.txt`를
+   만든다. stdout JSON의 `mode`·`targets`·`warnings`·`errors`를, transcript 모드면
+   `stats`(원본/축소 토큰, 적용 단계)도 사용자에게 한 줄로 보고한다. `warnings`(큰 타깃)·
+   `errors`(미존재 타깃)가 있으면 반드시 알린다. `core_exceeds_target`이 true면 "세션이
+   너무 커서 핵심 대화만으로도 예산 초과 — 평가가 부분적일 수 있음"을 알린다.
    - 세션 JSONL은 선형 로그가 아니라 트리다. 인간이 rewind 후 다시 보내면 버려진
      브랜치가 파일에 그대로 남는다. 스크립트는 `leafUuid`→root 활성 경로만
      추출해 transcript에 담는다 — 버려진 브랜치는 main agent 컨텍스트에 없었으므로
@@ -40,7 +76,8 @@ description: Runs an independent third-party review of the current Claude Code s
 2. **`.tpr/` 산출물** — `.tpr/`는 평가 산출물 디렉토리. **추적 중인
    `.gitignore`는 건드리지 말 것** — 평가 한 번 돌렸다고 repo에 diff가 생기면
    안 된다. git 저장소면 `.git/info/exclude`에 `.tpr/`가 없을 때만 추가한다
-   (로컬 전용, 커밋 diff 없음).
+   (로컬 전용, 커밋 diff 없음). 타깃은 `.tpr/targets/`에 스냅샷 복사된다(매 실행
+   새로 만들고 이전 타깃은 지움) — `.tpr/` 아래라 같은 exclude로 덮인다.
 
 3. **평가자 가용성 확인** — `command -v codex`, `command -v agy`,
    `command -v claude`. 단 바이너리 존재 ≠ 사용 가능:
@@ -84,8 +121,8 @@ description: Runs an independent third-party review of the current Claude Code s
      parity도 못 지킨다. (드물게 nested `-p`가 빈 출력을 내면 3·5단계 가용성 판정이
      실패로 잡아내 fail-safe.) 정리: claude는 모델-도구 레벨 read-only — codex보다
      약하고 agy보다 강하다. **agy**만 강제 수단이 전무하다 — `--sandbox`로도
-     프로젝트에 파일을 쓸 수 있음이 검증됨. agy의 read-only는 evaluator-prompt
-     지시에만 의존한다(미집행). 어느 쪽이든 `--dangerously-*` 플래그는 절대 금지.
+     프로젝트에 파일을 쓸 수 있음이 검증됨. agy의 read-only는 평가자 프롬프트
+     (`evaluator-common.md`) 지시에만 의존한다(미집행). 어느 쪽이든 `--dangerously-*` 플래그는 절대 금지.
    - **claude는 auto-memory만 제거해 codex·agy와 프로젝트-컨텍스트 parity를 맞춘다
      (전역 CLAUDE.md·STATUS는 codex·agy엔 없는 잔여 비대칭이지만 무해해 유지).**
      `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`(프로세스 한정 — 전역 env 불변)로 main
@@ -107,8 +144,9 @@ description: Runs an independent third-party review of the current Claude Code s
    - 결과 파일은 stdout 리다이렉트로 *셸*이 만든다 — 평가자가 쓰는 게 아니다.
 
 5. **결과 검증 후 제시 — 순서가 핵심**:
-   - 각 `.tpr/eval-*.md`가 *실제 평가*인지 먼저 확인한다: `평결` 헤더(5섹션
-     구조)가 있어야 한다. 없으면(예: "Authentication required", 빈 파일, 에러
+   - 각 `.tpr/eval-*.md`가 *실제 평가*인지 먼저 확인한다: `평결` 헤더(모드별
+     6섹션[transcript]/4섹션[target] 구조)가 있어야 한다. 없으면(예:
+     "Authentication required", 빈 파일, 에러
      덤프) 그 평가자는 **실패**다 — 평가인 척 보여주지 말고 실패 사실과 stderr를
      사용자에게 알린다.
    - 4단계 agy 쓰기 탐지에서 차이가 나왔으면 **맨 먼저** 그 사실과 변경 목록을
@@ -122,8 +160,10 @@ description: Runs an independent third-party review of the current Claude Code s
 
 ## 부품
 
-- `scripts/prepare_review.py` — JSONL 탐색 + 결정론적 축소 + 프롬프트 조립
+- `scripts/prepare_review.py` — JSONL 탐색 + 결정론적 축소 + 타깃 복사 + 프롬프트 조립
 - `reduction_config.py` — 축소 파라미터 (자기검증). 튜닝은 여기만.
 - `reviewers.toml` — reviewer별 model(+ codex effort) 설정. 선택사항·기본값 내장.
-- `evaluator-prompt.md` — 평가자 페르소나 프롬프트 템플릿
+- `evaluator-common.md` — 공통 페르소나(posture·read-only·증거기반·출력형식). 두 body가 공유.
+- `evaluator-transcript.md` — transcript 모드 body(궤적 증거규칙 + 6섹션). `{{COMMON}}` 포함.
+- `evaluator-target.md` — target 모드 body(타깃 manifest + 4섹션). `{{COMMON}}` 포함.
 - 설계 근거는 [DESIGN.md](DESIGN.md)

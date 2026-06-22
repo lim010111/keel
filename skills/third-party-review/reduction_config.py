@@ -1,6 +1,6 @@
 # reduction_config.py — 전사본 축소 파라미터. 여기만 고친다.
 #
-# prepare_review.py(축소 스크립트)와 evaluator-prompt.md(프롬프트 템플릿)가
+# prepare_review.py(축소 스크립트)와 evaluator-transcript.md(프롬프트 템플릿)가
 # 둘 다 이 파일을 읽는다. 값을 바꾸면 코드 수정 없이 양쪽에 동시 반영된다.
 # 잘못 고치면 import 시점에 _validate()가 즉시·명확하게 실패시킨다.
 
