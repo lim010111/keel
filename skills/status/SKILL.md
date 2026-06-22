@@ -56,7 +56,7 @@ project state, for any project that uses the local-markdown issue tracker
    append it to the issue's Resolution block instead.
 
 4. Re-arm the narrative-staleness guard now that the narrative is fresh. A
-   grilling session (`/grill-with-docs`, `/harden-issue`, `/grill-me`) pauses the
+   grilling session (`/grill-with-docs`, `/harden-issue`) pauses the
    guard via an owned `PreToolUse` hook; clearing the marker here lets the next
    `Stop` enforce against the refreshed posture. It is a safe no-op when no
    marker exists, so always run it:

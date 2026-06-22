@@ -38,7 +38,11 @@ import narrative_guard as ng  # noqa: E402  — reuse the exact marker keying `c
 
 # The grilling skills that bracket their session with a narrative-guard pause.
 # An explicit allow-list (not "all skills"): only these defer the narrative.
-GRILL_SKILLS = {"grill-me", "grill-with-docs", "harden-issue"}
+# grill-me is excluded on purpose — a pure interview skill makes no inline
+# ADR/CONTEXT/issue edits, so `check` has nothing to block during it; including it
+# only widened the guard-off window with no re-arm path (it's rented — no /status
+# closing step). See the d8662367 advisory review.
+GRILL_SKILLS = {"grill-with-docs", "harden-issue"}
 
 
 def main() -> None:

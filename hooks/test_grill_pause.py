@@ -86,8 +86,8 @@ class TestGrillLaunchWritesMarker(unittest.TestCase):
                              f"a grill launch must write one (session, repo) marker; "
                              f"dir={_names(Path(sr))} stderr={r.stderr}")
 
-    def test_all_three_grill_skills_write_marker(self):
-        for skill in ("grill-me", "grill-with-docs", "harden-issue"):
+    def test_both_grill_skills_write_marker(self):
+        for skill in ("grill-with-docs", "harden-issue"):
             with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
                 root = basic_repo(td, total=2, done=0)
                 r = run_grill_pause(pre_payload(root, vid(), skill), state_root=sr)
@@ -107,6 +107,18 @@ class TestNonGrillNoMarker(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(pause_files(sr), [],
                              "a non-grill Skill must not pause the guard")
+
+    def test_grill_me_does_not_pause(self):
+        # grill-me is a pure interview skill (no inline ADR/CONTEXT/issue edits) and
+        # is deliberately NOT in GRILL_SKILLS: there's nothing for `check` to block
+        # during it, and pausing only widened the guard-off window with no re-arm
+        # path (it's rented — no /status closing step). d8662367 advisory review.
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
+            root = basic_repo(td, total=2, done=0)
+            r = run_grill_pause(pre_payload(root, vid(), "grill-me"), state_root=sr)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(pause_files(sr), [],
+                             "grill-me must NOT pause the guard (excluded from GRILL_SKILLS)")
 
     def test_non_skill_tool_does_not_write_marker(self):
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as sr:
