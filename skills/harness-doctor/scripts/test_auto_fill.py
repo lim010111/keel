@@ -183,22 +183,46 @@ class TestMergeGateFill(unittest.TestCase):
         self.assertEqual((_hooks_dir(repo) / "pre-push").read_text(encoding="utf-8"),
                          pp_body)                       # prepended block intact
 
-    def test_pre_push_wired_post_commit_missing_is_report_only_not_dropped(self):
-        # Post-impl F1: enforcement=='wired' keys on the pre-push marker ALONE. A
-        # gate whose pre-push is wired but whose #33 post-commit producer trigger is
-        # MISSING must be surfaced report-only (not silently reported fully in
-        # place), and #04 must NOT auto-install the post-commit (surgical
-        # post-commit-only fill stays #07) nor re-render the wired pre-push.
+    def test_pre_push_wired_post_commit_missing_is_surgical_post_commit_fill(self):
+        # #07 AC3 — the lift of #04's deferral. enforcement=='wired' keys on the
+        # pre-push marker ALONE; when the pre-push is wired but the #33 post-commit
+        # producer trigger is MISSING, auto_fill now performs a SURGICAL
+        # post-commit-only fill: it installs the post-commit and NEVER re-renders the
+        # wired pre-push, so an operator-PREPENDED block (the #41/#31 tombstone is the
+        # live instance) survives byte-for-byte — the ADR-0020 §5 footgun. The surgical
+        # write reuses install_local's EXISTING install_post_commit() module function
+        # (no new install_local CLI flag — the audit found no consumer needs one).
         repo = _new_repo(_recorded(["merge-gate"]) + '\n[merge-gate]\nprofile = "local"\n')
-        pp_body = "#!/bin/sh\n# MERGE_GATE_WRAPPER\nexit 0\n"
-        _write_hook(repo, "pre-push", pp_body)          # wired pre-push, NO post-commit
+        prepended = ("# --- operator block: #31 tombstone (KEEP) ---\n"
+                     "#!/bin/sh\n# MERGE_GATE_WRAPPER\nexit 0\n")
+        _write_hook(repo, "pre-push", prepended)        # wired pre-push, NO post-commit
         plan = auto_fill.build_plan(repo)
         mg = [r for r in plan["records"] if r["concern"] == "merge-gate"]
-        self.assertEqual([r["consent_tier"] for r in mg], ["refuse"])   # surfaced, not dropped
+        self.assertEqual([r["consent_tier"] for r in mg], ["auto"])    # fillable, not refuse
         self.assertIn("post-commit", mg[0]["message"])
-        auto_fill.apply(repo)
-        self.assertNotIn("post-commit", [p.name for p in (_hooks_dir(repo)).iterdir()])  # not filled (#07)
-        self.assertEqual((_hooks_dir(repo) / "pre-push").read_text(encoding="utf-8"), pp_body)
+        res = auto_fill.apply(repo)
+        self.assertIn("merge-gate", res["applied"])
+        pc = _hooks_dir(repo) / "post-commit"
+        self.assertTrue(pc.is_file())                                  # surgically filled
+        self.assertIn("MERGE_GATE_POST_COMMIT", pc.read_text(encoding="utf-8"))
+        self.assertEqual((_hooks_dir(repo) / "pre-push").read_text(encoding="utf-8"),
+                         prepended)                       # wired pre-push NEVER re-rendered
+
+    def test_wired_pre_push_with_foreign_post_commit_is_confirm_tier(self):
+        # #07 AC3 boundary: when the surgical post-commit fill would BACK UP a foreign
+        # post-commit (a non-marker hook present), the consent tier escalates to
+        # 'confirm' (a backup is about to happen) and the default auto apply() leaves
+        # the foreign post-commit untouched until the go-ahead.
+        repo = _new_repo(_recorded(["merge-gate"]) + '\n[merge-gate]\nprofile = "local"\n')
+        _write_hook(repo, "pre-push", "#!/bin/sh\n# MERGE_GATE_WRAPPER\nexit 0\n")
+        foreign_pc = "#!/bin/sh\nnpx some-foreign post-commit\n"
+        _write_hook(repo, "post-commit", foreign_pc)     # foreign post-commit (no marker)
+        plan = auto_fill.build_plan(repo)
+        mg = [r for r in plan["records"] if r["concern"] == "merge-gate"]
+        self.assertEqual([r["consent_tier"] for r in mg], ["confirm"])
+        auto_fill.apply(repo)                            # auto tier only -> holds
+        self.assertEqual((_hooks_dir(repo) / "post-commit").read_text(encoding="utf-8"),
+                         foreign_pc)                      # foreign hook untouched until confirm
 
     def test_post_commit_re_render_is_gated_symmetrically(self):
         # AC (footgun, both hooks): pre-push UNWIRED but post-commit already wired

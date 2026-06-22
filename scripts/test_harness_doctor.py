@@ -856,5 +856,106 @@ class TestPhase2ReadOnly(unittest.TestCase):
         self.assertEqual(hook.stat().st_mode, before_mode)          # probe never chmods
 
 
+class TestConfigUnparseable(unittest.TestCase):
+    """scaffold-doctor #07 AC4 — config-error sentinel. _load_toml returned {} for
+    BOTH an absent and an unparseable harness.toml, so a present-but-broken config
+    false-reported as intent=absent (a false-clean conflicting with ADR-0020's
+    honesty). A dict-subclass sentinel distinguishes the two."""
+
+    # A present-but-unparseable harness.toml (unterminated basic string — tomllib
+    # raises). Distinct from an ABSENT file, which must keep reporting intent=absent.
+    BROKEN_TOML = '[merge-gate]\nprofile = "local\n'
+
+    def test_unparseable_config_is_not_reported_intent_absent(self):
+        # The bug: absent and unparseable both collapsed to {} -> merge-gate
+        # intent=absent. A broken config must surface a distinct config-unparseable
+        # state on the config-derived concern, never a clean 'absent'.
+        repo = _new_repo(self.BROKEN_TOML)
+        rec = _record(harness_doctor.diagnose(repo), "merge-gate")
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["state"], "config-unparseable")
+        self.assertNotEqual(rec["intent"], "absent")
+
+    def test_unparseable_config_is_a_gap_exit_2_not_false_clean(self):
+        # config-unparseable must read as a GAP (exit 2). It must NOT ride the
+        # informational `state is not None -> not a gap` path (the one unknown-class
+        # / drifted use) — that would exit 0 and recreate the exact false-clean AC4
+        # kills. A broken config is a real, actionable problem.
+        repo = _new_repo(self.BROKEN_TOML)
+        rec = _record(harness_doctor.diagnose(repo), "merge-gate")
+        self.assertTrue(harness_doctor._is_gap(rec))
+        code, out, _err = _run_main([str(repo)])
+        self.assertEqual(code, 2, msg=out)
+
+    def test_unparseable_config_is_a_gap_even_under_ci(self):
+        # An unparseable in-tree harness.toml is an INTENT-axis defect (the portable,
+        # CI-assertable config is broken), not a machine-local enforcement concern —
+        # so --ci must NOT relax it (unlike an unwired hook). CI should fail.
+        repo = _new_repo(self.BROKEN_TOML)
+        rec = _record(harness_doctor.diagnose(repo), "merge-gate")
+        self.assertTrue(harness_doctor._is_gap(rec, ci=True))
+        self.assertEqual(_run_main([str(repo), "--ci"])[0], 2)
+
+    def test_read_recorded_profile_degrades_on_unparseable_no_crash(self):
+        # read_recorded_profile does _load_toml(...).get("harness"); on the sentinel
+        # (an empty dict) .get returns None -> None (no recorded profile). It must
+        # DEGRADE to the existing no-profile path (raw per-concern presence, no
+        # coverage denominator), never raise — mirroring _load_toml's house idiom.
+        repo = _new_repo('[harness]\nscaffold = ["agents-md"\n')  # unterminated array
+        self.assertIsNone(harness_doctor.read_recorded_profile(repo))
+
+    def test_absent_config_still_reports_intent_absent_not_unparseable(self):
+        # The sentinel must distinguish unparseable from ABSENT: a repo with NO
+        # harness.toml keeps the legitimate intent=absent / state=None merge-gate
+        # gap (it is genuinely un-set-up), never the config-unparseable state.
+        repo = _new_repo()  # no harness.toml at all
+        rec = _record(harness_doctor.diagnose(repo), "merge-gate")
+        self.assertEqual(rec["intent"], "absent")
+        self.assertIsNone(rec["state"])
+
+    def test_diagnose_on_unparseable_config_mutates_nothing(self):
+        # The read-only #02 invariant holds on the new sentinel path too.
+        repo = _new_repo(self.BROKEN_TOML)
+        (repo / "AGENTS.md").write_text("# proj\n", encoding="utf-8")
+        before = _snapshot(repo)
+        harness_doctor.diagnose(repo)
+        self.assertEqual(_snapshot(repo), before)
+
+    def test_genuine_syntax_error_is_named_a_syntax_error(self):
+        # The catch-all is intentionally broad (diagnose must NEVER raise — the #02
+        # B2 read-only contract), but the cause is distinguished: a real TOMLDecodeError
+        # is reported AS a syntax error in the detail.
+        repo = _new_repo(self.BROKEN_TOML)  # unterminated string -> TOMLDecodeError
+        rec = _record(harness_doctor.diagnose(repo), "merge-gate")
+        self.assertEqual(rec["state"], "config-unparseable")
+        self.assertIn("syntax", rec["detail"].lower())
+
+    def test_non_syntax_read_failure_is_not_mislabeled_as_syntax(self):
+        # claude:finding-0 (merge-gate review of bc0fa11): a NON-syntax failure
+        # (permission / I/O / version-skew) must NOT be reported as "fix the TOML
+        # syntax" for a file whose syntax is fine. _load_toml still catches broadly
+        # (never raises) but distinguishes the cause and the detail names the real
+        # fault. The outcome stays a gap (exit 2) — an unreadable config is never a
+        # false-clean — it is just labelled honestly.
+        repo = _new_repo("[merge-gate]\nprofile = 'local'\n")  # valid TOML on disk
+        with mock.patch.object(harness_doctor.tomllib, "load",
+                               side_effect=PermissionError("simulated unreadable")):
+            rec = _record(harness_doctor.diagnose(repo), "merge-gate")
+            code, _out, _err = _run_main([str(repo)])
+        self.assertEqual(rec["state"], "config-unparseable")     # still surfaced
+        self.assertNotIn("syntax", rec["detail"].lower())        # NOT blamed on syntax
+        self.assertIn("could not read", rec["detail"].lower())   # accurate cause
+        self.assertEqual(code, 2)                                # still a gap, not false-clean
+
+    def test_unparseable_detail_names_all_config_derived_concerns(self):
+        # claude:finding-1 (merge-gate review): the single config-unparseable record
+        # must not visually imply ONLY merge-gate is affected. The detail states that
+        # no config-derived concern (merge-gate + any declared gate sections) could be
+        # read, so an operator reading the table is not under-informed.
+        repo = _new_repo(self.BROKEN_TOML)
+        rec = _record(harness_doctor.diagnose(repo), "merge-gate")
+        self.assertIn("declared gate section", rec["detail"].lower())
+
+
 if __name__ == "__main__":
     unittest.main()

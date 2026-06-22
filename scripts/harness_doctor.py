@@ -201,16 +201,44 @@ def hook_enforcement_state(repo_root, hook_name, marker):
     return "wired"
 
 
+class _UnparseableConfig(dict):
+    """Sentinel for a present-but-unreadable harness.toml (#07 AC4). A dict
+    SUBCLASS, not None: it stays an EMPTY dict, so the two _load_toml call sites
+    that `.get()` / iterate keep working (`.get(...)` -> None, iteration yields
+    nothing) while diagnose()/read_recorded_profile() can `isinstance`-branch on it.
+    `reason` carries the ACTUAL cause — a genuine TOML syntax error vs an I/O /
+    permission / version-skew read failure — so the report names the real fault
+    instead of always blaming TOML syntax (merge-gate review of bc0fa11,
+    claude:finding-0). Without this sentinel, _load_toml returned a plain `{}` for
+    BOTH absent and unreadable, so a broken config false-reported as intent=absent —
+    a false-clean conflicting with ADR-0020's honesty decisions."""
+
+    def __init__(self, reason=""):
+        super().__init__()
+        self.reason = reason
+
+
 def _load_toml(repo_root):
-    """Parsed <repo>/harness.toml, or {} when absent/unparseable (read-only)."""
+    """Parsed <repo>/harness.toml. Returns {} when ABSENT; an empty
+    _UnparseableConfig sentinel (carrying the cause) when PRESENT-BUT-UNREADABLE
+    (#07 AC4) — distinct so a broken/unreadable config is never read as a clean
+    'absent'. The catch is intentionally broad (diagnose must NEVER raise — the #02
+    B2 read-only contract), but the cause is DISTINGUISHED: a real TOMLDecodeError
+    (syntax) vs any other read failure (permission / I/O / version-skew), so the
+    report names the real fault rather than always blaming TOML syntax. Never raises."""
     path = repo_root / "harness.toml"
     if not path.exists():
         return {}
     try:
         with open(path, "rb") as fh:
             return tomllib.load(fh)
-    except Exception:
-        return {}
+    except tomllib.TOMLDecodeError as e:
+        return _UnparseableConfig(f"invalid TOML syntax: {e}")
+    except Exception as e:
+        # NOT a syntax error (permission / I/O / version-skew). Still a sentinel
+        # (never an absent-config false-clean), but the report must not blame TOML
+        # syntax for a file that could not even be read (claude:finding-0).
+        return _UnparseableConfig(f"could not read harness.toml: {e}")
 
 
 def _record(concern, intent="absent", enforcement="n/a",
@@ -265,8 +293,26 @@ def diagnose(repo_root):
     records = []
 
     # Base doc/structure scaffold (always reported), detected by reuse-by-import.
+    # These are FILESYSTEM-detected (AGENTS.md / vendored files), so an unparseable
+    # harness.toml does not affect them — they stay above the sentinel branch.
     records.append(_agents_md_record(repo_root))
     records.append(_status_harness_record(repo_root))
+
+    # Present-but-unreadable harness.toml (#07 AC4): we cannot read ANY
+    # config-derived concern (merge-gate + any declared gate sections). Surface it
+    # as a distinct, actionable state — NEVER let the absent-config path read the
+    # missing [merge-gate] as a clean intent=absent (a false-clean). _is_gap treats
+    # config-unparseable as a gap, so the doctor exits non-zero rather than "conforms".
+    # The detail names the REAL cause (data.reason) and states that ALL config-derived
+    # concerns are unreadable, so the single row is not misread as "only merge-gate
+    # is affected" (merge-gate review of bc0fa11, claude:finding-0 + finding-1).
+    if isinstance(data, _UnparseableConfig):
+        records.append(_record(
+            "merge-gate", intent="n/a", enforcement="n/a", state="config-unparseable",
+            detail=f"harness.toml present but unreadable ({data.reason}) — no "
+                   f"config-derived concern (merge-gate + any declared gate sections) "
+                   f"could be read"))
+        return records
 
     # merge-gate: bespoke schema discrimination, always reported.
     records.append(_merge_gate_record(repo_root, data.get("merge-gate")))
@@ -378,6 +424,13 @@ def _is_gap(rec, ci=False):
     never CI-asserted), so only the INTENT axis can make it a gap there. The
     non-ci default is unchanged: locally an unwired/broken hook stays a fillable
     gap (auto-fill wants to wire it)."""
+    # A present-but-unparseable harness.toml (#07 AC4) is a real, actionable gap on
+    # BOTH axes — checked BEFORE the `state is not None -> not a gap` rule that
+    # unknown-class / drifted ride, so a broken config is never a false-clean. It is
+    # an intent-axis defect (the portable in-tree config is broken), so `ci` never
+    # relaxes it either.
+    if rec["state"] == "config-unparseable":
+        return True
     if rec["applicability"] != "applicable" or rec["state"] is not None:
         return False
     if rec["intent"] in ("absent", "partial"):

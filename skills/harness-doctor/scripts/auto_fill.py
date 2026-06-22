@@ -154,25 +154,26 @@ def _hooks_dir_in_repo(repo):
 
 def _merge_gate_decision(repo, rec):
     """Read-only fill decision for the merge-gate concern. status is one of:
-      'wired'        — pre-push already carries our marker -> in place, dropped
+      'wired'        — pre-push AND the #33 post-commit BOTH carry our marker -> in
+                       place, dropped. A wired pre-push with a MISSING post-commit is
+                       a SURGICAL post-commit-only 'fill' (#07), never 'wired'.
       'report-only'  — parked / legacy / unrecognized profile / out-of-repo hooks
                        dir -> surfaced, never auto-filled (footgun / ADR-0009)
       'fill'         — auto-fillable; tier auto (clean) or confirm (a foreign hook
                        will be backed up). install_pre_push/install_post_commit
                        flags gate EACH hook re-render on its own marker (symmetric
                        footgun guard — never an in-place clobber of a marked hook)."""
-    if rec["enforcement"] == "wired":
-        # enforcement keys on the pre-push marker ALONE. Drop (fully in place) only
-        # when the #33 post-commit producer trigger is ALSO wired; otherwise SURFACE
-        # the partial state (pre-push enforcing, producer missing) report-only — #04
-        # never re-renders the wired pre-push nor surgically installs the missing
-        # post-commit (that stays #07).
-        if harness_doctor.hook_has_marker(repo, _POST_COMMIT_HOOK, _POST_COMMIT_MARKER):
-            return {"status": "wired"}    # both hooks marked -> already in place
-        return {"status": "report-only",
-                "message": "merge-gate pre-push wired but the #33 post-commit "
-                           "producer trigger is missing — report-only; the surgical "
-                           "post-commit-only fill is #07"}
+    # enforcement keys on the pre-push marker ALONE. Fully in place -> drop (like
+    # 'ok') only when the #33 post-commit producer trigger is ALSO wired.
+    if rec["enforcement"] == "wired" and harness_doctor.hook_has_marker(
+            repo, _POST_COMMIT_HOOK, _POST_COMMIT_MARKER):
+        return {"status": "wired"}    # both hooks marked -> already in place
+    # #07 AC3 (the lift of #04's deferral): a pre-push that is WIRED but whose #33
+    # post-commit producer trigger is MISSING falls THROUGH to the fill logic below.
+    # That logic computes install_pre_push = (not pp_present) = False — so the wired
+    # pre-push is NEVER re-rendered and any operator-prepended block survives (the
+    # ADR-0020 §5 footgun) — and install_post_commit = (not pc_present) = True: a
+    # SURGICAL post-commit-only fill via install_local's existing install_post_commit().
     # Fillable predicate. Excludes state-bearing (unknown-class) and
     # unrecognized profiles (intent=partial — anything but 'local', the only
     # profile since ADR-0021). What remains is profile local-or-absent — the

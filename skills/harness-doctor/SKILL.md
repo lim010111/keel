@@ -136,11 +136,14 @@ writes. The fill set is `{diagnose gaps} ∩ {recorded scaffold}` — **with no
    rather than half-writing.
 
 **Footgun refusals are automatic** (you do not need to reason about them): a
-merge-gate whose `pre-push`/`post-commit` already carries our marker is
-report-only (a re-render would clobber a prepended block — the #41 `#31`-RETIRED
-tombstone is the live instance); an unrecognized `[merge-gate]` (anything but
-profile `local` — the only profile, ADR-0021) is report-only (auto-fill never
-installs onto a section it does not understand); an out-of-repo `core.hooksPath` is report-only
+merge-gate hook that already carries our marker is never *re-rendered in place* (a
+re-render would clobber a prepended block — the #41 `#31`-RETIRED tombstone is the
+live instance), so a wired `pre-push` is left untouched. A *missing* sibling hook
+is still filled **surgically**: a `pre-push` that is wired but whose #33
+`post-commit` producer trigger is absent gets only the post-commit installed (#07),
+never a pre-push re-render. An unrecognized `[merge-gate]` (anything but profile
+`local` — the only profile, ADR-0021) is report-only (auto-fill never installs onto
+a section it does not understand); an out-of-repo `core.hooksPath` is report-only
 (two-scope leak). Re-running a full `install_local.py` is never how the gap is
 filled — auto_fill calls the repo-scoped functions directly.
 
