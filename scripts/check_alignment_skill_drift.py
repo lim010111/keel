@@ -6,17 +6,28 @@ claude-config, reference it in commits as `refs self-containment#04`.
 
 The harness RENTS its alignment gate — `grill-me` / `grill-with-docs` from
 `mattpocock/skills` (ADR-0004: the gate stays third-party, permanently HITL).
-The accepted insurance is to *notice* a behaviour-changing upstream update to the
-defining gate rather than depend on it never happening. This is a GLOBAL
-`~/.agents` concern, so it is a standalone script — explicitly NOT harness-doctor,
-which is target-repo-scoped (ADR-0020).
+The accepted insurance is to *notice* when the rented gate's content diverges from
+what the lockfile recorded — a local edit, a re-introduced authored delta (the
+self-containment#02 pristine-restore guard), or a partial/interrupted update —
+rather than depend on that never happening. This is a GLOBAL `~/.agents` concern,
+so it is a standalone script — explicitly NOT harness-doctor, which is
+target-repo-scoped (ADR-0020).
 
 Mechanism: the `skills` CLI records each skill's `skillFolderHash` in
 `~/.agents/.skill-lock.json`. That value is the upstream **git tree object SHA**
 of the skill folder (40-hex sha1, via the GitHub git/trees API), NOT the sha256
 `computeSkillFolderHash`. So we recompute the LIVE folder's git tree SHA the same
-way git does and compare: equal => the folder is byte-identical to what was
-installed; different => it drifted (an `npx skills update`, or a local edit).
+way git does and compare: equal => the folder is byte-identical to what the lock
+records; different => the folder diverged from its own lock entry.
+
+Known limitation (NOT covered): a *clean* `npx skills update` rewrites the folder
+AND re-pins `skillFolderHash` in the same lock, so live == recorded again and this
+check stays silent — by construction it cannot notice an upstream version bump that
+the lockfile self-heals. Catching that would need a baseline pinned OUTSIDE the
+mutable lock (an owned, committed hash); deferred as an enhancement (the lock has
+no version field to compare against today). What this check reliably catches is the
+folder drifting away from its own lock entry — the local-edit / re-introduced-delta
+case, which is the self-containment#02 guard it exists to back.
 
 Advisory only: never exits non-zero in a way that gates a session, and prints a
 line ONLY when there is drift (low-noise — wired to global SessionStart). Meant
@@ -115,10 +126,11 @@ def main() -> None:
         sys.exit(0)  # advisory: never gate a session on an infra error
     if drift:
         names = ", ".join(d["skill"] for d in drift)
-        print(f"⚠ alignment-skill drift: {names} differs from the recorded "
-              f"lockfile hash — a rented grilling skill changed underfoot "
-              f"(`npx skills update`?). Review before relying on the gate; see "
-              f"docs/adr/0031 §B step 4.")
+        print(f"⚠ alignment-skill drift: {names} diverged from its recorded "
+              f"lockfile hash — the rented grilling skill's folder no longer "
+              f"matches the lock (a local edit or partial update; a clean `npx "
+              f"skills update` re-pins the lock and would NOT surface here). "
+              f"Review before relying on the gate; see docs/adr/0031 §B step 4.")
     sys.exit(0)
 
 
