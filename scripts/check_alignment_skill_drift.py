@@ -43,9 +43,12 @@ import sys
 from pathlib import Path
 
 # The watched set is an EXPLICIT list — the alignment-gate skills only, never
-# "all skills" (AC3). These are the rented skills whose silent upstream change
-# would alter the defining gate's behaviour.
-WATCHED = ["grill-me", "grill-with-docs"]
+# "all skills" (AC3). The gate is now decomposed (skill-suite-migration): the
+# load-bearing prose lives in `grilling` (questioning style) + `domain-modeling`
+# (glossary, ADR three-test, FORMAT files); `grill-me`/`grill-with-docs` are thin
+# delegators. Watch all four — the delegators are cheap, the core is where a
+# silent upstream change would actually alter the gate's behaviour.
+WATCHED = ["grilling", "domain-modeling", "grill-me", "grill-with-docs"]
 
 
 def agents_dir() -> Path:

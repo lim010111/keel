@@ -55,15 +55,22 @@ def run_script(*, agents_dir):
 # hash, proven against grill-me's externally-known recorded value.
 # --------------------------------------------------------------------------
 class TestHashMatchesGit(unittest.TestCase):
-    @unittest.skipUnless((AGENTS / "skills" / "grill-me").is_dir(),
-                         "live ~/.agents/skills/grill-me not present")
-    def test_grill_me_hash_equals_recorded_git_tree_sha(self):
-        # 2a1ad170… is the git tree SHA the skills CLI recorded for the pristine
-        # grill-me folder (verified equal to `git write-tree`). If our pure-Python
-        # implementation matches it, it matches git.
+    @unittest.skipUnless((AGENTS / "skills" / "grill-me").is_dir()
+                         and (AGENTS / ".skill-lock.json").exists(),
+                         "live ~/.agents/skills/grill-me + lock not present")
+    def test_folder_hash_equals_recorded_git_tree_sha(self):
+        # The skills CLI records each skill's git tree object SHA (from GitHub)
+        # as skillFolderHash. Our pure-Python folder_hash recomputes the live
+        # folder's tree SHA independently; for a freshly-pinned skill the two must
+        # agree -> proves folder_hash reproduces git's object hash. Read the anchor
+        # from the lock rather than hardcoding it, so an upstream re-pin (the whole
+        # point of skill-suite-migration) doesn't make this test stale.
+        recorded = ((drift._load_lock(AGENTS).get("skills", {}).get("grill-me")
+                     or {}).get("skillFolderHash"))
+        self.assertTrue(recorded, "grill-me must be in the lock")
         got = drift.folder_hash(AGENTS / "skills" / "grill-me")
-        self.assertEqual(got, "2a1ad17028306ebe45f0e49703fa28b9b2e7f499",
-                         "folder_hash must reproduce git's tree object SHA")
+        self.assertEqual(got, recorded,
+                         "folder_hash must reproduce git's recorded tree SHA")
 
 
 # --------------------------------------------------------------------------
@@ -98,8 +105,9 @@ class TestDriftDetection(unittest.TestCase):
 # --------------------------------------------------------------------------
 class TestExplicitWatchedSet(unittest.TestCase):
     def test_watched_set_is_the_alignment_skills(self):
-        self.assertIn("grill-me", drift.WATCHED)
-        self.assertIn("grill-with-docs", drift.WATCHED)
+        # The decomposed gate: delegators + the core where the prose now lives.
+        for s in ("grilling", "domain-modeling", "grill-me", "grill-with-docs"):
+            self.assertIn(s, drift.WATCHED)
 
     def test_unwatched_skill_drift_is_ignored(self):
         with tempfile.TemporaryDirectory() as td:

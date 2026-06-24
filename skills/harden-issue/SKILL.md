@@ -5,8 +5,10 @@ description: Deepen a single markdown issue file via grilling — extends /grill
 
 # harden-issue
 
-Thin wrapper over [grill-with-docs](../grill-with-docs/SKILL.md) specialised for the
-"deepen one issue" use case. Trial sessions showed `grill-with-docs` alone produces
+Thin wrapper over the docs-aware grilling flow — [grilling](../grilling/SKILL.md)
+(questioning style) + [domain-modeling](../domain-modeling/SKILL.md) (glossary, ADRs,
+FORMAT files), i.e. what `/grill-with-docs` runs — specialised for the
+"deepen one issue" use case. Trial sessions showed grilling alone produces
 strong analysis but inconsistently lands it in the issue file — sometimes auto-editing,
 sometimes leaving the user to transcribe a Plan diff by hand. This skill closes that gap.
 
@@ -23,14 +25,14 @@ If invoked without a path, ask for one. Do not guess from `STATUS.md` or the cur
    - `Status:` line near the top
    - `## Acceptance criteria` section with `- [ ]` / `- [x]` bullets
    - `## Blocked by` section
-3. Per grill-with-docs's "Domain awareness", read `CONTEXT.md` / `CONTEXT-MAP.md` and the `docs/adr/` index.
+3. Per [domain-modeling](../domain-modeling/SKILL.md), read `CONTEXT.md` / `CONTEXT-MAP.md` and the `docs/adr/` index.
 4. No pause to run — the narrative-staleness guard is paused automatically for this skill by the owned `grill_pause` PreToolUse hook, so the per-turn lifecycle / AC / resolution edits and ADR spin-offs won't trip it mid-grilling. `/status` re-arms it at end-of-session (see the checklist).
 
 If the issue file lacks required headings, surface this *before* grilling and ask whether to normalise it first.
 
 ## Grilling
 
-Follow [grill-with-docs](../grill-with-docs/SKILL.md) for questioning style, codebase exploration, and CONTEXT/ADR awareness. The five gates below apply on top.
+Follow [grilling](../grilling/SKILL.md) for questioning style and codebase exploration, and [domain-modeling](../domain-modeling/SKILL.md) for CONTEXT/ADR awareness (glossary, concrete scenarios, the ADR three-test, the CONTEXT/ADR FORMAT files). The five gates below apply on top.
 
 ## Five gates (the contract this skill enforces)
 
@@ -57,7 +59,7 @@ If grilling surfaces a bundle (e.g. "7 session invariants", "3 error paths"), de
 
 ### Gate 4 — ADR / CONTEXT spin-off is explicit
 
-When a decision qualifies as an ADR per grill-with-docs's three-test (hard to reverse, surprising without context, real trade-off), **say so out loud**: "This is an ADR candidate — I'll write `docs/adr/NNNN-<slug>.md` alongside the issue update." Do not quietly keep it in the issue body or, worse, in chat only. Same for `CONTEXT.md` term resolutions.
+When a decision qualifies as an ADR per [domain-modeling](../domain-modeling/SKILL.md)'s three-test (hard to reverse, surprising without context, real trade-off), **say so out loud**: "This is an ADR candidate — I'll write `docs/adr/NNNN-<slug>.md` alongside the issue update." Do not quietly keep it in the issue body or, worse, in chat only. Same for `CONTEXT.md` term resolutions.
 
 ### Gate 5 — Underprovisioning check
 

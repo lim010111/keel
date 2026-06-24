@@ -12,11 +12,16 @@ Installed into `~/.agents/skills/` by a skill manager (lockfile:
 
 | Source repo | Skills |
 |---|---|
-| `mattpocock/skills` | caveman, diagnose, grill-me, grill-with-docs, handoff, improve-codebase-architecture, prototype, setup-matt-pocock-skills, tdd, to-issues, to-prd, triage, write-a-skill, zoom-out |
+| `mattpocock/skills` | caveman †, codebase-design, diagnosing-bugs, domain-modeling, grill-me, grill-with-docs, grilling, handoff, improve-codebase-architecture, prototype, resolving-merge-conflicts, setup-matt-pocock-skills, tdd, to-issues, to-prd, triage, writing-great-skills, zoom-out † |
 | `tdimino/claude-code-minoan` | agents-md-manager |
 | `dceoy/speckit-agent-skills` | claude-command-converter |
 | `vercel-labs/skills` | find-skills |
 | `vercel-labs/agent-skills` | vercel-react-best-practices, web-design-guidelines |
+
+> † `caveman`, `zoom-out` are pinned at their last upstream version — removed from
+> `mattpocock/skills` with no successor (skill-suite-migration / ADR-0032). The gate
+> is now the decomposed `grilling` + `domain-modeling` (+ `codebase-design`) core,
+> invoked via the `grill-me` / `grill-with-docs` delegators.
 
 ## Plugins
 
