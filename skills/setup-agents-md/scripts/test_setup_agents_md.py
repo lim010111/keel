@@ -11,6 +11,7 @@ be rewritten to `# AGENTS.md`; everything else preserved.
 """
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,13 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import setup_agents_md as sam  # noqa: E402
+
+
+def git_repo(td: str) -> Path:
+    """Init a throwaway git repo at td and return its resolved root."""
+    root = Path(td).resolve()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    return root
 
 
 def run_apply(target: Path):
@@ -78,6 +86,115 @@ class TestOtherStatesUnaffected(unittest.TestCase):
             self.assertNotIn("migrate", kinds, "a second run must not re-migrate")
             self.assertEqual((target / "AGENTS.md").read_text(encoding="utf-8"),
                              agents_after_first, "re-run must not rewrite AGENTS.md")
+
+
+class TestDiscovery(unittest.TestCase):
+    def test_discovers_nested_guidance_dirs_and_always_the_sweep_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = git_repo(td)
+            (root / "src").mkdir()
+            (root / "gas").mkdir()
+            (root / "src" / "CLAUDE.md").write_text("# CLAUDE.md\n", encoding="utf-8")
+            (root / "gas" / "AGENTS.md").write_text("# AGENTS.md\n", encoding="utf-8")
+            (root / "src" / "index.ts").write_text("x\n", encoding="utf-8")  # not guidance
+            targets = sam.discover_targets(root, root)
+            self.assertIn(root, targets, "sweep root is always a target")
+            self.assertIn(root / "src", targets)
+            self.assertIn(root / "gas", targets)
+            self.assertNotIn(root / "src" / "index.ts", targets)
+
+    def test_gitignored_dir_is_not_discovered(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = git_repo(td)
+            (root / ".gitignore").write_text("vendor/\n", encoding="utf-8")
+            (root / "vendor").mkdir()
+            (root / "vendor" / "CLAUDE.md").write_text("# CLAUDE.md\n", encoding="utf-8")
+            self.assertNotIn(root / "vendor", sam.discover_targets(root, root))
+
+
+class TestWiredSet(unittest.TestCase):
+    def test_warn_and_error_dirs_are_excluded(self):
+        results = [
+            (Path("/a"), [("migrate", "m", None)]),
+            (Path("/b"), [("ok", "o"), ("ok", "o")]),
+            (Path("/c"), [("warn", "conflict")]),
+            (Path("/d"), [("error", "broken")]),
+        ]
+        wired = sam.wired_dirs_after(results)
+        self.assertEqual(wired, {Path("/a"), Path("/b")},
+                         "only conflict-free, content-bearing dirs are wired")
+
+
+class TestCrosslinkRewrite(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        (self.root / "src").mkdir()
+        (self.root / "gas").mkdir()
+        self.wired = {self.root, self.root / "src", self.root / "gas"}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_flips_link_target_text_and_inline_code_to_wired_dirs(self):
+        text = ("[../gas/CLAUDE.md](../gas/CLAUDE.md) and "
+                "[`../gas/CLAUDE.md`](../gas/CLAUDE.md) and `../gas/CLAUDE.md`")
+        out, n = sam.rewrite_text_crosslinks(text, self.root / "src", self.wired)
+        self.assertNotIn("CLAUDE.md", out, "every path-shaped ref flips")
+        self.assertEqual(out.count("AGENTS.md"), 5)
+        self.assertEqual(n, 5)
+
+    def test_bare_prose_noun_is_preserved(self):
+        text = "fix broken CLAUDE.md / README.md path refs"
+        out, n = sam.rewrite_text_crosslinks(text, self.root, self.wired)
+        self.assertEqual(out, text, "a bare-word CLAUDE.md noun must not change")
+        self.assertEqual(n, 0)
+
+    def test_ref_to_non_wired_dir_is_left_alone(self):
+        # A link to a dir NOT in the wired set (e.g. a State-4 conflict, whose
+        # CLAUDE.md keeps independent content) must not be flipped.
+        text = "[../conflict/CLAUDE.md](../conflict/CLAUDE.md)"
+        out, n = sam.rewrite_text_crosslinks(text, self.root / "src", self.wired)
+        self.assertEqual(out, text)
+        self.assertEqual(n, 0)
+
+    def test_self_dir_link_flips(self):
+        out, n = sam.rewrite_text_crosslinks("[CLAUDE.md](CLAUDE.md)",
+                                             self.root / "src", self.wired)
+        self.assertEqual(out, "[AGENTS.md](AGENTS.md)")
+        self.assertEqual(n, 2)
+
+
+class TestExternalReport(unittest.TestCase):
+    def test_reports_file_relative_and_root_relative_refs_only_for_wired(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = git_repo(td)
+            (root / "src").mkdir()
+            (root / "src" / "CLAUDE.md").write_text("# CLAUDE.md\n", encoding="utf-8")
+            # root-relative ref inside a source comment under src/
+            (root / "src" / "index.ts").write_text(
+                '// see src/CLAUDE.md "rules"\n', encoding="utf-8")
+            # file-relative markdown ref in a README
+            (root / "README.md").write_text(
+                "[`src/CLAUDE.md`](src/CLAUDE.md)\n", encoding="utf-8")
+            # a ref to a NON-wired dir must not be reported
+            (root / "other.md").write_text("see vendor/CLAUDE.md\n", encoding="utf-8")
+            wired = {root / "src"}
+            hits = sam.external_refs(root, root, wired)
+            files = {rel for rel, _, _ in hits}
+            self.assertIn("src/index.ts", files, "root-relative comment ref caught")
+            self.assertIn("README.md", files, "file-relative markdown ref caught")
+            self.assertNotIn("other.md", files, "ref to a non-wired dir is ignored")
+
+    def test_agents_md_is_not_reported_as_external(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = git_repo(td)
+            (root / "src").mkdir()
+            (root / "src" / "CLAUDE.md").write_text("# CLAUDE.md\n", encoding="utf-8")
+            (root / "AGENTS.md").write_text(
+                "[src/CLAUDE.md](src/CLAUDE.md)\n", encoding="utf-8")
+            hits = sam.external_refs(root, root, {root / "src"})
+            self.assertEqual(hits, [], "the AGENTS.md graph is auto-fixed, not reported")
 
 
 if __name__ == "__main__":

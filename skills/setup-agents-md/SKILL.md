@@ -1,6 +1,6 @@
 ---
 name: setup-agents-md
-description: Bootstrap the AGENTS.md ↔ CLAUDE.md relationship in a target repo (or a subdirectory). AGENTS.md is the canonical agent guidance — read directly by Codex CLI and antigravity — and CLAUDE.md `@import`s it so Claude Code sees the same content. Use when a repo has no AGENTS.md, when only CLAUDE.md exists and should be migrated, when adding nested AGENTS.md under `src/<context>/`, or when the user asks to "set up AGENTS.md", "wire AGENTS.md and CLAUDE.md", "migrate CLAUDE.md to AGENTS.md", "AGENTS.md 셋업", "AGENTS.md 깔아줘".
+description: Bootstrap and maintain the AGENTS.md ↔ CLAUDE.md relationship across a repo. AGENTS.md is the canonical agent guidance — read directly by Codex CLI and antigravity — and CLAUDE.md `@import`s it so Claude Code sees the same content. Recursive by default: one run wires the repo root plus every nested CLAUDE.md/AGENTS.md (src/, gas/, …) and normalizes cross-links so the whole AGENTS.md graph stays consistent. Use when a repo has no AGENTS.md, when only CLAUDE.md exists and should be migrated, when nested CLAUDE.md files under subdirectories still need wiring, or when the user asks to "set up AGENTS.md", "migrate CLAUDE.md to AGENTS.md", "wire up all nested CLAUDE.md", "AGENTS.md 셋업", "AGENTS.md 깔아줘", "하위 CLAUDE.md 까지 정리".
 ---
 
 # Set up the AGENTS.md ↔ CLAUDE.md relationship
@@ -15,96 +15,113 @@ becomes a thin wrapper that `@import`s `AGENTS.md`:
 @AGENTS.md
 ```
 
-This skill installs that wrapper relationship. It does **not** author
-project-specific guidance — that is a separate, living concern.
+This skill installs and maintains that wrapper relationship — for the root
+**and** every nested guidance directory. It does **not** author
+project-specific guidance; content is moved verbatim, never rewritten.
 
-## The four starting states
+## The four states (per directory)
 
-The script branches on what already exists at the target directory:
+The script branches on what exists at each directory:
 
 | State | AGENTS.md | CLAUDE.md | Action |
 |---|---|---|---|
 | 1 | absent | absent | Create both (template + wrapper) |
 | 2 | absent | present | Move CLAUDE.md content into AGENTS.md, replace CLAUDE.md with wrapper |
 | 3 | present | absent | Create CLAUDE.md wrapper only |
-| 4 | present | present | If CLAUDE.md already has `@AGENTS.md`: silent no-op. Else: refuse + ⚠ — human merges manually |
+| 4 | present | present | If CLAUDE.md already has `@AGENTS.md`: silent no-op. Else: refuse + `⚠` — human merges manually |
 
 State 2 is destructive on CLAUDE.md, but git holds the original, so no `.bak`
 file is written.
 
-## Workflow
+## Recursive by default
 
-**1 — Pick the target.** Default = repo root (`git rev-parse --show-toplevel`).
-Pass a subdirectory path when the user wants nested guidance under, e.g.,
-`src/auth/` — the wrapper and template both go there, and `@AGENTS.md`
-resolves relative to the CLAUDE.md beside it.
+A bare run **sweeps the whole repo** — the sweep root (always planned, so a
+fresh repo still bootstraps root guidance) plus every directory that already
+holds a `CLAUDE.md` or `AGENTS.md`. Discovery is git-scoped
+(`ls-files --cached --others --exclude-standard`), so vendored / generated
+trees the repo ignores are skipped for free.
 
-**2 — Preview.** From inside the target repo run:
 ```
 python3 ~/.claude/skills/setup-agents-md/scripts/setup_agents_md.py --dry-run
-# or for a subdir
-python3 ~/.claude/skills/setup-agents-md/scripts/setup_agents_md.py --dry-run src/auth
 ```
-Each line shows ✓ (already wired), + (will change), or ⚠ (manual merge
-needed). Outside a git repo the script errors out — it relies on
+
+- A positional `PATH` scopes the sweep to that subtree (`… src`).
+- `--single PATH` operates on exactly one directory — the pre-recursive
+  behavior, for when you mean only that dir.
+
+Outside a git repo the script errors out — it relies on
 `git rev-parse --show-toplevel`.
 
-**3 — Confirm if anything will change.**
-- If every line is ✓ → already wired, stop.
-- If only `+` lines for **state 1 or 3** (pure creation) → safe to apply
-  without further confirmation.
-- If a `+` line says **migrate** (state 2) → show the user that
-  `CLAUDE.md` content will be moved into `AGENTS.md` and `CLAUDE.md`
-  replaced with the wrapper. Get explicit go-ahead. Mention that the
-  original is recoverable via `git`.
-- If a `⚠` line (state 4 with conflict) → do **not** apply. Tell the user
-  both files have independent content and offer to help merge: pick the
-  authoritative content, paste it into `AGENTS.md`, replace `CLAUDE.md`
-  with just `@AGENTS.md`. Then re-run the skill — it should now report ✓.
+## Workflow
 
-**4 — Apply.** Re-run the same command without `--dry-run`.
+**1 — Preview.** Run the dry-run above. Each directory's lines show `✓`
+(already wired), `+` (will change / migrate), or `⚠` (manual merge needed),
+followed by the cross-link plan and the external-reference report.
 
-**5 — Report.** One short summary: what state the repo was in, what was
-written, and a nudge for the user to fill in real content in `AGENTS.md`
-(the template carries a placeholder comment).
+**2 — Confirm.** One go-ahead covers the whole sweep:
+- Only `✓` lines → already wired, stop.
+- `+` lines for **state 1 or 3** (pure creation) → safe to apply.
+- Any `+ migrate` line (state 2) → show the user that those `CLAUDE.md` files
+  move into `AGENTS.md` and become wrappers; get explicit go-ahead. Mention
+  the originals are recoverable via `git`. One confirmation covers all of
+  them — they are the same recoverable operation.
+- Any `⚠` line (state-4 conflict) → that directory is **skipped**, never
+  blocks the rest. Tell the user both files there have independent content;
+  offer to merge (pick the authoritative content into `AGENTS.md`, replace
+  `CLAUDE.md` with `@AGENTS.md`), then re-run — it should report `✓`.
 
-## Subdirectory expansion
+**3 — Apply.** Re-run without `--dry-run`.
 
-Both Claude Code and Codex CLI walk the directory tree for nested
-guidance — `<repo>/src/auth/CLAUDE.md` augments `<repo>/CLAUDE.md` when an
-agent is working inside `src/auth/`. Same for `AGENTS.md`. This skill
-supports that by accepting a path argument:
+**4 — Report.** One short summary: which directories were wired, how many
+cross-links were normalized, and the external-reference list the user must
+decide on (below).
 
-```
-python3 ~/.claude/skills/setup-agents-md/scripts/setup_agents_md.py src/auth
-```
+## The AGENTS.md graph stays coherent
 
-The script enforces that the path is inside the repo. Inside the nested
-directory, the wrapper still says `@AGENTS.md` (relative to itself) — no
-path rewriting needed.
+The skill owns one thing and keeps it consistent: **the AGENTS.md graph** —
+the set of `AGENTS.md` files and the links between them. After wiring, it
+**edits inside the graph** and **only reports outside it**.
+
+- **Inside (auto-fixed):** path-shaped `CLAUDE.md` cross-references *inside
+  AGENTS.md files* — link target `](…/CLAUDE.md)`, link text `[…/CLAUDE.md]`,
+  inline-code path `` `…/CLAUDE.md` `` — flip to `AGENTS.md` when their target
+  directory is now wired. This runs over **all** wired AGENTS.md, including a
+  root that was migrated earlier. Bare-word prose (`broken CLAUDE.md /
+  README.md`) and links to a non-wired dir (e.g. a state-4 conflict, whose
+  `CLAUDE.md` keeps independent content) are left untouched.
+- **Outside (reported, never edited):** references that live in source
+  comments, READMEs, `.claude/agents/*.md`, or CI templates still resolve
+  (the wrapper exists at the old path) but point at the wrapper, not the
+  content. The skill lists them `file:line` and stops there — that blast
+  radius is the human's call, because auto-editing arbitrary source/tooling
+  across any repo is unsafe.
 
 ## Idempotency
 
-Every state's "already wired" path emits only ✓ lines and writes nothing.
-Safe to re-run from automation. The wrapper detection is anchored to a
-line matching `^@(\.\/)?AGENTS\.md\s*$`, so it tolerates either `@AGENTS.md`
-or `@./AGENTS.md`.
+Every state's "already wired" path emits only `✓` and writes nothing; the
+cross-link pass finds nothing left to flip. Safe to re-run from automation.
+Wrapper detection is anchored to a line matching `^@(\.\/)?AGENTS\.md\s*$`, so
+it tolerates `@AGENTS.md` or `@./AGENTS.md`.
 
 ## Verification
 
 After applying:
-- `AGENTS.md` exists at the target.
-- `CLAUDE.md` exists at the target and contains a line `@AGENTS.md`.
-- Re-running the script reports `Already wired up — nothing to do.`
-- (State 2 only) The previous `CLAUDE.md` content is now the body of
-  `AGENTS.md`; `git diff` shows the swap.
+- `AGENTS.md` exists at each wired directory; its `CLAUDE.md` contains
+  `@AGENTS.md`.
+- (State 2) The previous `CLAUDE.md` content is now the body of `AGENTS.md`
+  (`git diff` shows the swap); a leading `# CLAUDE.md` title became
+  `# AGENTS.md`.
+- No `…/CLAUDE.md` link to a wired dir remains inside any `AGENTS.md`.
+- Re-running reports `Already wired up — nothing to do.`
 
 ## Notes
 
-- The script never edits files outside the target directory. The global
-  `~/.claude/` tree is untouched.
-- The templates under `templates/` are intentionally minimal — they exist
-  to bootstrap the *relationship*, not to dictate content.
-- For projects that already use `/setup-status-harness`, this skill is
-  complementary: STATUS.md tracks issue state, AGENTS.md tracks agent
-  guidance.
+- The script never edits files outside the discovered directories' `AGENTS.md`
+  files. The global `~/.claude/` tree is untouched.
+- `plan(target, actions)` is the single-directory planner and is unchanged —
+  `harness-doctor`'s `auto_fill` calls it directly and derives consent tiers
+  from its `kind` vocabulary (`ok`/`change`/`migrate`/`warn`/`error`).
+- The templates under `templates/` are intentionally minimal — they bootstrap
+  the *relationship*, not the content.
+- Complementary to `/setup-status-harness`: STATUS.md tracks issue state,
+  AGENTS.md tracks agent guidance.
