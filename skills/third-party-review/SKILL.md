@@ -1,7 +1,7 @@
 ---
 name: third-party-review
 description: Runs an independent third-party review by feeding the subject to external models (Codex, Gemini, and a separate Claude) so they judge — from outside the human/main-agent pair — what will cause fallout later. The default subject is the current Claude Code session (deterministically reduced transcript): whether the human and agent are aligned AND whether what they decided is sound. It can also review arbitrary targets — files, design docs, other artifacts — either alongside the transcript (pinned evidence) or on their own. Use when the user invokes /third-party-review, asks for an outside or 제3자 review of the session or of specific files/designs, wants to check alignment or whether some 내용·결과물 is sound, or mentions 후폭풍 / 세션 평가 / 제3자 시점 / 외부 모델 평가 / 대상 리뷰.
-argument-hint: "[all|both|codex|agy|claude] [대상 경로…] [only] · 예) 'codex' · 'docs/adr/0031.md 같이' · 'only src/foo.py' · 빈칸=transcript×all"
+argument-hint: "[codex|agy|claude|all] [path] [only] · or a prompt"
 ---
 
 # Third-Party Review
