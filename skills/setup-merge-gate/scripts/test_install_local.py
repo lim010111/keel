@@ -39,38 +39,45 @@ class TestHarnessMerge(unittest.TestCase):
         self.assertEqual(local["producer"]["reviewers"], ["codex"])
         self.assertEqual(local["producer"]["codex"]["bin"], "codex")
 
-    def test_fresh_file_ships_commented_model_keys(self):
-        # #47/#48 — the model/effort knobs ship COMMENTED (unset = each tool's
-        # own default) so harness.toml self-documents; the validator table
-        # itself is comment-only, so it must not parse as a real table on a
-        # fresh install (load_config sees no validator keys → tool defaults).
+    def test_fresh_file_ships_pinned_model_keys(self):
+        # #47/#48 — the codex reviewer + validator model/effort knobs ship
+        # PINNED (gpt-5.5/xhigh, opus, opus); harness.toml still self-documents
+        # the full menu inline. The optional Claude reviewer and dispatcher_effort
+        # stay commented (opt-in); comment a pinned knob out to fall back to that
+        # tool's own default.
         out = il.merge_harness_toml("")
-        self.assertIn('# model            = "gpt-5.5"', out)
-        self.assertIn('# reasoning_effort = "high"', out)
         self.assertIn("[merge-gate.local.validator]", out)
-        self.assertIn('# model             = "sonnet"', out)
-        self.assertIn('# dispatcher_model  = "opus"', out)
+        # optional second reviewer + dispatcher_effort stay opt-in (commented)
+        self.assertIn('# [merge-gate.local.producer.claude]', out)
         self.assertIn('# dispatcher_effort = "medium"', out)
         # official-name guides present (#48)
         self.assertIn("gpt-5.4-mini", out)
         self.assertIn("claude-opus-4-8", out)
         d = self._parse(out)
-        self.assertEqual(d["merge-gate"]["local"].get("validator", {}), {})
-        self.assertNotIn("model", d["merge-gate"]["local"]["producer"]["codex"])
-        self.assertNotIn("claude", d["merge-gate"]["local"]["producer"])
+        codex = d["merge-gate"]["local"]["producer"]["codex"]
+        self.assertEqual(codex["model"], "gpt-5.5")
+        self.assertEqual(codex["reasoning_effort"], "xhigh")
+        v = d["merge-gate"]["local"]["validator"]
+        self.assertEqual(v["model"], "opus")
+        self.assertEqual(v["dispatcher_model"], "opus")
+        self.assertNotIn("dispatcher_effort", v)   # stays commented (opt-in)
+        self.assertNotIn("claude", d["merge-gate"]["local"]["producer"])  # opt-in
 
     def test_reinstall_preserves_customized_validator_table(self):
-        # C2 extension (#47): a repo that set real validator models must not be
-        # reverted to the commented defaults on reinstall.
-        once = il.merge_harness_toml("")
-        custom = once.replace(
-            '# model             = "sonnet"          # validator AGENT (judgment subagent) — tier alias only: haiku|sonnet|opus|fable; unset = agent default',
-            'model             = "opus"')
-        self.assertNotEqual(once, custom)  # the replace actually hit
-        again = il.merge_harness_toml(custom)
-        d = self._parse(again)
-        self.assertEqual(d["merge-gate"]["local"]["validator"]["model"], "opus")
-        self.assertEqual(again.count("[merge-gate.local.validator]"), 1)
+        # C2 (#47): a repo that customized its validator table away from the
+        # shipped pin must not be reverted on reinstall — existing
+        # [merge-gate.local*] tables are preserved verbatim.
+        existing = (
+            "[merge-gate.local.validator]\n"
+            'model = "sonnet"\n'
+            'dispatcher_model = "haiku"\n'
+        )
+        out = il.merge_harness_toml(existing)
+        d = self._parse(out)
+        self.assertEqual(d["merge-gate"]["local"]["validator"]["model"], "sonnet")
+        self.assertEqual(
+            d["merge-gate"]["local"]["validator"]["dispatcher_model"], "haiku")
+        self.assertEqual(out.count("[merge-gate.local.validator]"), 1)
 
     def test_lockfiles_stay_in_scope(self):
         d = self._parse(il.merge_harness_toml(""))

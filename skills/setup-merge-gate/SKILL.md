@@ -42,17 +42,17 @@ must be a git repo with `AGENTS.md` at the root (run `/setup-agents-md` first
 if missing — the validator reads project context from there).
 
 **2 — Ask the one model question (#47/#48).** Before running the installer,
-ask once (AskUserQuestion) whether to pin models/effort or keep tool defaults:
+ask once (AskUserQuestion) whether to keep the shipped pins or customize:
 
-- **Tool defaults (recommended, default)** — every knob stays unset: Codex
-  uses its own configured default, the Claude reviewer / validator dispatcher
-  use the CLI default, the validator agent uses its frontmatter default. The
-  installer's LOCAL_BLOCK ships the knobs as comments, so `harness.toml`
-  self-documents where to set them later.
-- **Customize** — collect a value per slot the user wants pinned, and after
-  step 3's install **edit `harness.toml`**: uncomment/set only the chosen
-  keys. **Offer the official value menus below** (sourced from the vendors'
-  docs — refresh against them if they look stale):
+- **Shipped defaults (recommended, default)** — the installer pins the codex
+  reviewer to `gpt-5.5` / `xhigh` and the validator to `opus` (judgment agent)
+  + `opus` (dispatcher). The optional Claude reviewer and `dispatcher_effort`
+  stay commented (opt-in); `harness.toml` self-documents the full menu inline.
+  Comment any pinned knob out to fall back to that tool's own default.
+- **Customize** — collect a value per slot the user wants to change, and after
+  step 3's install **edit `harness.toml`**: set the chosen keys (or comment one
+  out to unset it). **Offer the official value menus below** (sourced from the
+  vendors' docs — refresh against them if they look stale):
   - `[merge-gate.local.producer.codex] model` — official picks
     (developers.openai.com/codex/models): `gpt-5.5` (recommended) ·
     `gpt-5.4` · `gpt-5.4-mini` · `gpt-5.3-codex` · `gpt-5.2`
