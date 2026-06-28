@@ -471,7 +471,11 @@ def _card(feature: str, done: int, total: int, states: dict,
     else:
         nxt_html = '<div class="next idle">휴면 · 열린 작업 없음</div>'
     fill = "fill full" if frac >= 1 else "fill"
-    return (f'<section class="card"><h2>{escape(feature)}'
+    # Glance emphasis: cards with an open next-action stay full-opacity; settled
+    # tracks (all-done or dormant — no pointer) are dimmed so the few active
+    # tracks pop. Same source as the pointer, so no new narrative coupling.
+    settled = "" if nxt else " settled"
+    return (f'<section class="card{settled}"><h2>{escape(feature)}'
             f'<span class="pct">{pct}</span></h2>'
             f'<div class="track"><div class="{fill}" style="width:{pct}"></div></div>'
             f'<div class="meta">{done}/{total} criteria</div>'
@@ -500,7 +504,10 @@ padding:8px 12px;border-radius:8px;margin:6px 0;font-size:13px}
 .cards{max-width:1200px;margin:18px auto;padding:0 28px;display:grid;gap:16px;
 grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
-padding:16px 18px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+padding:16px 18px;box-shadow:0 1px 2px rgba(0,0,0,.04);
+display:flex;flex-direction:column}
+.card.settled{opacity:.58}
+.card.settled:hover{opacity:1}
 .card h2{margin:0 0 10px;font-size:16px;display:flex;
 justify-content:space-between;align-items:baseline;gap:8px}
 .card .pct{color:var(--muted);font-size:14px;font-weight:600}
@@ -511,16 +518,17 @@ color:var(--muted)}
 .chip.s-done{color:var(--green);border-color:#bbf7d0;background:#f0fdf4}
 .chip.s-in-progress{color:var(--accent);border-color:#bfdbfe;background:#eff6ff}
 .chip.s-blocked{color:var(--red);border-color:#fecaca;background:#fef2f2}
-.next{font-size:14px;padding:10px 12px;border-radius:8px;background:#f0f6ff;
-border:1px solid #dbeafe}
+.next{font-size:14px;padding:8px 12px;border-radius:6px;background:#f0f6ff;
+border-left:4px solid var(--accent);margin-top:auto}
 .next .next-num{font-weight:700;color:var(--accent);margin-right:6px}
-.next.idle{background:#f9fafb;border-color:var(--line);color:var(--muted)}
+.next.idle{background:#f9fafb;border-left-color:var(--line);color:var(--muted)}
 details{margin-top:12px}
 summary{cursor:pointer;font-size:13px;color:var(--muted)}
 table.issues{width:100%;border-collapse:collapse;margin-top:10px;font-size:12px}
 table.issues th,table.issues td{text-align:left;padding:5px 6px;
 border-bottom:1px solid var(--line);vertical-align:top}
 table.issues th{color:var(--muted);font-weight:600}
+details[open] table.issues{display:block;max-height:300px;overflow:auto}
 .narrative{max-width:1200px;margin:24px auto 60px;padding:8px 28px 24px;
 background:var(--card);border:1px solid var(--line);border-radius:12px}
 .narrative h2{font-size:17px;margin:22px 0 8px;padding-bottom:4px;
