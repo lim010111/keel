@@ -26,6 +26,14 @@ project state, for any project that uses the local-markdown issue tracker
    If it prints nothing, this project has no `.scratch/*/issues/*.md` files —
    tell the user there is no issue tracker here and stop.
 
+   **`/status --html`** — if the user wants the human glance dashboard, run
+   `python3 ~/.claude/scripts/status.py --html` instead: it regenerates
+   STATUS.md as above *and* writes a gitignored `STATUS.html` (a card-per-track
+   view) and opens it in the browser (printing the path if no opener is found).
+   `--html` is a view, not a narrative refresh — the narrative-editing steps
+   below are unchanged; skip them unless the user also wants the narrative
+   updated.
+
 2. Read `STATUS.md` at the project root.
 
 3. Update **only the narrative block** by editing `STATUS.md` between the two

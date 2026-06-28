@@ -7,7 +7,9 @@ Run:  python3 scripts/test_status.py -v
 """
 from __future__ import annotations
 
+import inspect
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -150,6 +152,142 @@ class TestBrief(unittest.TestCase):
             r = run_status(root, "--brief")
             self.assertIn("Completed-track lines", r.stdout,
                           "advisory banner must reach the injected view")
+
+
+# --------------------------------------------------------------------------
+# next_pointer — AC3: the card next-action is computed from issue lifecycle
+# state, NEVER parsed from the narrative (status-harness#07).
+# --------------------------------------------------------------------------
+class TestNextPointer(unittest.TestCase):
+    @staticmethod
+    def _issue(num: str, done: int, total: int, *, triage="ready-for-agent",
+               blockers=None) -> dict:
+        return {"num": num, "title": f"issue {num}", "triage": triage,
+                "done": done, "total": total, "blockers": blockers or []}
+
+    def _resolve(self, issues):
+        by_num = {i["num"]: i for i in issues}
+        states = {i["num"]: status.lifecycle(i, by_num) for i in issues}
+        return status.next_pointer(issues, states)
+
+    def test_in_progress_wins_over_todo(self):
+        nxt = self._resolve([self._issue("01", 1, 3), self._issue("02", 0, 2)])
+        self.assertEqual(nxt["num"], "01")
+
+    def test_lowest_numbered_todo(self):
+        nxt = self._resolve([self._issue("05", 0, 2), self._issue("02", 0, 2)])
+        self.assertEqual(nxt["num"], "02")
+
+    def test_blocked_is_skipped(self):
+        # #01 is blocked by the unfinished #02; #02 is a plain todo. Even though
+        # #01 sorts lowest, blocked is never pointed at — the todo wins.
+        nxt = self._resolve([self._issue("01", 0, 2, blockers=["02"]),
+                             self._issue("02", 0, 2)])
+        self.assertEqual(nxt["num"], "02")
+
+    def test_all_done_is_none(self):
+        self.assertIsNone(
+            self._resolve([self._issue("01", 2, 2), self._issue("02", 3, 3)]))
+
+    def test_dormant_parked_wontfix_is_none(self):
+        self.assertIsNone(
+            self._resolve([self._issue("01", 0, 2, triage="parked"),
+                           self._issue("02", 0, 2, triage="wontfix")]))
+
+    def test_source_never_reads_the_narrative(self):
+        # The structural guard behind AC3/AC7: a future change that "fixes" a
+        # perceived card/narrative mismatch by sourcing the pointer from prose
+        # is a regression. Pin it at the source level. The docstring legitimately
+        # documents the invariant ("never the narrative"), so grep the BODY only.
+        sig = inspect.signature(status.next_pointer)
+        self.assertEqual(list(sig.parameters), ["issues", "states"],
+                         "pointer must derive only from issue state")
+        src = inspect.getsource(status.next_pointer)
+        body = re.sub(r'""".*?"""', "", src, count=1, flags=re.S).lower()
+        self.assertNotIn("narrative", body)
+
+
+# --------------------------------------------------------------------------
+# md_to_html — AC4: stdlib-only hand-rolled converter, no external dependency.
+# --------------------------------------------------------------------------
+class TestMdToHtml(unittest.TestCase):
+    def test_core_constructs(self):
+        html = status.md_to_html(
+            "## Current focus\n\nA **bold** word, `code`, a [link](http://x).\n\n"
+            "- item one\n- item two\n")
+        self.assertIn("<h2>Current focus</h2>", html)
+        self.assertIn("<strong>bold</strong>", html)
+        self.assertIn("<code>code</code>", html)
+        self.assertIn('<a href="http://x">link</a>', html)
+        self.assertIn("<li>item one</li>", html)
+        self.assertNotIn("**", html)
+        self.assertNotIn("## ", html)
+
+    def test_strips_comments_and_renders_table(self):
+        html = status.md_to_html(
+            "<!-- secret comment -->\n## H\n\n| A | B |\n|---|---|\n| 1 | 2 |\n")
+        self.assertNotIn("secret comment", html)
+        self.assertIn("<table>", html)
+        self.assertIn("<th>A</th>", html)
+        self.assertIn("<td>1</td>", html)
+
+    def test_escapes_dangerous_text(self):
+        # Raw angle brackets in narrative prose must not become live markup.
+        html = status.md_to_html("a < b & c > d\n")
+        self.assertNotIn("<b ", html)
+        self.assertIn("&lt;", html)
+        self.assertIn("&amp;", html)
+
+    def test_no_external_markdown_dependency(self):
+        src = (SCRIPTS / "status.py").read_text(encoding="utf-8")
+        for bad in ("import markdown", "markdown_it", "markdown-it", "mistune"):
+            self.assertNotIn(bad, src, f"stdlib-only: {bad} must be absent")
+
+
+# --------------------------------------------------------------------------
+# --html end-to-end — AC1/AC2/AC5/AC6 file-lifecycle contract.
+# --------------------------------------------------------------------------
+class TestHtmlEndToEnd(unittest.TestCase):
+    def _run_html(self, root: Path) -> subprocess.CompletedProcess:
+        env = {**os.environ, "STATUS_HTML_NO_OPEN": "1"}
+        return subprocess.run(["python3", str(STATUS_PY), "--html"], cwd=str(root),
+                              capture_output=True, text=True, timeout=60, env=env)
+
+    def test_no_op_without_issue_files(self):  # AC1
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            git_init(root)
+            r = self._run_html(root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertFalse((root / "STATUS.html").exists(),
+                             "no issues → silent no-op, no HTML written")
+
+    def test_emits_dashboard_with_computed_pointer(self):  # AC1/AC2/AC3/AC5
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            git_init(root)
+            seed_issue(root, "feat", "05", "echo-todo", total=2, done=0)
+            seed_issue(root, "feat", "02", "bravo-todo", total=2, done=0)
+            r = self._run_html(root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            text = (root / "STATUS.html").read_text(encoding="utf-8")
+            self.assertIn("<!DOCTYPE html>", text)
+            self.assertIn("<details>", text, "AC5 — collapsible drill-down")
+            # AC2/AC3 — lowest-numbered todo (#02) is the computed pointer.
+            self.assertRegex(text, r'next-num">#02<')
+            self.assertIn("Bravo Todo", text)
+
+    def test_plain_run_never_touches_html(self):  # AC6
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            git_init(root)
+            seed_issue(root, "feat", "01", "alpha", total=2, done=1)
+            sentinel = root / "STATUS.html"
+            sentinel.write_text("SENTINEL", encoding="utf-8")
+            r = run_status(root)  # plain — no --html flag
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "SENTINEL",
+                             "plain Stop-hook run must not write STATUS.html")
 
 
 if __name__ == "__main__":

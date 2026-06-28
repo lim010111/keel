@@ -14,11 +14,30 @@ a staleness banner is added when the narrative provably contradicts the issue
 state. The narrative block between the two markers is preserved verbatim — that
 is the only part a human or the /status skill edits. Drift is impossible by
 construction: the table is always a projection of the issue files.
+
+`--html` (status-harness#07) renders a second, human-only sibling projection,
+`STATUS.html` — a card-per-track glance dashboard — from the SAME issue files,
+so it cannot drift from STATUS.md. It is gitignored, generated on demand by
+`/status --html` (regenerate → open), and never written on a plain Stop-hook
+run. The cards are emitted as HTML directly from structured data; only the
+narrative block is markdown-source, converted by a small stdlib-`re` converter
+(no markdown dependency — ADR-0031 self-containment).
+
+THE INVARIANT (do not "fix" this into a regression): each card's next-action is
+COMPUTED FROM ISSUE STATE — `next_pointer()`: the in-progress issue, else the
+lowest-numbered todo (a todo already implies its blockers are resolved; blocked
+is skipped), else none (dormant/all-done) — with its title pulled from the issue
+file. It is NOT parsed from the narrative's `Start here next session` prose. The
+card pointer and the narrative Start-here may therefore legitimately diverge:
+cross-cutting actions that are not issues (keel lockstep, "commit #01's output")
+live only in the narrative. Parsing the narrative to "reconcile" them would
+re-introduce the exact drift the status harness exists to kill.
 """
 import os
 import re
 import subprocess
 import sys
+from html import escape
 from pathlib import Path
 
 NARRATIVE_START = "<!-- narrative:start -->"
@@ -316,6 +335,271 @@ def feature_brief(feature: str, issues: list[dict], states: dict,
     return "\n".join(p for p in (head, "", table, note) if p != "")
 
 
+# ==========================================================================
+# STATUS.html — human glance dashboard (status-harness#07). A sibling
+# projection of the SAME issue files; see the module docstring for the
+# computed-pointer invariant (AC3/AC7).
+# ==========================================================================
+
+# Order in which lifecycle states are surfaced as count-chips on a card.
+STATE_ORDER = ("in-progress", "todo", "blocked", "done", "parked", "wontfix", "?")
+STATE_LABEL = {"in-progress": "in-progress", "todo": "todo", "blocked": "blocked",
+               "done": "done", "parked": "parked", "wontfix": "wontfix",
+               "?": "unknown"}
+
+
+def _num_key(issue: dict) -> float:
+    try:
+        return int(issue["num"])
+    except (ValueError, TypeError):
+        return float("inf")
+
+
+def next_pointer(issues: list[dict], states: dict) -> dict | None:
+    """The card's next-action, computed PURELY from issue lifecycle state.
+
+    in-progress (lowest #) → else lowest-numbered todo → else None. blocked,
+    done, parked and wontfix are never pointed at. Reads ONLY issue state —
+    never the narrative (the invariant; see module docstring, AC3/AC7)."""
+    in_progress = [i for i in issues if states[i["num"]] == "in-progress"]
+    if in_progress:
+        return min(in_progress, key=_num_key)
+    todos = [i for i in issues if states[i["num"]] == "todo"]
+    if todos:
+        return min(todos, key=_num_key)
+    return None
+
+
+def _inline(text: str) -> str:
+    """Inline markdown → HTML on already-escaped text: code, bold, links."""
+    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+    text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
+    return text
+
+
+def _cells(line: str) -> list[str]:
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def md_to_html(md: str) -> str:
+    """A tiny stdlib-only markdown→HTML converter for the narrative block.
+
+    Handles the subset the narrative actually uses — HTML-comment stripping,
+    ATX headings, bold/inline-code/links, bullet lists (with indented
+    continuation lines), pipe tables (the gate table), and paragraphs. Exotic
+    constructs may mis-render; that is acceptable. A new import is not
+    (ADR-0031). All text is HTML-escaped before inline markup is applied."""
+    md = re.sub(r"<!--.*?-->", "", md, flags=re.S)  # comments never render
+    lines = md.splitlines()
+    out: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+        m = re.match(r"(#{1,6})\s+(.*)", line)
+        if m:  # heading
+            lvl = len(m.group(1))
+            out.append(f"<h{lvl}>{_inline(escape(m.group(2).strip()))}</h{lvl}>")
+            i += 1
+        elif (line.lstrip().startswith("|") and i + 1 < n
+              and re.match(r"\s*\|[\s:|-]+\|?\s*$", lines[i + 1])):  # table
+            head = _cells(line)
+            i += 2
+            body = []
+            while i < n and lines[i].lstrip().startswith("|"):
+                body.append(_cells(lines[i]))
+                i += 1
+            th = "".join(f"<th>{_inline(escape(c))}</th>" for c in head)
+            rows = "".join("<tr>" + "".join(f"<td>{_inline(escape(c))}</td>"
+                           for c in r) + "</tr>" for r in body)
+            out.append(f"<table><thead><tr>{th}</tr></thead>"
+                       f"<tbody>{rows}</tbody></table>")
+        elif re.match(r"\s*-\s+", line):  # bullet list w/ indented continuations
+            items: list[str] = []
+            while i < n and (re.match(r"\s*-\s+", lines[i])
+                             or (lines[i][:1] == " " and lines[i].strip() and items)):
+                if re.match(r"\s*-\s+", lines[i]):
+                    items.append(re.sub(r"\s*-\s+", "", lines[i], count=1))
+                else:
+                    items[-1] += " " + lines[i].strip()
+                i += 1
+            lis = "".join(f"<li>{_inline(escape(it.strip()))}</li>" for it in items)
+            out.append(f"<ul>{lis}</ul>")
+        else:  # paragraph
+            para = [line]
+            i += 1
+            while (i < n and lines[i].strip()
+                   and not re.match(r"(#{1,6})\s|\s*-\s+|\s*\|", lines[i])):
+                para.append(lines[i])
+                i += 1
+            out.append(f"<p>{_inline(escape(' '.join(s.strip() for s in para)))}</p>")
+    return "\n".join(out)
+
+
+def _issue_table(issues: list[dict], states: dict) -> str:
+    rows = []
+    for i in issues:
+        blk = ", ".join(f"#{b}" for b in i["blockers"]) or "—"
+        rows.append(
+            f'<tr><td>{escape(i["num"])}</td>'
+            f'<td>{_inline(escape(i["title"]))}</td>'
+            f'<td><code>{escape(i["triage"])}</code></td>'
+            f'<td>{i["done"]}/{i["total"]}</td>'
+            f'<td>{escape(EMOJI[states[i["num"]]])}</td>'
+            f'<td>{escape(blk)}</td></tr>')
+    return ('<table class="issues"><thead><tr><th>#</th><th>Issue</th>'
+            '<th>Triage</th><th>Criteria</th><th>State</th><th>Blocked by</th>'
+            '</tr></thead><tbody>' + "".join(rows) + "</tbody></table>")
+
+
+def _card(feature: str, done: int, total: int, states: dict,
+          issues: list[dict]) -> str:
+    frac = done / (total or 1)
+    pct = f"{frac:.0%}"
+    counts = {s: sum(1 for i in issues if states[i["num"]] == s) for s in STATE_ORDER}
+    chips = "".join(f'<span class="chip s-{s}">{counts[s]} {STATE_LABEL[s]}</span>'
+                    for s in STATE_ORDER if counts[s])
+    nxt = next_pointer(issues, states)
+    if nxt:
+        nxt_html = (f'<div class="next"><span class="next-num">#{escape(nxt["num"])}'
+                    f'</span>{_inline(escape(nxt["title"]))}</div>')
+    elif total and done == total:
+        nxt_html = '<div class="next idle">✓ 전부 완료</div>'
+    else:
+        nxt_html = '<div class="next idle">휴면 · 열린 작업 없음</div>'
+    fill = "fill full" if frac >= 1 else "fill"
+    return (f'<section class="card"><h2>{escape(feature)}'
+            f'<span class="pct">{pct}</span></h2>'
+            f'<div class="track"><div class="{fill}" style="width:{pct}"></div></div>'
+            f'<div class="meta">{done}/{total} criteria</div>'
+            f'<div class="chips">{chips}</div>{nxt_html}'
+            f'<details><summary>{len(issues)} issues</summary>'
+            f'{_issue_table(issues, states)}</details></section>')
+
+
+CSS = """\
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1b1f24;--muted:#6b7280;--line:#e5e7eb;
+--accent:#2563eb;--green:#16a34a;--red:#dc2626}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",sans-serif}
+.top{max-width:1200px;margin:0 auto;padding:24px 28px 4px}
+.top h1{margin:0 0 4px;font-size:22px}
+.overall{color:var(--muted);font-size:13px;margin-bottom:8px}
+.gen{color:var(--muted);font-size:12px;margin:8px 0 0}
+.track{height:8px;background:var(--line);border-radius:99px;overflow:hidden}
+.track.big{height:10px}
+.track .fill{height:100%;background:var(--accent)}
+.track .fill.full{background:var(--green)}
+.banners{max-width:1200px;margin:12px auto 0;padding:0 28px}
+.warn{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;
+padding:8px 12px;border-radius:8px;margin:6px 0;font-size:13px}
+.cards{max-width:1200px;margin:18px auto;padding:0 28px;display:grid;gap:16px;
+grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+padding:16px 18px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.card h2{margin:0 0 10px;font-size:16px;display:flex;
+justify-content:space-between;align-items:baseline;gap:8px}
+.card .pct{color:var(--muted);font-size:14px;font-weight:600}
+.card .meta{color:var(--muted);font-size:12px;margin:8px 0 10px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.chip{font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--line);
+color:var(--muted)}
+.chip.s-done{color:var(--green);border-color:#bbf7d0;background:#f0fdf4}
+.chip.s-in-progress{color:var(--accent);border-color:#bfdbfe;background:#eff6ff}
+.chip.s-blocked{color:var(--red);border-color:#fecaca;background:#fef2f2}
+.next{font-size:14px;padding:10px 12px;border-radius:8px;background:#f0f6ff;
+border:1px solid #dbeafe}
+.next .next-num{font-weight:700;color:var(--accent);margin-right:6px}
+.next.idle{background:#f9fafb;border-color:var(--line);color:var(--muted)}
+details{margin-top:12px}
+summary{cursor:pointer;font-size:13px;color:var(--muted)}
+table.issues{width:100%;border-collapse:collapse;margin-top:10px;font-size:12px}
+table.issues th,table.issues td{text-align:left;padding:5px 6px;
+border-bottom:1px solid var(--line);vertical-align:top}
+table.issues th{color:var(--muted);font-weight:600}
+.narrative{max-width:1200px;margin:24px auto 60px;padding:8px 28px 24px;
+background:var(--card);border:1px solid var(--line);border-radius:12px}
+.narrative h2{font-size:17px;margin:22px 0 8px;padding-bottom:4px;
+border-bottom:1px solid var(--line)}
+.narrative table{border-collapse:collapse;width:100%;font-size:13px;margin:10px 0}
+.narrative th,.narrative td{border:1px solid var(--line);padding:6px 8px;
+text-align:left;vertical-align:top}
+.narrative th{background:#f9fafb}
+code{background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:.9em;
+font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+a{color:var(--accent)}\
+"""
+
+
+def render_html(narrative: str, warnings: list[str],
+                feature_data: list[tuple], total_done: int,
+                total_crit: int) -> str:
+    """Build the single self-contained STATUS.html document (inline CSS, no JS,
+    no build step). `feature_data` is the per-feature
+    (feature, done, total, states, issues) reused from main()'s loop."""
+    cards = "\n".join(_card(*fd) for fd in feature_data)
+    frac = total_done / (total_crit or 1)
+    banner = ""
+    if warnings:
+        ws = "".join(f'<div class="warn">{_inline(escape(w.lstrip("> ").strip()))}'
+                     f'</div>' for w in warnings)
+        banner = f'<div class="banners">{ws}</div>'
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project Status</title>
+<style>
+{CSS}
+</style>
+</head>
+<body>
+<header class="top">
+<h1>Project Status</h1>
+<div class="overall">{total_done}/{total_crit} acceptance criteria · \
+{len(feature_data)} tracks · {frac:.0%}</div>
+<div class="track big"><div class="fill" style="width:{frac:.0%}"></div></div>
+<p class="gen">Generated by the status harness (<code>status.py --html</code>) — \
+human glance view. Source of truth is the issue files; never hand-edit.</p>
+</header>
+{banner}
+<main class="cards">
+{cards}
+</main>
+<section class="narrative">
+{md_to_html(narrative)}
+</section>
+</body>
+</html>
+"""
+
+
+def open_html(path: Path) -> None:
+    """Best-effort open in the platform browser, with a printed-path fallback.
+
+    Tries WSL openers first (this environment is WSL2), then the generic
+    desktop openers. Never hard-fails the run. `STATUS_HTML_NO_OPEN` skips the
+    launch and just prints the path — for headless / automated / test runs."""
+    if os.environ.get("STATUS_HTML_NO_OPEN"):
+        print(f"STATUS.html written — open it: {path}")
+        return
+    for cmd in (["wslview"], ["explorer.exe"], ["xdg-open"], ["open"]):
+        try:
+            subprocess.run(cmd + [str(path)], check=True, capture_output=True,
+                           timeout=10)
+            print(f"STATUS.html → opened ({path})")
+            return
+        except (FileNotFoundError, subprocess.CalledProcessError,
+                subprocess.TimeoutExpired):
+            continue
+    print(f"STATUS.html written — open it manually: {path}")
+
+
 def main(argv: list[str] | None = None) -> None:
     # No-op inside a merge-gate produce subprocess: the validator child runs as a
     # fresh `claude -p` session that loads settings, so its Stop/SessionStart fire
@@ -325,7 +609,9 @@ def main(argv: list[str] | None = None) -> None:
     # --brief: regenerate the file exactly as a plain run would, but print the
     # brief session-start view instead of the regen message. The SessionStart
     # hook injects this stdout, so it must contain ONLY the view.
-    brief = "--brief" in (sys.argv[1:] if argv is None else argv)
+    args = sys.argv[1:] if argv is None else argv
+    brief = "--brief" in args
+    want_html = "--html" in args
     root = project_root()
     issue_files = sorted((root / ".scratch").glob("*/issues/*.md"))
     if not issue_files:
@@ -340,12 +626,14 @@ def main(argv: list[str] | None = None) -> None:
 
     sections = []
     briefs = []
+    feature_data: list[tuple] = []
     state_by_num: dict[str, str] = {}
     total_done = total_crit = 0
     for feature in sorted(by_feature):
         md, done, total, states, issues = feature_section(feature, by_feature[feature])
         sections.append(md)
         briefs.append(feature_brief(feature, issues, states, done, total))
+        feature_data.append((feature, done, total, states, issues))
         total_done += done
         total_crit += total
         # Cross-feature number collisions are rare and narrative refs are
@@ -380,6 +668,15 @@ that triage state and are excluded from the progress bar.
     old = status.read_text(encoding="utf-8") if status.exists() else ""
     if content != old:
         status.write_text(content, encoding="utf-8")
+    # --html: also emit the human glance sibling and open it. Gated entirely
+    # behind the flag, so a plain Stop-hook run never writes/opens STATUS.html.
+    if want_html:
+        html_path = root / "STATUS.html"
+        html_path.write_text(
+            render_html(narrative, warnings, feature_data, total_done, total_crit),
+            encoding="utf-8")
+        open_html(html_path)
+        return
     if brief:
         parts = ["\n".join(warnings)] if warnings else []
         parts.append(narrative)
