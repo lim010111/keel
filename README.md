@@ -3,14 +3,22 @@
 > An **engineering-discipline harness** that sits on top of native Claude Code.
 
 A keel is the spine of a ship — the structure that holds a course instead of
-drifting with the current. This repo is that spine for a coding agent: a set of
-devices that keep it from *drifting on guesswork*. A harness for agentic
-engineering, not vibe coding.
+drifting with the current. This repo is that spine for a coding agent —
+specifically **Claude Code**, Anthropic's agentic coding CLI: a set of devices
+that keep it from *drifting on guesswork*. A harness for agentic engineering,
+not vibe coding.
 
 keel mirrors one person's `~/.claude` config — but only the **authored** parts.
 Third-party skills and plugins aren't vendored here; they're referenced from
 [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md)
 ([ADR-0002](docs/adr/0002-authored-content-only.md)).
+
+![keel's STATUS board for its own development, rendered by `/status --html`](docs/assets/status-dashboard.png)
+
+> **keel is dogfooded on its own construction.** The board above tracks the work
+> behind this repo; while building the harness, its merge gate ran **88 automated
+> reviews of its own commits and logged 228 findings** (143 upheld after
+> adjudication) — the spine catching drift in its own making.
 
 ---
 
@@ -76,6 +84,12 @@ A bundle that auto-refreshes a project's root `STATUS.md` every session:
   mode prints a session-start view (narrative + actionable rows only;
   done/parked rows collapse to counts) so the standing per-session context
   cost stays small. `test_status.py` covers it.
+- `status.py --html` — renders a second, human-only projection alongside
+  `STATUS.md`: **`STATUS.html`**, a single self-contained card-per-track glance
+  dashboard (overall progress ring, per-track cards, and a drill-in issue
+  drawer) built from the *same* issue files. Generated on demand via
+  `/status --html`, never on a plain `Stop` hook. The screenshot at the top of
+  this README is this view.
 - The `status` skill — refreshes `STATUS.md` (`/status`). It calls `status.py`
   and updates the hand-written narrative sections.
 - The `setup-status-harness` skill — installs the STATUS harness into a
