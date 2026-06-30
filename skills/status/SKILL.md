@@ -78,6 +78,16 @@ project state, for any project that uses the local-markdown issue tracker
 6. Report to the user a two-line summary: the progress fraction from the table
    and the "Start here next session" line.
 
+7. <!-- html-hint --> **Discoverability nudge.** *Unless* this run was
+   `/status --html`, close by mentioning — in one short line — that the same
+   board is also available as a human **glance dashboard** (`STATUS.html`, a
+   card-per-track view), and offer to open it: `/status --html`, or just say
+   the word and I'll generate it. Skip the nudge when the user already passed
+   `--html` (they just got it). This nudge belongs **only here**, on an
+   explicit `/status` — never add it to `status.py` stdout, which the `Stop`
+   hook runs every turn; a stdout hint would fire on every Stop and bury the
+   very discoverability it is meant to create.
+
 ## Notes
 
 - The global `Stop` hook runs `~/.claude/scripts/status.py` automatically at
