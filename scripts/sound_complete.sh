@@ -10,6 +10,11 @@
 [ "$MERGE_GATE_PRODUCER_RUNNING" = "1" ] && { echo "{}"; exit 0; }
 [ "$SOUND_CLASSIFY_RUNNING" = "1" ] && { echo "{}"; exit 0; }
 
+# WSL-only: playback shells out to powershell.exe via wslpath. On any other
+# platform, no-op cleanly (consume stdin, ack) instead of running the LLM
+# classifier and a doomed powershell call. See README "sound_*.sh".
+command -v wslpath >/dev/null 2>&1 || { cat >/dev/null; echo "{}"; exit 0; }
+
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DBG="$DIR/.sound-debug.log"
 payload="$(cat)"   # the Stop payload JSON (carries transcript_path); must read before exit

@@ -40,13 +40,13 @@ transitions** an artifact crosses on its way to a wider audience, see
 
 | Kind | Items |
 |---|---|
-| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `consult-externals`, `daily-dev-log`, `daily-token-report`, `handle-merge-findings`, `harden-issue`, `harness-doctor`, `improve-prompt`, `run-codex-validators`, `session-dev-log`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tech-blog`, `third-party-review` |
+| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `consult-externals`, `handle-merge-findings`, `harden-issue`, `harness-doctor`, `improve-prompt`, `run-codex-validators`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `third-party-review` |
 | Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `narrative_guard` · `grill_pause`, `merge_gate_post_commit` · `merge_gate_scheduler` |
 | Scripts | `status.py`, `sound_complete.sh` · `sound_permission.sh` · `classify_sound.py`, `merge_gate_local.py` · `merge_gate_adjudicate.py` · `merge_gate_measure.py`, `harness_doctor.py`, `toml_sections.py`, `check_alignment_skill_drift.py` |
 | Agents | `ci-researcher`, `codex-review-validator` |
 | Config | `CLAUDE.md`, `statusline.sh`, `settings.json` |
 
-These components aren't all independent. The four bundles below **only work
+These components aren't all independent. The three bundles below **only work
 when their pieces are kept together** — install just one and you get half a
 feature.
 
@@ -101,19 +101,7 @@ A bundle that auto-refreshes a project's root `STATUS.md` every session:
   upstream `skills` update changed them underfoot. `test_check_alignment_skill_drift.py`
   covers it.
 
-### 3. Dev logs
-
-A bundle that summarizes a session in Korean and files it into an Obsidian
-vault:
-
-The `session-dev-log` skill (invoked as `/session-dev-log`) → Obsidian.
-`daily-dev-log` groups a whole day's sessions by project into the same
-folder. (The `SessionEnd` hook that auto-invoked this on every session
-end has been retired — invocation is manual now.)
-
-> ⚠️ This bundle has an Obsidian vault path hardcoded. See the Roadmap below.
-
-### 4. The merge gate
+### 3. The merge gate
 
 A bundle that installs and runs a pre-merge gate in a target project: a
 reviewer set (Codex by default) does the adversarial review, then a Claude
@@ -189,9 +177,6 @@ existed and was removed outright.)
   structured five-section report grounded in the repo and a slice of the
   live conversation. The skill never picks a winner — disagreement between
   the two is the load-bearing signal.
-- `daily-token-report` — aggregates a day's Claude Code token usage by
-  project, model, session, and task into a self-contained HTML report, saved
-  to the Obsidian Dev log folder.
 - `harness-doctor` — diagnoses a target repo's harness-scaffold conformance:
   which applicable gates/skills are installed vs missing, on the intent and
   enforcement axes, then fills the gaps by delegating to each setup skill's
@@ -204,8 +189,6 @@ existed and was removed outright.)
   directly by Codex / antigravity; `CLAUDE.md` `@import`s it so Claude Code
   sees the same content. Also handles nested `AGENTS.md` under module
   subdirectories.
-- `tech-blog` — plain, honest Korean technical blog posts. Verified facts
-  only, no exaggeration.
 - `third-party-review` — deterministically reduces the current session
   transcript, feeds it to outside models (Codex, Gemini), and gets a
   third-party verdict on whether the human↔agent conversation has drifted
@@ -253,6 +236,10 @@ By hand:
 3. The hook command paths use `$HOME` (expanded by the shell at run time), so
    they resolve correctly once the files live under your own `~/.claude` — no
    per-path editing needed.
+4. Install the runtime tools the components need (`python3` 3.11+, `git`, `jq`,
+   and — for the merge-gate / external-review skills — the `codex` and `claude`
+   CLIs). The full list, plus the one third-party file the merge-gate `produce`
+   needs, is in [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md).
 
 ---
 
@@ -276,15 +263,14 @@ from `~/.claude`, and excludes runtime cruft and third-party content.
 keel went public early — small, and growing one piece at a time. A few
 hardening tasks are still open:
 
-- [ ] Drop the hardcoded Obsidian paths — move the memory paths in
-      `daily-dev-log`, `daily-token-report`, `session-dev-log`, and
-      `tech-blog` into configuration.
 - [x] Genericize the `settings.json` hook command paths — `/home/shine` → `$HOME`.
-- [ ] Genericize the remaining hardcoded absolute paths (e.g. the merge-gate
-      ledger default in `merge_gate_adjudicate.py`) — the deferred
-      arbitrary-home-layout work.
+- [x] Genericize the merge-gate ledger default in `merge_gate_adjudicate.py`
+      (`/home/shine` → `Path.home()`).
 - [ ] Split `settings.json` into a harness block and personal preference.
-- [ ] Make `sound_*.sh` cross-platform (optional).
+      (`sync.sh` now redacts personal third-party plugins from the mirrored
+      `settings.json`; a full harness/taste split is still open.)
+- [x] Guard `sound_*.sh` so non-WSL is a clean no-op (actual non-WSL playback
+      still optional).
 
 ---
 

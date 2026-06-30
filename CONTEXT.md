@@ -46,8 +46,8 @@ one place, exactly what counts as authored content.
 _Avoid_: manifest, include list, config
 
 **cluster**:
-A set of harness components that only work together (e.g. the dev-log
-cluster: a hook, an agent, and two skills). Installing one without the
+A set of harness components that only work together (e.g. the TDD cluster:
+four hooks wired through shared session state). Installing one without the
 rest yields a half-working feature.
 _Avoid_: group, module, bundle
 

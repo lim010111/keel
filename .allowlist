@@ -11,19 +11,15 @@ skills/ai-readiness-cartography
 skills/audit-and-write-readme
 skills/ci-setup
 skills/consult-externals
-skills/daily-dev-log
-skills/daily-token-report
 skills/handle-merge-findings
 skills/harden-issue
 skills/harness-doctor
 skills/improve-prompt
 skills/run-codex-validators
-skills/session-dev-log
 skills/setup-agents-md
 skills/setup-merge-gate
 skills/setup-status-harness
 skills/status
-skills/tech-blog
 skills/third-party-review
 
 # --- Hooks ---
@@ -85,3 +81,10 @@ settings.json
 # Listed here so detect-drift.sh won't flag it even if it stops being a
 # symlink into ~/.agents.
 # exclude: skills/teach
+#
+# Personal skills bound to the author's own Obsidian vault / output paths.
+# Built for personal use, not the public harness — intentionally not mirrored.
+# exclude: skills/daily-dev-log
+# exclude: skills/daily-token-report
+# exclude: skills/session-dev-log
+# exclude: skills/tech-blog

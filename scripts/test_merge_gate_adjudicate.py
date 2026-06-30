@@ -430,7 +430,7 @@ class TestMainCLI(unittest.TestCase):
         # assert the default PATH wiring, never invoking it.
         self.assertEqual(
             adj.DEFAULT_LEDGER,
-            Path("/home/shine/.claude/.scratch/merge-gate-measurement/log.md"),
+            Path.home() / ".claude" / ".scratch" / "merge-gate-measurement" / "log.md",
         )
 
 

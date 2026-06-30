@@ -5,6 +5,21 @@ The rest of the author's `~/.claude` setup is third-party. It is **not copied
 into this repo** — it is listed here so the setup can be reproduced from its
 upstream sources.
 
+## Runtime prerequisites
+
+The harness shells out to these tools. Install the ones a component needs before
+relying on it; if a tool is absent that component fails (mostly quietly) while
+the rest of the harness keeps working.
+
+| Tool | Needed by | If missing |
+|---|---|---|
+| `python3` **3.11+** | every hook + script (`status.py`, the `tdd_*` / `narrative_guard` / `grill_pause` hooks, `merge_gate_*`, `harness_doctor.py`) — the 3.11 floor is stdlib `tomllib` | those hooks no-op; the session still runs |
+| `git` | `status.py`, `statusline.sh`, the merge-gate | per-repo features degrade |
+| `jq` | `statusline.sh`, `sync.sh` settings redaction | status line drops the rate-limit blocks; `sync.sh` warns and skips redaction |
+| `codex` CLI | the merge-gate `produce`, `consult-externals`, `third-party-review` | those reviews cannot run |
+| `claude` CLI | `classify_sound.py` LLM fallback, the merge-gate validator dispatch | sound falls back to "complete"; the validator step is skipped |
+| `wslpath` + `powershell.exe` (WSL) | `sound_*.sh` notification sounds, which play `$HOME/new_quest.mp3` / `$HOME/quest_completed.mp3` (the mp3s are personal, not shipped here) | `sound_*.sh` no-op cleanly on non-WSL |
+
 ## Skill-manager skills
 
 Installed into `~/.agents/skills/` by a skill manager (lockfile:
@@ -34,3 +49,26 @@ content re-downloaded on first run).
 | `claude-md-management` | `claude-plugins-official` | yes |
 | `superpowers` | `claude-plugins-official` | no |
 | `typescript-lsp` | `claude-plugins-official` | no |
+| `humanize-korean` | `epoko77-ai/im-not-ai` | yes |
+
+`humanize-korean` is a personal-taste plugin: `sync.sh` redacts it (and its
+`im-not-ai` marketplace) from the mirrored `settings.json` (ADR-0002), so it is
+recorded here but never published into this mirror.
+
+## Merge-gate review assets
+
+The local merge-gate producer (`merge_gate_local.py produce`) feeds Codex a
+vendored adversarial-review prompt it reads from
+`~/.claude/scripts/merge-gate-assets/adversarial-review.md`. That prompt is a
+static copy of the Codex plugin's own prompt (`openai/codex-plugin-cc` →
+`plugins/codex/prompts/adversarial-review.md`), so it is **third-party content
+and is not mirrored into keel** ([ADR-0002](adr/0002-authored-content-only.md)),
+like the plugins above.
+
+Consequence on a fresh install: the merge-gate's fast `verify` and the
+`setup-merge-gate` installer work without it, but the background `produce` finds
+no prompt and **silently reviews nothing** — the adversarial pass never runs. To
+enable it, copy that prompt from the installed Codex plugin into
+`~/.claude/scripts/merge-gate-assets/`. The review-output schema the reviewer is
+held to is already vendored (reused from
+`skills/setup-merge-gate/templates/review-output.schema.json`).

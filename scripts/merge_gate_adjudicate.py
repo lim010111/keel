@@ -35,7 +35,7 @@ from pathlib import Path
 
 # The canonical ledger (design §1). `main` defaults --ledger here; tests assert
 # the wiring but NEVER auto-run against it.
-DEFAULT_LEDGER = Path("/home/shine/.claude/.scratch/merge-gate-measurement/log.md")
+DEFAULT_LEDGER = Path.home() / ".claude" / ".scratch" / "merge-gate-measurement" / "log.md"
 
 
 def _scrub_input(s: str) -> str:

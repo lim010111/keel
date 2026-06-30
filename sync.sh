@@ -51,4 +51,26 @@ while IFS= read -r entry; do
   echo "  synced $entry"
 done < "$ALLOWLIST"
 
+# Redact personal third-party plugin choices from the mirrored settings.json.
+# settings.json carries BOTH harness wiring (hooks, statusLine — must mirror)
+# AND personal taste (plugins/marketplaces by other authors). The latter is
+# documented in docs/DEPENDENCIES.md, never published into this mirror
+# (ADR-0002). Keep this denylist in sync with any personal marketplace added to
+# ~/.claude/settings.json. Needs jq (a documented runtime prerequisite).
+SETTINGS="$REPO_DIR/settings.json"
+if [[ -f "$SETTINGS" ]]; then
+  if command -v jq >/dev/null 2>&1; then
+    tmp="$(mktemp)"
+    jq 'del(.enabledPlugins["humanize-korean@im-not-ai"])
+        | del(.extraKnownMarketplaces["im-not-ai"])' \
+       "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS" \
+       && echo "  redacted personal plugins from settings.json"
+  else
+    echo "  ERROR: jq not found — settings.json was copied UN-redacted and may" >&2
+    echo "         contain personal plugins/marketplaces. Install jq and re-run" >&2
+    echo "         sync; do NOT commit settings.json until redaction succeeds." >&2
+    exit 1
+  fi
+fi
+
 echo "Done. Review with: git -C \"$REPO_DIR\" status"
