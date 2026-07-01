@@ -15,6 +15,7 @@ skills/handle-merge-findings
 skills/harden-issue
 skills/harness-doctor
 skills/improve-prompt
+skills/matt-drift-watch
 skills/run-codex-validators
 skills/setup-agents-md
 skills/setup-merge-gate
@@ -76,11 +77,12 @@ settings.json
 # exclude: scripts/leak_scan.py
 # exclude: scripts/test_leak_scan.py
 #
-# Authored harness skill, deliberately kept out of the public mirror
+# Authored harness skills, deliberately kept out of the public mirror
 # (user request) — not keel-maintenance tooling like the entries above.
-# Listed here so detect-drift.sh won't flag it even if it stops being a
-# symlink into ~/.agents.
+# Listed here so detect-drift.sh won't flag them even if they stop being
+# symlinks into ~/.agents.
 # exclude: skills/teach
+# exclude: skills/catch-up
 #
 # Personal skills bound to the author's own Obsidian vault / output paths.
 # Built for personal use, not the public harness — intentionally not mirrored.
