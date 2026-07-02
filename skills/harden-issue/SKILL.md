@@ -32,7 +32,15 @@ If the issue file lacks required headings, surface this *before* grilling and as
 
 ## Grilling
 
-Follow [grilling](../grilling/SKILL.md) for questioning style and codebase exploration, and [domain-modeling](../domain-modeling/SKILL.md) for CONTEXT/ADR awareness (glossary, concrete scenarios, the ADR three-test, the CONTEXT/ADR FORMAT files). The five gates below apply on top.
+This skill **is a grilling session first, a file-editor second.** The interview discipline below is inlined on purpose: `/harden-issue` injects only *this* file, so the `[grilling]` link is never auto-loaded — do not rely on reading it to recover these rules.
+
+- **One question at a time.** Ask a single question, give your recommended answer, then **stop and wait for the user's reply** before the next. Asking several at once — or monologuing a full analysis and proceeding — defeats the skill.
+- **Walk the design tree branch by branch**, resolving dependencies between decisions one-by-one until you and the user reach shared understanding.
+- **If a question can be answered by reading the codebase, do that instead of asking.** Pre-flight reading and code exploration are expected and are not "proceeding without grilling."
+- **A decision is "settled" only after the user responds** — not when your own analysis concludes. Gate 1's auto-write fires on a *user-confirmed* decision, never on an unvetted recommendation. Editing the issue file before the first user reply of the grilling is the exact failure this skill exists to prevent — if you catch yourself doing it, stop and ask.
+- **"Start hardening" / "harden 시작" authorizes the session, not skipping the interview.** Args that sound like "go do it" still mean grill first, then write.
+
+Also follow [domain-modeling](../domain-modeling/SKILL.md) for CONTEXT/ADR awareness (glossary, concrete scenarios, the ADR three-test, the CONTEXT/ADR FORMAT files). The five gates below apply on top.
 
 ## Five gates (the contract this skill enforces)
 
