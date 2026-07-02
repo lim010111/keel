@@ -1,0 +1,5 @@
+{
+  "name": "improve-prompt",
+  "version": "1.0.0",
+  "description": "Proportionate ad-hoc prompt rewriter for a named target model. No default target: /improve-prompt:opus-4-8, /improve-prompt:fable-5."
+}

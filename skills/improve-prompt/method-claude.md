@@ -1,41 +1,30 @@
----
-name: improve-prompt
-description: Rewrite an ad-hoc agentic prompt into a more effective one for Claude Opus 4.8 — proportionate to the gap, scope-explicit, advisory. Use when the user wants to sharpen a prompt before running it, says "improve this prompt" / "프롬프트 개선", or invokes /improve-prompt.
-disable-model-invocation: true
-argument-hint: "<the prompt you want to improve>"
----
+# improve-prompt method — Claude family core
 
-# /improve-prompt
-
-Take the prompt in `$ARGUMENTS` and return a more effective version of it for an
-agentic Claude Opus 4.8 run. This is advisory and one-shot: produce the output
-below and stop. Don't ask clarifying questions, don't run the task, and don't act
-on the improved prompt.
-
-If `$ARGUMENTS` is empty, output exactly this line and stop:
-
-`Paste the prompt you want to improve: /improve-prompt <your prompt>`
-
-Don't fall back to the conversation so far — the input is the argument, nothing else.
+The shared method behind every `/improve-prompt:<model>` profile. The profile
+that loaded this file names the target model and carries its model-specific
+levers and hazards; this file carries the model-agnostic method. Apply both
+together — the profile modulates this method, it never replaces it.
 
 ## What you're improving for
 
-Ad-hoc agentic prompts aimed at Opus 4.8 — the kind a person types to start a
-task — not reusable API templates. Opus 4.8 follows instructions literally: it
-won't infer work you didn't ask for, and it won't silently generalize from one
-case to the next. So the single highest-value move is **making scope and intent
-explicit**. Everything else is secondary and applies only when the prompt
-actually needs it.
+Ad-hoc agentic prompts — the kind a person types to start a task — not reusable
+API templates. The target model follows instructions faithfully: it won't infer
+work the user didn't ask for. So the single highest-value move is **making scope
+and intent explicit**. Everything else is secondary and applies only when the
+prompt actually needs it.
 
 ## Method
 
 **Scale the rewrite to the gap.** An already-clear one-liner gets a light touch or
 none; a vague, multi-step task earns structure. Never expand a prompt for its own
 sake, and keep the user's voice — you're sharpening their ask, not replacing it.
+This guard binds you at every effort level, including `xhigh`: higher effort buys
+a better-judged gap, never a bigger rewrite. If you catch yourself adding
+structure, caveats, or assumptions the prompt didn't need, cut back to the gap.
 
 **Surface the scope and intent you had to guess** as the assumptions list,
-instead of asking. These are what the literal 4.8 agent would otherwise get
-wrong: which files, what "done" means, what's in and out of scope, what to leave
+instead of asking. These are what the target agent would otherwise get wrong:
+which files, what "done" means, what's in and out of scope, what to leave
 untouched.
 
 **Preserve, don't correct.** If the prompt is contradictory, ambiguous, or looks
@@ -54,18 +43,18 @@ Apply these secondary levers **only when the material warrants them**:
 Strip, don't add:
 
 - Remove over-prompting — `CRITICAL: you MUST…` / `ALWAYS` / `NEVER` shouting
-  becomes plain instruction. 4.8 over-triggers on aggressive language.
+  becomes plain instruction.
 - Remove invitations to over-engineer ("handle every edge case", "make it
   production-grade and extensible") unless the user asked for that.
-- No assistant prefill (unsupported on 4.6+), and no reflexive "think step by
-  step" or few-shot scaffolding — 4.8 thinks adaptively on its own.
+- No assistant prefill (unsupported on Claude 4.6+), and no reflexive "think
+  step by step" or few-shot scaffolding — adaptive thinking makes them redundant.
 
 ## Output
 
 Return three parts. Keep each only as long as it needs to be.
 
 1. **Improved prompt** — a single clean, copy-pasteable fenced block. Tell the
-   user to run it in a **fresh session**, so the literal 4.8 agent works from the
+   user to run it in a **fresh session**, so the target agent works from the
    clean prompt rather than this conversation's context. If the prompt is already
    good, return it ~unchanged and say *"No substantive change needed — already
    scope-explicit."*
@@ -76,7 +65,7 @@ Return three parts. Keep each only as long as it needs to be.
 3. **Effort / thinking note** *(only when the task profile warrants it)* — one
    line of advice for the fresh run (a new session, or an API / subagent / eval
    run): e.g. a multi-step build or refactor suits `high` (or `xhigh`) effort with
-   adaptive thinking left on. It's advice for that run — `/improve-prompt` doesn't
+   adaptive thinking left on. It's advice for that run — the improver doesn't
    change the current session. Omit this part for simple asks.
 
 ## Examples
