@@ -48,6 +48,8 @@ main agent도 인간도 아닌 **제3자(다른 모델)**에게 평가시킨다.
 - "docs/adr/0031.md 도 같이 제3자 리뷰" → additive · `--target docs/adr/0031.md` · all
 - "transcript 말고 src/foo.py 만 봐줘" → only · `--target src/foo.py --only` · all
 - "이 설계 both 로 단독 리뷰" (+경로) → only · `--target <경로> --only` · both
+- 그릴링 분기 자문(구 `/consult-externals`의 대체 경로) → 결정 브리프(주제·맥락·
+  옵션·잠정 추천)를 파일로 떨군 뒤 only · `--target <브리프> --only`
 
 **echo-before-launch** — 비-기본 호출(타깃·only 포함)이면 평가(분 단위·비용)를 띄우기
 *전에* 해소한 계획을 한 줄로 되읽는다: 예) `transcript 제외 · 타깃=src/foo.py ·
@@ -92,22 +94,42 @@ reviewers=all — 진행?`. 경로는 **실제 파일로 해소해 명시**한�
 4. **평가 실행** — 먼저 `<skill>/reviewers.toml`을 읽어 각 reviewer의
    `model`(+ codex `effort`)을 아래 명령의 `<MODEL>`/`<EFFORT>`에 치환한다.
    파일이나 항목이 없으면 reviewers.toml 상단에 문서화된 기본값을 쓴다. agy의
-   `--model`은 **best-effort**다 — 설치된 print 모드가 무시하고 자기
-   `settings.json` 기본을 쓸 수 있다(교차검증 안 함). 그다음 요청 ∩ 가용
-   평가자마다 동시(병렬)로:
+   `--model`은 **실제 적용된다**(2026-07-11 교차 패밀리 자기보고로 재검증 — 종전
+   "무시될 수 있음" 서술은 `-p`가 플래그를 삼켜 `--model`이 아예 전달되지 않던
+   버그[tpr#01] 위의 관측). 단 모르는 라벨은 **거부되지 않고** exit 0으로 기본
+   모델에 조용히 fallback하므로, 라벨은 `agy models` 출력과 정확히 일치해야
+   한다. 그다음 요청 ∩ 가용 평가자마다 동시(병렬)로:
    ```
    codex exec -m <MODEL> -c model_reasoning_effort="<EFFORT>" --sandbox read-only < .tpr/prompt.txt > .tpr/eval-codex.md
-   agy   -p   --model "<MODEL>" --sandbox                     < .tpr/prompt.txt > .tpr/eval-agy.md
+   agy --model "<MODEL>" --add-dir "$PWD" --print-timeout 1800s -p "Follow the evaluation instructions in $PWD/.tpr/prompt.txt." > .tpr/eval-agy.md
    CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 claude -p --model <MODEL> --tools "Read Grep Glob" --add-dir "$PWD" < .tpr/prompt.txt > .tpr/eval-claude.md
    ```
-   - **프롬프트는 stdin으로** 넣는다(`< .tpr/prompt.txt`) — argv 위치인자가 아니다.
+   - **프롬프트는 stdin으로** 넣는다(codex·claude) — argv 위치인자가 아니다.
      축소 transcript는 크고(설계 상한 ≈120k 토큰 ≈ 480KB) 단일 argv 원소는 커널
      `MAX_ARG_STRLEN`(≈128KB)을 넘겨 `execve`가 E2BIG로 죽는다 — 즉 큰 세션일수록
-     깨진다. 세 CLI 모두 위치인자가 없으면 프롬프트를 stdin에서 읽는다(검증).
+     깨진다. codex·claude는 위치인자가 없으면 `< .tpr/prompt.txt` 리다이렉트를
+     그대로 읽는다(검증). **agy만 다르다**(2026-07-11 재검증):
+     ① `-p/--print`는 **인자를 요구한다** — 인자 없이 `-p --model …`처럼 쓰면
+     `--model`이 프롬프트 리터럴로 파싱되고 뒤 플래그가 전부 버려진다(tpr#01 —
+     배포 이래 model/sandbox가 한 번도 적용되지 않았던 원인).
+     ② **stdin은 agy에겐 신뢰 채널이 아니다** — 파이프 본문은 아주 작을 때만
+     컨텍스트에 실리고(수십 B 마커 에코 OK n=2), KB급에서 미전달(4KB — 모델이
+     본문을 못 본 채 딴 주제로 응답)·행(16KB — print-timeout까지 무응답)이
+     관측됐다(각 n=1). `< file` 리다이렉트는 크기와 무관하게 아예 전달되지
+     않는다(n=3 — 모델이 /proc으로 원본 파일을 사냥하거나 포기). 그래서 agy만
+     프롬프트를 stdin이 아니라 **materialize된 파일 경로로** 지시한다 —
+     `.tpr/prompt.txt`는 prepare가 항상 만들어 두는 파일이고, 모델이
+     워크스페이스 도구로 직접 읽는다(교정일 실리뷰로 검증).
+     ③ `--add-dir "$PWD"`가 그래서 이중으로 필수 — agy print 모드의 workspace는
+     cwd가 아니라 자기 scratch 디렉토리여서, 이게 없으면 prompt.txt도 프로젝트
+     파일도 못 읽는다.
    - **타임아웃 백스톱 없음** — 명령에 `timeout` 래퍼가 없다. codex(xhigh)는 수
      분이 정상이고(merge-gate produce 510s 관측) 타이트한 타임아웃은 정상 평가를
      잘라낸다. 대신 이 스킬은 세션 *안에서* 대화형으로 돌아 행(hang)이 보이면 main
      agent가 중단할 수 있다(자동 pre-push 훅과 다른 점). 행이 길어지면 끊고 재시도.
+     예외로 agy만 `--print-timeout 1800s`를 명시한다 — 외부 래퍼가 아니라 agy
+     자체의 print 대기 한도이고, **기본값 5m**이 codex-수준 장고 평가(510s+
+     관측)를 잘라내기 때문에 30m로 올려 사실상 백스톱을 해제한 값이다.
    - **읽기 전용.** codex는 `--sandbox read-only`로 *모델이 생성하는 셸 명령*을
      OS 레벨 샌드박스로 쓰기 차단한다(codex --help: "model-generated shell
      commands" — codex 프로세스 자신의 로그 쓰기는 별개지만 평가자가 프로젝트에
@@ -120,8 +142,12 @@ reviewers=all — 진행?`. 경로는 **실제 파일로 해소해 명시**한�
      벗기면 fresh 세션이 돼 Stop 훅이 STATUS.md를 다시 쓰고, `--add-dir`만으론
      parity도 못 지킨다. (드물게 nested `-p`가 빈 출력을 내면 3·5단계 가용성 판정이
      실패로 잡아내 fail-safe.) 정리: claude는 모델-도구 레벨 read-only — codex보다
-     약하고 agy보다 강하다. **agy**만 강제 수단이 전무하다 — `--sandbox`로도
-     프로젝트에 파일을 쓸 수 있음이 검증됨. agy의 read-only는 평가자 프롬프트
+     약하고 agy보다 강하다. **agy**만 강제 수단이 전무하다 — `--sandbox`는 쓰지
+     않는다: 이 호스트(WSL2)에선 샌드박스 셸이 `recvmsg` 오류로 죽고, 뚫려도
+     모델이 "sandbox bypassed"로 스스로 우회해 명령을 실행할 수 있음이 확인돼
+     (2026-07-11, 플래그가 실제 전달되는 교정된 호출로 재검증 — 종전 "`--sandbox`
+     로도 쓰기 가능 검증됨" 서술은 플래그가 파싱조차 안 되던 상태의 관측이라 근거
+     교체) 쓰기 방지 수단이 되지 못한다. agy의 read-only는 평가자 프롬프트
      (`evaluator-common.md`) 지시에만 의존한다(미집행). 어느 쪽이든 `--dangerously-*` 플래그는 절대 금지.
    - **claude는 auto-memory만 제거해 codex·agy와 프로젝트-컨텍스트 parity를 맞춘다
      (전역 CLAUDE.md·STATUS는 codex·agy엔 없는 잔여 비대칭이지만 무해해 유지).**
@@ -140,7 +166,8 @@ reviewers=all — 진행?`. 경로는 **실제 파일로 해소해 명시**한�
      것 — 5단계에서 그 diff를 사용자에게 크게 경고한다. git 저장소가 아니면 탐지
      불가임을 알린다.
    - 평가자가 transcript를 못 읽으면 프로젝트 디렉토리를 명시 추가해 재시도
-     (`agy --add-dir <cwd>`; claude는 위 명령에 이미 `--add-dir "$PWD"` 포함).
+     (agy·claude는 위 명령에 이미 `--add-dir "$PWD"` 포함 — agy는 print 모드
+     workspace가 cwd가 아니어서 이게 없으면 프로젝트 파일 접근 자체가 안 된다).
    - 결과 파일은 stdout 리다이렉트로 *셸*이 만든다 — 평가자가 쓰는 게 아니다.
 
 5. **결과 검증 후 제시 — 순서가 핵심**:

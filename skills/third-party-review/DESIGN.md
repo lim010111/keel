@@ -88,7 +88,11 @@ codex는 `--sandbox read-only`로 *모델이 생성하는 셸 명령*을 OS 레�
 발화하지 않으므로(검증: 실행 전후 STATUS.md mtime 불변) 모델-도구 레벨 read-only가
 성립한다 — codex(프로세스 샌드박스)보다 약하고 agy보다 강하다. 그래서 `CLAUDE_CODE_*`
 세션 마커는 벗기지 않는다(fresh 세션이 되면 Stop 훅이 STATUS.md를 다시 쓴다). agy는
-read-only 강제 플래그가 없다(검증함 — `--sandbox`로도 프로젝트에 씀). 그래서 agy의
+read-only 강제 수단이 없다 — `--sandbox`는 쓰지 않는다: 이 호스트(WSL2)에선
+샌드박스 셸이 `recvmsg` 오류로 죽고, 모델이 "sandbox bypassed"로 스스로 우회
+실행할 수도 있어 쓰기 방지가 되지 못함을 확인(2026-07-11, 플래그가 실제 전달되는
+교정된 호출로 재검증 — tpr#01 이전의 "검증" 관측은 플래그가 파싱조차 안 되던
+상태였다). 그래서 agy의
 read-only는 평가자 프롬프트(`evaluator-common.md`) 지시에만 의존하며, 보완책으로 agy 실행 전후 `git status`
 스냅샷을 비교해 쓰기를 *탐지*한다(예방이 아니라 탐지).
 
@@ -96,11 +100,16 @@ read-only는 평가자 프롬프트(`evaluator-common.md`) 지시에만 의존�
 모델, 그리고 codex의 effort뿐). reviewer별 모델/effort는 `reviewers.toml` 한
 곳에서 선언한다 — 선택사항이며 기본값 내장. 세 CLI는 비대칭이다: codex만 model과
 effort가 둘 다 진짜 per-invocation 플래그, agy는 effort가 모델 라벨에 박혀 있고
-per-invocation `--model`이 best-effort(설치 빌드의 print 모드가 무시할 수 있음 —
-교차검증 안 함), claude는 model만 있고 effort 노브가 없다.
-프롬프트는 argv 위치인자가 아니라 stdin으로 넣는다(세 CLI 모두 위치인자가 없으면
-stdin을 읽음 — 검증) — 큰 transcript(설계 상한 ≈120k 토큰)가 단일 argv 한도
-(`MAX_ARG_STRLEN`≈128KB, 초과 시 execve E2BIG)를 넘겨 죽지 않게.
+per-invocation `--model`은 실제 적용된다(2026-07-11 교차 패밀리 자기보고로 재검증
+— 단 모르는 라벨은 거부 없이 기본 모델로 조용히 fallback), claude는 model만 있고
+effort 노브가 없다.
+프롬프트는 argv 위치인자가 아니라 stdin으로 넣는다 — 큰 transcript(설계 상한
+≈120k 토큰)가 단일 argv 한도(`MAX_ARG_STRLEN`≈128KB, 초과 시 execve E2BIG)를
+넘겨 죽지 않게. codex·claude는 `< file` 리다이렉트를 읽는다(검증). agy는 `-p`가
+인자를 요구하는 데다 stdin 자체가 신뢰 채널이 아니다 — `< file` 리다이렉트는
+미전달(n=3), 파이프도 KB급에서 미전달·행(2026-07-11) — 그래서 agy만 stdin 대신
+`-p "<prompt.txt 절대경로를 읽으라는 지시>"` 형태로 materialize된 프롬프트
+파일을 가리킨다(SKILL.md 4단계).
 평가는 stdout으로 나오고 셸이 파일로 캡처 — 평가자는 write 권한 0이어도 된다.
 결과는 사람이 raw로 먼저 보고, main agent 반응은 *나중에 별도로* 덧붙는다
 (출력단에서도 평가 대상이 자기 성적표를 필터링하지 못하게).
@@ -127,7 +136,8 @@ stdin을 읽음 — 검증) — 큰 transcript(설계 상한 ≈120k 토큰)가 
 in-place 참조(평가자가 원본 직독)나 프롬프트 본문 주입 대신 복사를 택한 이유:
 (1) transcript도 이미 `.tpr/transcript.md`로 materialize됨 — "평가자가 보는 모든 건
 `.tpr/`에 있다"가 일관, (2) 셋(codex read-only sandbox / claude / agy)이 모두 cwd 밑을
-읽으므로 절대경로·`--add-dir`의 CLI별 미검증 quirk를 피함, (3) prepare 시점 스냅샷이라
+읽으므로 절대경로의 CLI별 quirk를 피함(agy만 print 모드 workspace가 cwd가 아니라
+`--add-dir "$PWD"`로 cwd를 워크스페이스에 추가한다 — tpr#01), (3) prepare 시점 스냅샷이라
 결정론·감사가능, (4) transcript 축소 파이프라인 무손상(타깃은 복사만) → 기본 모드 산출물
 불변. 타깃은 통째 복사(축소 안 함) — 인간이 의도적으로 핀으로 박은 소수 파일이므로
 "read in full". 비정상적으로 크면 `warnings`로 경고(차단 아님). 매 실행 `.tpr/targets/`를

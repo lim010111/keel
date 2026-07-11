@@ -16,7 +16,7 @@ the rest of the harness keeps working.
 | `python3` **3.11+** | every hook + script (`status.py`, the `tdd_*` / `narrative_guard` / `grill_pause` hooks, `merge_gate_*`, `harness_doctor.py`) — the 3.11 floor is stdlib `tomllib` | those hooks no-op; the session still runs |
 | `git` | `status.py`, `statusline.sh`, the merge-gate | per-repo features degrade |
 | `jq` | `statusline.sh`, `sync.sh` settings redaction | status line drops the rate-limit blocks; `sync.sh` warns and skips redaction |
-| `codex` CLI | the merge-gate `produce`, `consult-externals`, `third-party-review` | those reviews cannot run |
+| `codex` CLI | the merge-gate `produce`, `third-party-review` | those reviews cannot run |
 | `claude` CLI | `classify_sound.py` LLM fallback, the merge-gate validator dispatch | sound falls back to "complete"; the validator step is skipped |
 | `wslpath` + `powershell.exe` (WSL) | `sound_*.sh` notification sounds, which play `$HOME/new_quest.mp3` / `$HOME/quest_completed.mp3` (the mp3s are personal, not shipped here) | `sound_*.sh` no-op cleanly on non-WSL |
 
