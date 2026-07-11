@@ -28,6 +28,17 @@ import subprocess
 import sys
 import time
 
+# Journal (harness-journal#01), as "sound_complete" — the Stop hook this script
+# is the Python side of. Strictly additive: the import is guarded and both
+# callables are never-raise no-op fallbacks, so a missing/broken helper can
+# never change the classifier's stdout contract (sound_complete.sh parses it).
+try:
+    sys.path.append(os.path.join(os.path.expanduser("~"), ".claude", "scripts"))
+    from hook_journal import for_hook as _for_hook
+    _journal, _drift = _for_hook("sound_complete")
+except Exception:
+    _journal = _drift = lambda *a, **k: None
+
 MARKER = "묻고 싶은 것"
 QMARK = re.compile(r"[?？]")
 
@@ -229,6 +240,7 @@ def main():
         payload = json.loads(raw) if raw.strip() else {}
     except json.JSONDecodeError:
         payload = {}
+    _drift(payload, ("session_id", "cwd", "transcript_path", "stop_hook_active"))
     # Diagnostics (opt-in via SOUND_DIAG): dump the raw Stop payload so we can see which
     # fields it carries and inspect any fallback flush-lag behaviour. Overwrites every
     # turn when on. Best-effort; never fatal.
@@ -258,6 +270,7 @@ def main():
         tp = payload.get("transcript_path") or ""
         if not tp or not os.path.isfile(tp):
             print("complete\tno-transcript\t")
+            _journal("skip", "no-transcript", payload)
             return
         tail = resolve_tail(lambda: _read_entries(tp), time.sleep, diag=diag)
         diag["src"] = "transcript"
@@ -275,6 +288,7 @@ def main():
             f"tail_len={diag.get('tail_len', len(tail))}\n")
     excerpt = tail.replace("\n", " ").replace("\t", " ")[-60:]
     print(f"{decision}\t{reason}\t{excerpt}")
+    _journal("fire", f"{decision}:{reason}", payload)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,16 @@ from pathlib import Path
 
 STATE_DIR = Path.home() / ".claude" / "hooks" / ".tdd-state"
 
+# Journal (harness-journal#01): observability is strictly additive — a missing
+# or broken helper must never change this hook's behaviour, so the import is
+# guarded and both callables are never-raise no-op fallbacks on any failure.
+try:
+    sys.path.append(str(Path.home() / ".claude" / "scripts"))
+    from hook_journal import for_hook as _for_hook
+    _journal, _drift = _for_hook("tdd_guard")
+except Exception:
+    _journal = _drift = lambda *a, **k: None
+
 CODE_EXT = {
     ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
     ".go", ".rs", ".java", ".kt", ".rb", ".php", ".c", ".h",
@@ -92,21 +102,26 @@ a test that proves it. See the `tdd` skill."""
 
 def main():
     payload = read_input()
+    _drift(payload, ("session_id", "cwd", "tool_name", "tool_input"))
     session_id = str(payload.get("session_id", "")) or "default"
 
     # TDD MODE off -> this guard is a no-op.
     if not (STATE_DIR / f"mode-{session_id}").exists():
+        _journal("skip", "mode-off", payload)
         sys.exit(0)
 
     tool = str(payload.get("tool_name", ""))
     file_path = str(payload.get("tool_input", {}).get("file_path", ""))
     if not file_path:
+        _journal("skip", "no-file-path", payload)
         sys.exit(0)
 
     ext = os.path.splitext(file_path)[1].lower()
     if ext not in CODE_EXT:
+        _journal("skip", "non-code", payload)
         sys.exit(0)            # docs / config — not guarded
     if is_test_file(file_path):
+        _journal("pass", "test-file", payload)
         sys.exit(0)            # editing tests is always allowed
 
     # Implementation file. Has a test file been edited this session yet?
@@ -119,6 +134,7 @@ def main():
         last_test = 0
 
     if last_test > 0:
+        _journal("pass", "test-first-satisfied", payload)
         sys.exit(0)            # a test exists this session -> guard satisfied
 
     name = os.path.basename(file_path)
@@ -126,9 +142,11 @@ def main():
 
     if is_new_file:
         print(BLOCK_MSG.format(name=name), file=sys.stderr)
+        _journal("block", "new-impl-before-test", payload)
         sys.exit(2)            # hard block: new impl file, zero tests
 
     print(WARN_MSG.format(name=name))   # existing file -> non-blocking advisory
+    _journal("fire", "advisory-impl-edit", payload)
     sys.exit(0)
 
 

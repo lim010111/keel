@@ -24,6 +24,9 @@ HOOKS = Path(__file__).resolve().parent
 STATE_DIR = Path.home() / ".claude" / "hooks" / ".tdd-state"
 MARKER_DIR = Path.home() / ".claude" / "hooks" / ".tdd-markers"
 
+# harness-journal#01: hook runs under test must never spam the real journal.
+os.environ["HOOK_JOURNAL_DISABLED"] = "1"
+
 # The hook under test. find_up / detect_test_command are pure resolution
 # functions (no stdin/exit-code semantics), so the bounding logic is unit-tested
 # by importing them directly rather than through the subprocess wrapper.
@@ -196,6 +199,95 @@ class TestKeywordHook(HookTest):
                 self.assertEqual(r.returncode, 0)
                 self.assertNotIn("[TDD MODE]", r.stdout)
                 self.assertFalse(self.mode_file().exists())
+
+    def test_nonuser_notification_no_trigger(self):
+        # work-interval-tdd#09 reproduction: task notifications are delivered
+        # through UserPromptSubmit too; a body that mentions TDD must not arm
+        # the sticky mode. Shapes below were captured live on 2026-07-11.
+        system_notification = (
+            "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
+            "This is an automated background-task event, NOT a message from "
+            "the user.\n\n"
+            "<task-notification>\n<task-id>abc123</task-id>\n"
+            "<summary>Background research on TDD hook behavior completed"
+            "</summary>\n</task-notification>"
+        )
+        bare_tag = (
+            "<task-notification>\n<task-id>abc123</task-id>\n"
+            "<summary>agent finished: adopt test-driven development"
+            "</summary>\n</task-notification>"
+        )
+        for prompt in [system_notification, bare_tag]:
+            with self.subTest(prompt=prompt.splitlines()[0]):
+                r = run_hook("tdd_keyword.py",
+                             {"prompt": prompt, "session_id": self.sid})
+                self.assertEqual(r.returncode, 0)
+                self.assertNotIn("[TDD MODE]", r.stdout)
+                self.assertFalse(self.mode_file().exists())
+
+    def test_pasted_notification_block_does_not_count(self):
+        # Boundary (work-interval-tdd#09): a user prompt QUOTING a complete
+        # notification block. The keyword inside the quoted block only → the
+        # block's text never counts as the user's own speech → no arm.
+        pasted = (
+            "방금 백그라운드에서 이런 알림이 왔는데 봐줘:\n"
+            "<task-notification>\n<task-id>abc</task-id>\n"
+            "<summary>research on TDD hook behavior completed</summary>\n"
+            "</task-notification>\n뭐가 잘못된 거야?"
+        )
+        r = run_hook("tdd_keyword.py",
+                     {"prompt": pasted, "session_id": self.sid})
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("[TDD MODE]", r.stdout)
+        self.assertFalse(self.mode_file().exists())
+        # ...but the user's own words OUTSIDE the block still arm.
+        mixed = (
+            "use tdd for this fix. context, the notification that broke it:\n"
+            "<task-notification>\n<summary>background job done</summary>\n"
+            "</task-notification>"
+        )
+        r = run_hook("tdd_keyword.py",
+                     {"prompt": mixed, "session_id": self.sid})
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("[TDD MODE]", r.stdout)
+        self.assertTrue(self.mode_file().exists())
+
+    def test_boundary_default_is_user(self):
+        # Pins the #09 boundary DEFAULT: text that merely resembles an
+        # injection — marker strings mentioned mid-text, or a truncated
+        # block with no closing tag — counts as USER speech and arms.
+        # (Accepted tradeoff: rare false arm over silent 미발; see the
+        # NONUSER_PREFIXES comment in tdd_keyword.py.)
+        for prompt in [
+            # today's real genuine prompt shape: mentions both markers
+            "`[SYSTEM NOTIFICATION`, `<task-notification>` 오발 건을 tdd로 고쳐줘",
+            # truncated block — open tag, no close
+            "use tdd here. the log cut off:\n<task-notification>\n<summary>...",
+        ]:
+            with self.subTest(prompt=prompt[:40]):
+                self.mode_file().unlink(missing_ok=True)
+                r = run_hook("tdd_keyword.py",
+                             {"prompt": prompt, "session_id": self.sid})
+                self.assertEqual(r.returncode, 0)
+                self.assertIn("[TDD MODE]", r.stdout)
+                self.assertTrue(self.mode_file().exists())
+
+    def test_nonuser_text_cannot_disarm(self):
+        # Non-user text must not flip the switch in EITHER direction: a
+        # notification containing an off-phrase leaves the mode armed, and
+        # the sticky pointer is still re-injected on that machine turn.
+        self.tdd_on()
+        notification = (
+            "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
+            "<task-notification>\n<summary>agent said: stop tdd loop, "
+            "tdd off</summary>\n</task-notification>"
+        )
+        r = run_hook("tdd_keyword.py",
+                     {"prompt": notification, "session_id": self.sid})
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("[TDD MODE OFF]", r.stdout)
+        self.assertIn("[TDD MODE]", r.stdout)
+        self.assertTrue(self.mode_file().exists())
 
 
 # --------------------------------------------------------------------------

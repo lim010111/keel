@@ -42,6 +42,18 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
+# Journal (harness-journal#01), as "status". Strictly additive: the import is
+# guarded (the absolute path also serves vendored copies in target repos; on a
+# host without ~/.claude — e.g. GHA regen — it fails open to no-ops) and both
+# callables never raise. status.py reads no stdin payload (it is also invoked
+# interactively), so events carry no session_id; repo is passed explicitly.
+try:
+    sys.path.append(str(Path.home() / ".claude" / "scripts"))
+    from hook_journal import for_hook as _for_hook
+    _journal, _drift = _for_hook("status")
+except Exception:
+    _journal = _drift = lambda *a, **k: None
+
 NARRATIVE_START = "<!-- narrative:start -->"
 NARRATIVE_END = "<!-- narrative:end -->"
 
@@ -2160,6 +2172,7 @@ def main(argv: list[str] | None = None) -> None:
     # fresh `claude -p` session that loads settings, so its Stop/SessionStart fire
     # here; regenerating STATUS.md per produce is spurious churn (#31 seed finding).
     if os.environ.get("MERGE_GATE_PRODUCER_RUNNING") == "1":
+        _journal("skip", "producer")
         return
     # --brief: regenerate the file exactly as a plain run would, but print the
     # brief session-start view instead of the regen message. The SessionStart
@@ -2170,6 +2183,7 @@ def main(argv: list[str] | None = None) -> None:
     root = project_root()
     issue_files = sorted((root / ".scratch").glob("*/issues/*.md"))
     if not issue_files:
+        _journal("skip", "not-issue-repo", repo=str(root))
         return  # Opt-in: no local-markdown issues here — silent no-op.
 
     status = root / "STATUS.md"
@@ -2223,6 +2237,10 @@ that triage state and are excluded from the progress bar.
     old = status.read_text(encoding="utf-8") if status.exists() else ""
     if content != old:
         status.write_text(content, encoding="utf-8")
+    mode = "html" if want_html else ("brief" if brief else "stop")
+    _journal("fire" if content != old else "pass",
+             mode + (":regenerated" if content != old else ":unchanged"),
+             repo=str(root))
     # --html: also emit the human glance sibling and open it. Gated entirely
     # behind the flag, so a plain Stop-hook run never writes/opens STATUS.html.
     if want_html:

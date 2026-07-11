@@ -18,7 +18,9 @@ Project layer (attempted only when cwd is inside a git repo, unless --no-project
      explains the issue file contract, STATUS.md editing rules, and the
      "close an issue by ticking its AC boxes" procedure. The harness
      depends on agents following this convention; without the doc, agents
-     have no in-repo reference for it.
+     have no in-repo reference for it. This skill is the SOLE owner and
+     seeder of this file (ADR-0036); setup-agents-md never writes under
+     docs/agents/.
 
 Idempotent. Every step reports ✓ (already in place), + (will change), or
 ⚠ (present but differs from template — manual review). Re-running after a
@@ -242,9 +244,15 @@ def install_project(root, actions, apply):
             if doc_dest.read_text(encoding="utf-8") == template_text:
                 actions.append(("ok", f"{DOC_REL} in sync with template"))
             else:
+                # ADR-0036: a differing copy is an intended repo customization
+                # or pre-harness hand-authoring — never a stale install. This
+                # skill never overwrites it.
                 actions.append(("warn", f"{DOC_REL} present but differs from "
-                                         "template — review and sync manually "
-                                         "if you want the latest version"))
+                                         "template — an intended repo "
+                                         "customization (keep) or pre-harness "
+                                         "hand-authoring (review against the "
+                                         "template); not a stale install, "
+                                         "never overwritten"))
         else:
             actions.append(("change", f"vendor {DOC_REL} from skill template"))
             if apply:

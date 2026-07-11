@@ -19,6 +19,13 @@ This skill installs and maintains that wrapper relationship — for the root
 **and** every nested guidance directory. It does **not** author
 project-specific guidance; content is moved verbatim, never rewritten.
 
+It also never authors or seeds anything under `docs/agents/` (ADR-0036). In
+particular, do **not** hand-author `docs/agents/issue-tracker.md` while
+scaffolding a repo — that file is owned and seeded by `/setup-status-harness`
+(the only canonical template lives in that skill); run it to seed the file.
+Sibling docs `triage-labels.md` / `domain.md` are repo-authored — no canonical
+template exists anywhere, and no skill flags them.
+
 ## The four states (per directory)
 
 The script branches on what exists at each directory:
@@ -124,4 +131,5 @@ After applying:
 - The templates under `templates/` are intentionally minimal — they bootstrap
   the *relationship*, not the content.
 - Complementary to `/setup-status-harness`: STATUS.md tracks issue state,
-  AGENTS.md tracks agent guidance.
+  AGENTS.md tracks agent guidance. `docs/agents/issue-tracker.md` belongs to
+  that skill, not this one (ADR-0036).

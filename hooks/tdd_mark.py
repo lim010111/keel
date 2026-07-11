@@ -22,6 +22,16 @@ from pathlib import Path
 MARKER_DIR = Path.home() / ".claude" / "hooks" / ".tdd-markers"
 STATE_DIR = Path.home() / ".claude" / "hooks" / ".tdd-state"
 
+# Journal (harness-journal#01): observability is strictly additive — a missing
+# or broken helper must never change this hook's behaviour, so the import is
+# guarded and both callables are never-raise no-op fallbacks on any failure.
+try:
+    sys.path.append(str(Path.home() / ".claude" / "scripts"))
+    from hook_journal import for_hook as _for_hook
+    _journal, _drift = _for_hook("tdd_mark")
+except Exception:
+    _journal = _drift = lambda *a, **k: None
+
 # Source/test file extensions worth re-running tests for.
 CODE_EXT = {
     ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
@@ -68,9 +78,11 @@ def is_test_file(path):
 
 def main():
     payload = read_input()
+    _drift(payload, ("session_id", "cwd", "tool_name", "tool_input"))
     session_id = str(payload.get("session_id", "")) or "default"
     file_path = str(payload.get("tool_input", {}).get("file_path", ""))
     if not file_path or os.path.splitext(file_path)[1].lower() not in CODE_EXT:
+        _journal("skip", "non-code", payload)
         sys.exit(0)
 
     # 1. Stop-hook marker — record that code changed this turn, accumulating the
@@ -108,6 +120,7 @@ def main():
         except Exception:
             pass
 
+    _journal("fire", "marker-recorded", payload)
     sys.exit(0)
 
 

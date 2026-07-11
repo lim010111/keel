@@ -25,6 +25,9 @@ sys.path.insert(0, str(SCRIPTS))
 
 import check_alignment_skill_drift as drift  # noqa: E402
 
+# harness-journal#01: script runs under test must never spam the real journal.
+os.environ["HOOK_JOURNAL_DISABLED"] = "1"
+
 SCRIPT = SCRIPTS / "check_alignment_skill_drift.py"
 AGENTS = Path.home() / ".agents"
 

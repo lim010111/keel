@@ -42,6 +42,17 @@ import os
 import sys
 from pathlib import Path
 
+# Journal (harness-journal#01), as "alignment_drift". Strictly additive: the
+# import is guarded and both callables are never-raise no-op fallbacks, so a
+# missing/broken helper can never gate a session. This script reads no stdin
+# payload (SessionStart shell invocation), so events carry no session_id.
+try:
+    sys.path.append(str(Path.home() / ".claude" / "scripts"))
+    from hook_journal import for_hook as _for_hook
+    _journal, _drift = _for_hook("alignment_drift")
+except Exception:
+    _journal = _drift = lambda *a, **k: None
+
 # The watched set is an EXPLICIT list — the alignment-gate skills only, never
 # "all skills" (AC3). The gate is now decomposed (skill-suite-migration): the
 # load-bearing prose lives in `grilling` (questioning style) + `domain-modeling`
@@ -126,6 +137,7 @@ def main() -> None:
     try:
         drift = find_drift(agents_dir())
     except Exception:
+        _journal("skip", "error")
         sys.exit(0)  # advisory: never gate a session on an infra error
     if drift:
         names = ", ".join(d["skill"] for d in drift)
@@ -134,6 +146,9 @@ def main() -> None:
               f"matches the lock (a local edit or partial update; a clean `npx "
               f"skills update` re-pins the lock and would NOT surface here). "
               f"Review before relying on the gate; see docs/adr/0031 §B step 4.")
+        _journal("fire", "drift:" + ",".join(d["skill"] for d in drift))
+    else:
+        _journal("pass", "clean")
     sys.exit(0)
 
 

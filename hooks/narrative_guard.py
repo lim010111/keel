@@ -88,6 +88,15 @@ SCRIPTS = Path.home() / ".claude" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import status  # noqa: E402  — pure parse helpers; status.main() is __main__-guarded.
 
+# Journal (harness-journal#01): observability is strictly additive — a missing
+# or broken helper must never change this hook's behaviour, so the import is
+# guarded and both callables are never-raise no-op fallbacks on any failure.
+try:
+    from hook_journal import for_hook as _for_hook
+    _journal, _drift = _for_hook("narrative_guard")
+except Exception:
+    _journal = _drift = lambda *a, **k: None
+
 
 def state_dir() -> Path:
     return Path(os.environ.get(
@@ -416,8 +425,10 @@ def disabled() -> bool:
 
 def snapshot() -> None:
     if disabled():
+        _journal("skip", "snapshot:disabled")
         sys.exit(0)
     p = read_input()
+    _drift(p, ("session_id", "cwd"))
     sid = str(p.get("session_id", "")) or "default"
     cwd = p.get("cwd") or os.getcwd()
     try:
@@ -426,10 +437,12 @@ def snapshot() -> None:
         # with the same session_id; re-anchoring here would clobber a check-written
         # re-baseline (A5) and silently re-arm an already-acknowledged change.
         if snap_path(sid, root).exists():
+            _journal("skip", "snapshot:already-anchored", p, repo=str(root))
             sys.exit(0)
         issue_files = sorted((root / ".scratch").glob("*/issues/*.md"))
         status_path = root / "STATUS.md"
         if not issue_files or not has_markers(status_path):
+            _journal("skip", "snapshot:not-opted-in", p, repo=str(root))
             sys.exit(0)  # opt-in: not a local-markdown issue project
         fp = compute_fingerprint(root)
         narr = status.read_narrative(status_path)
@@ -442,21 +455,26 @@ def snapshot() -> None:
             # a legacy line someone else left (75a13c0 advisory review).
             "offenders": status.completion_offenders(narr),
         }))
+        _journal("fire", "snapshot:anchored", p, repo=str(root))
     except Exception:
+        _journal("skip", "snapshot:error", p)
         pass  # fail-open: never raise on SessionStart
     sys.exit(0)
 
 
 def check() -> None:
     if disabled():
+        _journal("skip", "check:disabled")
         sys.exit(0)
     p = read_input()
+    _drift(p, ("session_id", "cwd", "transcript_path", "stop_hook_active"))
     sid = str(p.get("session_id", "")) or "default"
     cwd = p.get("cwd") or os.getcwd()
     # Loop guard (mirror tdd_verify): this Stop was caused by our own block ->
     # enforce at most once per turn. Checked before the snapshot read so it never
     # re-baselines; an agent who ignores the block and re-stops is let through.
     if p.get("stop_hook_active") is True:
+        _journal("skip", "check:loop-guard", p)
         sys.exit(0)
     try:
         root = repo_root(cwd)
@@ -465,21 +483,26 @@ def check() -> None:
             # / issue edits this turn are work-in-progress, not a settled posture
             # change. Never block; the skill runs /status + `resume` once grilling
             # concludes, which re-arms the guard against the real, final posture.
+            _journal("skip", "check:paused", p, repo=str(root))
             sys.exit(0)
         sp = snap_path(sid, root)  # this session's anchor for THIS repo
         if not sp.exists():
+            _journal("skip", "check:no-anchor", p, repo=str(root))
             sys.exit(0)  # no anchor for this (session, repo) -> fail-open
         snap = json.loads(sp.read_text())
         if "fingerprint" not in snap or "narrative_hash" not in snap:
+            _journal("skip", "check:corrupt-snapshot", p, repo=str(root))
             sys.exit(0)  # corrupt snapshot -> fail-open
         issue_files = sorted((root / ".scratch").glob("*/issues/*.md"))
         status_path = root / "STATUS.md"
         if not issue_files or not has_markers(status_path):
+            _journal("skip", "check:not-opted-in", p, repo=str(root))
             sys.exit(0)  # opt-in
         cur_fp = compute_fingerprint(root)
         cur_nh = narrative_hash(status_path)
     except Exception as exc:
         print(f"narrative_guard: skipped ({exc})", file=sys.stderr)
+        _journal("skip", "check:error", p)
         sys.exit(0)  # fail-open: never block on infra error
 
     def rebaseline(fp, nh, off) -> None:
@@ -507,12 +530,14 @@ def check() -> None:
             # Pure narrative refresh: nothing could block, so the transcript
             # is never read (A5 — a quiet Stop costs nothing extra).
             rebaseline(cur_fp, cur_nh, cur_off)
+            _journal("pass", "check:narrative-refreshed", p, repo=str(root))
             sys.exit(0)
         written = written_set(p)
         if written is None:
             # Attribution unknown (no transcript_path / unreadable): do not
             # engage — keep the pre-#04 discharge behaviour (A4 fail-open).
             rebaseline(cur_fp, cur_nh, cur_off)
+            _journal("skip", "check:attribution-unknown", p, repo=str(root))
             sys.exit(0)
         if _norm(status_path) in written:
             # THIS session wrote the narrative. Lint first: a new offender
@@ -522,8 +547,10 @@ def check() -> None:
             # the same session is still caught (A5).
             if new_off:
                 print(completion_block_message(new_off), file=sys.stderr)
+                _journal("block", "check:completion-lint", p, repo=str(root))
                 sys.exit(2)
             rebaseline(cur_fp, cur_nh, cur_off)
+            _journal("pass", "check:discharged", p, repo=str(root))
             sys.exit(0)
         # Someone ELSE moved the narrative (status-harness#04 incident): accept
         # the new reality for the hash + offender baseline — their prose, their
@@ -534,7 +561,9 @@ def check() -> None:
         attributed = attribute_changes(changes, written, root)
         if attributed:
             print(block_message(attributed), file=sys.stderr)
+            _journal("block", "check:posture-stale", p, repo=str(root))
             sys.exit(2)
+        _journal("pass", "check:foreign-narrative-accepted", p, repo=str(root))
         sys.exit(0)
 
     if changes:
@@ -545,11 +574,16 @@ def check() -> None:
         # narrative actually moves.
         written = written_set(p)
         if written is None:
+            _journal("skip", "check:attribution-unknown", p, repo=str(root))
             sys.exit(0)
         attributed = attribute_changes(changes, written, root)
         if attributed:
             print(block_message(attributed), file=sys.stderr)
+            _journal("block", "check:posture-stale", p, repo=str(root))
             sys.exit(2)
+        _journal("pass", "check:unattributed", p, repo=str(root))
+        sys.exit(0)
+    _journal("pass", "check:clean", p, repo=str(root))
     sys.exit(0)
 
 
@@ -573,6 +607,7 @@ def pause() -> None:
         state_dir().mkdir(parents=True, exist_ok=True)
         pause_marker_path(sid, root).write_text(
             json.dumps({"session": sid, "root": str(root)}))
+        _journal("fire", "pause:marker-set", {"session_id": sid}, repo=str(root))
     except Exception:
         pass
     sys.exit(0)
@@ -585,6 +620,7 @@ def resume() -> None:
     sid, root = _pause_identity()
     try:
         pause_marker_path(sid, root).unlink(missing_ok=True)
+        _journal("fire", "resume:marker-cleared", {"session_id": sid}, repo=str(root))
     except Exception:
         pass
     sys.exit(0)

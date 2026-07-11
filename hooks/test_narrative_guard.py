@@ -28,6 +28,9 @@ sys.path.insert(0, str(HOOKS))
 
 import status  # noqa: E402
 
+# harness-journal#01: hook runs under test must never spam the real journal.
+os.environ["HOOK_JOURNAL_DISABLED"] = "1"
+
 GUARD = HOOKS / "narrative_guard.py"
 REAL_STATE = Path.home() / ".claude" / "hooks" / ".narrative-guard-state"
 

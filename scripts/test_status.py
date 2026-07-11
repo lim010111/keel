@@ -22,6 +22,9 @@ sys.path.insert(0, str(SCRIPTS))
 
 import status  # noqa: E402
 
+# harness-journal#01: status runs under test must never spam the real journal.
+os.environ["HOOK_JOURNAL_DISABLED"] = "1"
+
 STATUS_PY = SCRIPTS / "status.py"
 
 

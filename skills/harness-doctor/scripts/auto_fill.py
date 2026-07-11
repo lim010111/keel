@@ -271,9 +271,11 @@ def _apply_merge_gate(repo, rec, tiers):
 # --------------------------------------------------------------------------
 # status-harness — delegated to install_project(root, actions, apply). Its writes
 # happen INLINE when apply=True (no per-action apply_fn to filter), and it leaves
-# any `warn` (diverged vendored file) untouched — so install_project(apply=True)
-# IS the correct partial delegation: change sub-files applied (auto), warn
-# preserved (refuse). Its action tuples are (kind, msg) 2-tuples.
+# any `warn` untouched — a diverged vendored file, or a differing
+# docs/agents/issue-tracker.md (an intended repo customization or pre-harness
+# hand-authoring, never a stale install — ADR-0036) — so install_project(
+# apply=True) IS the correct partial delegation: change sub-files applied
+# (auto), warn preserved (refuse). Its action tuples are (kind, msg) 2-tuples.
 # --------------------------------------------------------------------------
 def _status_vendor_source_ok(mod):
     """True iff a status.py vendor SOURCE is readable — the global copy OR the
@@ -306,7 +308,7 @@ def _apply_status_harness(repo, tiers):
     if not any(a[0] == "change" for a in detect):
         return False
     # install_project(apply=True) writes the change sub-files and leaves any warn
-    # (diverged) file untouched — the correct partial delegation.
+    # (diverged / customized) file untouched — the correct partial delegation.
     mod.install_project(root, [], True)
     return True
 

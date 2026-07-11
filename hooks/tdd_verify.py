@@ -18,6 +18,16 @@ from pathlib import Path
 
 MARKER_DIR = Path.home() / ".claude" / "hooks" / ".tdd-markers"
 
+# Journal (harness-journal#01): observability is strictly additive — a missing
+# or broken helper must never change this hook's behaviour, so the import is
+# guarded and both callables are never-raise no-op fallbacks on any failure.
+try:
+    sys.path.append(str(Path.home() / ".claude" / "scripts"))
+    from hook_journal import for_hook as _for_hook
+    _journal, _drift = _for_hook("tdd_verify")
+except Exception:
+    _journal = _drift = lambda *a, **k: None
+
 # Upper bound on a single suite's wall time. tdd_verify is the sole Stop-time
 # oracle (ADR-0022), and a hung suite (waits on a port, an interactive prompt, an
 # infinite loop) would otherwise freeze turn completion — worse now that the venue
@@ -300,15 +310,18 @@ def _run_suite(cmd, root):
 
 def main():
     payload = read_input()
+    _drift(payload, ("session_id", "cwd", "transcript_path", "stop_hook_active"))
     session_id = str(payload.get("session_id", "")) or "default"
     cwd = payload.get("cwd") or os.getcwd()
 
     # loop guard: this Stop was caused by our own block -> enforce only once
     if payload.get("stop_hook_active") is True:
+        _journal("skip", "loop-guard", payload)
         sys.exit(0)
 
     marker = MARKER_DIR / f"marker-{session_id}"
     if not marker.exists():
+        _journal("skip", "no-marker", payload)
         sys.exit(0)  # no code changed this turn
     try:
         edited = [p.strip() for p in marker.read_text().splitlines() if p.strip()]
@@ -363,9 +376,12 @@ def main():
               file=sys.stderr)
 
     if not targets:
+        _journal("skip", "no-oracle:suppressed" if suppressed else "no-oracle",
+                 payload)
         sys.exit(0)  # no recognizable oracle in any edited repo -> skip silently
 
     failures = []
+    completed = 0
     for root, cmd in targets.items():
         res = _run_suite(cmd, root)
         if res is None:
@@ -374,6 +390,7 @@ def main():
                   f"(unrunnable or exceeded {ORACLE_TIMEOUT_SECONDS}s) — skipped.",
                   file=sys.stderr)
             continue
+        completed += 1
         rc, output = res
         # pytest exit 5 == "no tests collected" -> treat as non-blocking
         if rc == 0 or (rc == 5 and "pytest" in cmd):
@@ -382,6 +399,10 @@ def main():
         failures.append((root, cmd, rc, tail))
 
     if not failures:
+        if completed:
+            _journal("pass", "suite-green", payload)
+        else:
+            _journal("skip", "infra-skip", payload)
         sys.exit(0)
 
     blocks = [
@@ -395,6 +416,8 @@ def main():
         + "\n\n".join(blocks)
     )
     print(msg, file=sys.stderr)
+    _journal("block", "suite-red:" + ",".join(r for r, _c, _rc, _t in failures),
+             payload)
     sys.exit(2)
 
 

@@ -56,6 +56,8 @@ scripts/classify_sound.py
 scripts/test_classify_sound.py
 scripts/check_alignment_skill_drift.py
 scripts/test_check_alignment_skill_drift.py
+scripts/hook_journal.py
+scripts/test_hook_journal.py
 
 # --- Agents (definitions only; agent-memory/ is intentionally excluded) ---
 agents/ci-researcher.md

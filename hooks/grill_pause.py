@@ -36,6 +36,16 @@ HOOKS = Path.home() / ".claude" / "hooks"
 sys.path.insert(0, str(HOOKS))
 import narrative_guard as ng  # noqa: E402  — reuse the exact marker keying `check` reads.
 
+# Journal (harness-journal#01): observability is strictly additive — a missing
+# or broken helper must never change this hook's behaviour, so the import is
+# guarded and both callables are never-raise no-op fallbacks on any failure.
+try:
+    sys.path.append(str(Path.home() / ".claude" / "scripts"))
+    from hook_journal import for_hook as _for_hook
+    _journal, _drift = _for_hook("grill_pause")
+except Exception:
+    _journal = _drift = lambda *a, **k: None
+
 # The grilling skills that bracket their session with a narrative-guard pause.
 # An explicit allow-list (not "all skills"): only these defer the narrative.
 # grill-me is excluded on purpose — a pure interview skill makes no inline
@@ -47,10 +57,13 @@ GRILL_SKILLS = {"grill-with-docs", "harden-issue"}
 
 def main() -> None:
     p = ng.read_input()
+    _drift(p, ("session_id", "cwd", "tool_name", "tool_input"))
     if p.get("tool_name") != "Skill":
+        _journal("skip", "not-skill", p)
         sys.exit(0)
     skill = (p.get("tool_input") or {}).get("skill")
     if skill not in GRILL_SKILLS:
+        _journal("skip", "not-grill-skill", p)
         sys.exit(0)
     # Key the marker the SAME way narrative_guard.check does: session id from the
     # hook payload, repo from repo_root(payload cwd). check() looks up exactly
@@ -62,6 +75,7 @@ def main() -> None:
         ng.state_dir().mkdir(parents=True, exist_ok=True)
         ng.pause_marker_path(sid, root).write_text(
             json.dumps({"session": sid, "root": str(root), "via": "grill_pause"}))
+        _journal("fire", f"paused:{skill}", p, repo=str(root))
     except Exception:
         pass  # fail-soft: never block a grilling launch over a marker-write error
     sys.exit(0)

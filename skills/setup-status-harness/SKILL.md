@@ -24,6 +24,11 @@ in sync with its issue files. It has two layers; this skill installs both.
    issue file contract, STATUS.md editing rules, and the close-an-issue
    procedure. Agents in the repo need this as their reference for the
    AC-checkbox / narrative-block conventions the harness depends on.
+   **This skill is the sole owner and seeder of this file** (ADR-0036) —
+   the only canonical template in the system is this skill's
+   `templates/issue-tracker.md`. `setup-agents-md` explicitly disclaims
+   `docs/agents/*` (see its SKILL.md): never hand-author this file during
+   scaffolding; run this skill to seed it.
 
 **Issue content** — at `.scratch/<feature>/issues/*.md`. The harness is
 opt-in: with no issue files the generator is a silent no-op and no `STATUS.md`
@@ -48,7 +53,10 @@ touches global config (`~/.claude/settings.json`) or adds project files
 (`scripts/status.py`, `.github/workflows/regen-status.yml`, `.gitignore`),
 show the user those lines and get an explicit go-ahead. If every line is ✓,
 skip the confirmation. For ⚠ lines, surface them — the user decides whether
-to sync manually.
+to sync manually. A ⚠ on `docs/agents/issue-tracker.md` means the file is
+either an **intended repo customization** (fine — keep it) or **pre-harness
+hand-authoring** (review it against the template) — never a stale install;
+the skill never overwrites it (ADR-0036).
 
 **3 — Apply.** Re-run the script without `--dry-run`. Report what changed.
 
@@ -118,6 +126,10 @@ step.
   or an existing per-project `scripts/status.py`. If a project's vendored
   copy drifts from the global, the script warns; the user syncs manually
   (`cp ~/.claude/scripts/status.py scripts/status.py`).
+- Sibling docs `docs/agents/triage-labels.md` and `docs/agents/domain.md`
+  are **repo-authored** — no canonical template exists anywhere and no skill
+  may flag them as drifted (ADR-0036). This skill vendors and checks only
+  `issue-tracker.md`.
 - The `SessionStart` hook prints `STATUS.md` into context only when the file
   exists, and the generator no-ops without issue files — so installing the
   global hooks is harmless in every other repo on the machine.

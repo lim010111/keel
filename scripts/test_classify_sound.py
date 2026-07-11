@@ -9,6 +9,9 @@ import unittest
 
 from classify_sound import classify, extract_tail, resolve_tail
 
+# harness-journal#01: classifier runs under test must never spam the real journal.
+os.environ["HOOK_JOURNAL_DISABLED"] = "1"
+
 
 def _transcript(entries):
     """entries: list of (stop_reason, text) or (stop_reason, text, msg_id). stop_reason

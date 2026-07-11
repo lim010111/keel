@@ -119,8 +119,9 @@ writes. The fill set is `{diagnose gaps} ∩ {recorded scaffold}` — **with no
    refuse), kind, message, action_id}`. Show the operator the `auto` (will apply),
    `confirm` (needs go-ahead), and `refuse`/`report` (surfaced, not auto-closed)
    groups. **A `refuse`/`report` is intentional, not a failure** — e.g. a diverged
-   vendored file or a parked concern; say so, so a non-zero diagnose exit is not
-   read as "fill failed".
+   vendored file, a customized `docs/agents/issue-tracker.md` (a valid end-state,
+   never a stale install — ADR-0036), or a parked concern; say so, so a non-zero
+   diagnose exit is not read as "fill failed".
 
 6. **Apply the auto tier (repo scope).** Pure-create / additive work applies
    without a prompt:

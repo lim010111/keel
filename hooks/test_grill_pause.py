@@ -38,6 +38,9 @@ from test_narrative_guard import (  # noqa: E402
     REAL_STATE, _names,
 )
 
+# harness-journal#01: hook runs under test must never spam the real journal.
+os.environ["HOOK_JOURNAL_DISABLED"] = "1"
+
 PAUSE_HOOK = HOOKS / "grill_pause.py"
 
 
