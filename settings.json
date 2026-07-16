@@ -4,8 +4,6 @@
       "Read(./private/**)",
       "Read(./.gemini/**)",
       "Read(./GEMINI.md)",
-      "Glob(./private/**)",
-      "Glob(./.gemini/**)",
       "Grep(./private/**)",
       "Grep(./.gemini/**)",
       "Edit(./private/**)",
