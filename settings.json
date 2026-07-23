@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/scripts/sound_permission.sh"
+            "command": ": # SOUND OFF (temp) — restore: $HOME/.claude/scripts/sound_permission.sh"
           }
         ]
       }
@@ -96,7 +96,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/scripts/sound_complete.sh",
+            "command": ": # SOUND OFF (temp) — restore: $HOME/.claude/scripts/sound_complete.sh",
             "timeout": 20
           }
         ]
@@ -125,7 +125,12 @@
           }
         ]
       }
-    ]
+    ],
+    "StopFailure": [],
+    "SubagentStart": [],
+    "SubagentStop": [],
+    "TeammateIdle": [],
+    "PostToolUseFailure": []
   },
   "statusLine": {
     "type": "command",
@@ -145,7 +150,7 @@
       }
     }
   },
-  "effortLevel": "xhigh",
+  "effortLevel": "high",
   "tui": "fullscreen",
   "skipDangerousModePermissionPrompt": true,
   "autoCompactEnabled": false,

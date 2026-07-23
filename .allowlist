@@ -36,6 +36,10 @@ hooks/narrative_guard.py
 hooks/test_narrative_guard.py
 hooks/grill_pause.py
 hooks/test_grill_pause.py
+hooks/hook_io.py
+hooks/test_hook_io.py
+hooks/tdd_paths.py
+hooks/test_tdd_paths.py
 
 # --- Scripts ---
 scripts/status.py
@@ -58,6 +62,13 @@ scripts/check_alignment_skill_drift.py
 scripts/test_check_alignment_skill_drift.py
 scripts/hook_journal.py
 scripts/test_hook_journal.py
+scripts/git_plumbing.py
+scripts/test_git_plumbing.py
+scripts/session_reduce.py
+scripts/test_session_reduce.py
+scripts/run_skill_tests.py
+scripts/test_run_skill_tests.py
+scripts/test_vendored_snapshots.py
 
 # --- Agents (definitions only; agent-memory/ is intentionally excluded) ---
 agents/ci-researcher.md
@@ -91,3 +102,7 @@ settings.json
 # exclude: skills/daily-token-report
 # exclude: skills/session-dev-log
 # exclude: skills/tech-blog
+#
+# Orca-app-specific tooling (third-party app the author merely uses).
+# The matching settings.json entries are stripped by sync.sh's redaction.
+# exclude: hooks/orca_surface_route.py

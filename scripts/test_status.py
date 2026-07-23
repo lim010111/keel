@@ -214,6 +214,31 @@ class TestNextPointer(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
+# build_dashboard_data — the pure data seam behind render_html: the dashboard's
+# projectData contract is asserted here directly, instead of only by grepping
+# the rendered 70KB page through a subprocess.
+# --------------------------------------------------------------------------
+class TestBuildDashboardData(unittest.TestCase):
+    def test_summary_counts_and_percent(self):
+        data = status.build_dashboard_data("narr", [], [], 3, 4)
+        s = data["summary"]
+        self.assertEqual((s["metCriteria"], s["totalCriteria"], s["percent"]),
+                         (3, 4, 75))
+        self.assertEqual(s["tracksCount"], 0)
+        self.assertEqual(data["tracks"], [])
+
+    def test_zero_criteria_does_not_divide_by_zero(self):
+        data = status.build_dashboard_data("n", [], [], 0, 0)
+        self.assertEqual(data["summary"]["percent"], 0)
+
+    def test_narrative_delegates_to_narrative_data(self):
+        data = status.build_dashboard_data("## Current focus\n\nx", ["w1"],
+                                           [], 0, 0)
+        self.assertEqual(data["narrative"],
+                         status._narrative_data("## Current focus\n\nx", ["w1"]))
+
+
+# --------------------------------------------------------------------------
 # md_to_html — AC4: stdlib-only hand-rolled converter, no external dependency.
 # --------------------------------------------------------------------------
 class TestMdToHtml(unittest.TestCase):

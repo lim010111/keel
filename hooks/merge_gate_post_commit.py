@@ -54,6 +54,7 @@ def resolve_import_roots(here, home):
     checkout = here.parent                                # <root>/hooks → <root>
     runtime_set = (
         checkout / "scripts" / "merge_gate_local.py",
+        checkout / "scripts" / "git_plumbing.py",
         here / "merge_gate_scheduler.py",
         checkout / "scripts" / "merge-gate-assets" / "adversarial-review.md",
         checkout / "skills" / "setup-merge-gate" / "templates" / "review-output.schema.json",

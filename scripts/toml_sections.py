@@ -32,7 +32,8 @@ not a half-parser. (Pre-existing: install_local / record_profile were
 line-oriented before this module consolidated them.)
 """
 
-__all__ = ["header", "split_sections", "section_name", "section_is"]
+__all__ = ["header", "split_sections", "section_name", "section_is",
+           "append_section", "replace_or_append_section"]
 
 
 def header(line):
@@ -93,6 +94,28 @@ def section_name(hdr):
     if hdr is None or hdr.startswith("[["):
         return None
     return _normalize(hdr[hdr.index("[") + 1:hdr.rindex("]")])
+
+
+def append_section(text, block):
+    """Append `block` to `text` under the house newline discipline: repair a
+    missing trailing newline, separate with exactly one blank line, and let a
+    block stand alone when `text` has no content. The discipline both writers
+    used to hand-roll lives here once."""
+    if not text.strip():
+        return block
+    if not text.endswith("\n"):
+        text += "\n"
+    return text + "\n" + block
+
+
+def replace_or_append_section(text, name, block):
+    """Drop every block declaring the SINGLE-bracket table `name` (folding
+    TOML-equivalent header spellings) and append the fresh `block` at the end.
+    Sibling sections and their comments survive verbatim; an array-of-tables
+    (`[[name]]`) is a different construct and is never dropped."""
+    kept = "".join("".join(lines) for hdr, lines in split_sections(text)
+                   if not section_is(hdr, name))
+    return append_section(kept, block)
 
 
 def section_is(hdr, name):

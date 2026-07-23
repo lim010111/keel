@@ -2117,16 +2117,14 @@ function getStateColor(state) {
 """
 
 
-def render_html(narrative: str, warnings: list[str],
-                feature_data: list[tuple], total_done: int,
-                total_crit: int) -> str:
-    """Build the single self-contained STATUS.html (gemini glance design,
-    status-harness#07). The page renders client-side from an embedded
-    projectData literal; this fills that literal from live issue state, keeps
-    the markup/CSS/JS verbatim, and injects the run-time footer values. Inline
-    only — no external font/CSS/JS dependency (ADR-0031 self-containment)."""
+def build_dashboard_data(narrative: str, warnings: list[str],
+                         feature_data: list[tuple], total_done: int,
+                         total_crit: int) -> dict:
+    """The dashboard's projectData contract, as a plain dict — the pure data
+    seam behind render_html. Tests assert on this dict; the template fill
+    stays a mechanical substitution."""
     frac = total_done / (total_crit or 1)
-    data = {
+    return {
         "summary": {
             "totalCriteria": total_crit,
             "metCriteria": total_done,
@@ -2140,6 +2138,19 @@ def render_html(narrative: str, warnings: list[str],
         "narrative": _narrative_data(narrative, warnings),
         "tracks": [_track_data(*fd) for fd in feature_data],
     }
+
+
+def render_html(narrative: str, warnings: list[str],
+                feature_data: list[tuple], total_done: int,
+                total_crit: int) -> str:
+    """Build the single self-contained STATUS.html (gemini glance design,
+    status-harness#07). The page renders client-side from an embedded
+    projectData literal; build_dashboard_data fills that literal from live
+    issue state, the markup/CSS/JS stays verbatim, and the run-time footer
+    values are injected. Inline only — no external font/CSS/JS dependency
+    (ADR-0031 self-containment)."""
+    data = build_dashboard_data(narrative, warnings, feature_data,
+                                total_done, total_crit)
     return (DASHBOARD_TEMPLATE
             .replace("__PROJECT_DATA_JSON__", _json_payload(data))
             .replace("__GENERATED_AT__", datetime.now().strftime("%Y-%m-%d %H:%M"))

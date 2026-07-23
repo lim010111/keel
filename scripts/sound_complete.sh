@@ -37,7 +37,7 @@ esac
 
 # Background ONLY the audio so playback never blocks the session (as the original did).
 WINPATH="$(wslpath -w "$MP3")"
-powershell.exe -NoProfile -Sta -NonInteractive -WindowStyle Hidden -Command "Add-Type -AssemblyName PresentationCore; \$p = New-Object System.Windows.Media.MediaPlayer; \$p.Open([uri]'$WINPATH'); \$n=0; while(-not \$p.NaturalDuration.HasTimeSpan -and \$n -lt 40){ Start-Sleep -Milliseconds 50; \$n++ }; if(\$p.NaturalDuration.HasTimeSpan){ \$ms=\$p.NaturalDuration.TimeSpan.TotalMilliseconds } else { \$ms=3000 }; \$p.Play(); Start-Sleep -Milliseconds (\$ms+300); \$p.Close()" > /dev/null 2>&1 &
+powershell.exe -NoProfile -Sta -NonInteractive -WindowStyle Hidden -Command "Add-Type -AssemblyName PresentationCore; \$p = New-Object System.Windows.Media.MediaPlayer; \$p.Volume = 0.125; \$p.Open([uri]'$WINPATH'); \$n=0; while(-not \$p.NaturalDuration.HasTimeSpan -and \$n -lt 40){ Start-Sleep -Milliseconds 50; \$n++ }; if(\$p.NaturalDuration.HasTimeSpan){ \$ms=\$p.NaturalDuration.TimeSpan.TotalMilliseconds } else { \$ms=3000 }; \$p.Play(); Start-Sleep -Milliseconds (\$ms+300); \$p.Close()" > /dev/null 2>&1 &
 
 printf '%s decide=%-20s %-12s tail="%s"\n' "$(date +%H:%M:%S)" "$(basename "$MP3")" "$reason" "$tail60" >> "$DBG"
 echo "{}"

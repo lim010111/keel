@@ -61,10 +61,19 @@ SETTINGS="$REPO_DIR/settings.json"
 if [[ -f "$SETTINGS" ]]; then
   if command -v jq >/dev/null 2>&1; then
     tmp="$(mktemp)"
+    # Orca (third-party desktop app) wiring is machine-specific, never
+    # mirrored: the ORCA_CLI_COMMAND env override, the orca_surface_route
+    # routing hook, and the agent-hook blocks the Orca app installs itself.
     jq 'del(.enabledPlugins["humanize-korean@im-not-ai"])
-        | del(.extraKnownMarketplaces["im-not-ai"])' \
+        | del(.extraKnownMarketplaces["im-not-ai"])
+        | del(.env["ORCA_CLI_COMMAND"])
+        | (if .env == {} then del(.env) else . end)
+        | .hooks |= map_values(
+            map(.hooks |= map(select((.command // "") | test("orca"; "i") | not)))
+            | map(select(.hooks | length > 0))
+          )' \
        "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS" \
-       && echo "  redacted personal plugins from settings.json"
+       && echo "  redacted personal plugins and Orca wiring from settings.json"
   else
     echo "  ERROR: jq not found — settings.json was copied UN-redacted and may" >&2
     echo "         contain personal plugins/marketplaces. Install jq and re-run" >&2

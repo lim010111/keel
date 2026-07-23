@@ -47,9 +47,11 @@ main agent가 아니라 스크립트가 한다(편향 차단). 구조는 두 종
 - user 턴 원문과 AI text는 **불가침**. 이것만으로 예산 초과 시 잘라내지 않고
   헤더에 경고만 남긴다.
 
-**파라미터 분리.** 축소 상수는 `reduction_config.py` 한 곳. 스크립트와 프롬프트
-템플릿이 둘 다 읽어 단일 진실 출처가 된다(예: `READ_HEAD_LINES`가 프롬프트의
-"first N lines" 문장과 동기화). import 시 `_validate()`가 잘못된 값을 즉시 차단.
+**파라미터 분리.** 축소 상수는 공유 모듈 `~/.claude/scripts/session_reduce.py`
+한 곳(구 `reduction_config.py`; catch-up과 파이프라인·노브를 공유). 스크립트와
+프롬프트 템플릿이 둘 다 읽어 단일 진실 출처가 된다(예: `READ_HEAD_LINES`가
+프롬프트의 "first N lines" 문장과 동기화). import 시 `_validate()`가 잘못된 값을
+즉시 차단.
 
 **평가자.** 셋 다 외부 CLI 셸 호출 — codex(gpt 패밀리), agy(Gemini 패밀리),
 claude. 플러그인 대신 셸인 이유: codex 플러그인은 Codex 전용이라 셋을 한 방식으로
@@ -151,7 +153,7 @@ reviewers)을 한 줄 echo 후 진행(진짜 모호할 때만 질문 1개). 순�
 **프롬프트 구조 = 공통 + body.** 페르소나는 `evaluator-common.md`(target-agnostic posture)
 + 모드별 body(`evaluator-transcript.md` / `evaluator-target.md`)로 분할. body가 `{{COMMON}}`을
 포함하고 스크립트가 치환(새 include 엔진 없이 기존 `.replace()` 결). 공통을 한 곳에 둔 건
-`reduction_config.py`(스크립트·프롬프트 공유 단일소스)와 같은 원칙.
+`session_reduce.py`의 축소 노브(스크립트·프롬프트 공유 단일소스)와 같은 원칙.
 
 **백워드 호환(staged 골든).** 분할 시 공통 문장이 원본에서 transcript 표현으로 interleave돼
 있어 reword가 불가피 → prompt.txt byte-identical은 성립 불가(축3도 어차피 prompt를 바꿈).

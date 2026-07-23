@@ -51,6 +51,10 @@ import time
 import tomllib
 from pathlib import Path
 
+from git_plumbing import (  # shared never-raise wrappers (also used by leak_scan)
+    git, git_bytes, repo_root, rev_parse, tip_bypass_reason,
+)
+
 # --------------------------------------------------------------------------
 # Versions — these feed review_scope_hash (D8) and summary.json schema gating.
 # Bump when the corresponding contract changes; never derive them from a
@@ -89,6 +93,7 @@ HOME = Path.home()
 # The canonical contract resolve_import_roots (in the post-commit hook) mirrors.
 RUNTIME_SET_RELPATHS = (
     ("scripts", "merge_gate_local.py"),
+    ("scripts", "git_plumbing.py"),
     ("hooks", "merge_gate_scheduler.py"),
     ("scripts", "merge-gate-assets", "adversarial-review.md"),
     ("skills", "setup-merge-gate", "templates", "review-output.schema.json"),
@@ -418,43 +423,15 @@ def in_scope(path: str, review_globs: list[str], ignore_globs: list[str]) -> boo
 
 
 # --------------------------------------------------------------------------
-# git plumbing
+# git plumbing — the shared never-raise wrappers (git / git_bytes / repo_root /
+# rev_parse / tip_bypass_reason) live in git_plumbing.py, one owner for this
+# file and leak_scan.py. Merge-gate-specific plumbing stays below.
 # --------------------------------------------------------------------------
-def git(cwd, args, env=None):
-    """Run git, returning (returncode, stdout_text). Never raises."""
-    full_env = {**os.environ, **(env or {})}
-    try:
-        p = subprocess.run(["git", *args], cwd=str(cwd), env=full_env,
-                           capture_output=True)
-    except Exception as e:
-        return 1, f"{e}"
-    return p.returncode, p.stdout.decode("utf-8", "replace")
-
-
-def git_bytes(cwd, args, env=None) -> tuple[int, bytes]:
-    """Run git, returning (returncode, stdout_bytes). For diff output, which
-    may contain binary patches — the canonical hash is over these raw bytes."""
-    full_env = {**os.environ, **(env or {})}
-    try:
-        p = subprocess.run(["git", *args], cwd=str(cwd), env=full_env,
-                           capture_output=True)
-    except Exception:
-        return 1, b""
-    return p.returncode, p.stdout
-
-
 def git_checked(cwd, args) -> str:
     rc, out = git(cwd, args)
     if rc != 0:
         raise RuntimeError(f"git {' '.join(args)} failed (exit {rc}): {out.strip()}")
     return out.strip()
-
-
-def repo_root(cwd) -> Path | None:
-    rc, out = git(cwd, ["rev-parse", "--show-toplevel"])
-    if rc != 0:
-        return None
-    return Path(out.strip())
 
 
 def detect_default_branch(cwd) -> str | None:
@@ -496,13 +473,6 @@ def working_tree_state(cwd) -> dict:
         "untracked": untracked,
         "is_dirty": bool(staged or unstaged or untracked),
     }
-
-
-def rev_parse(cwd, ref) -> str | None:
-    rc, out = git(cwd, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
-    if rc != 0:
-        return None
-    return out.strip() or None
 
 
 ZERO_SHA = "0" * 40
@@ -1071,29 +1041,7 @@ def freshness_state(summary: dict | None, expected_scope_hash: str,
     return "fresh"
 
 
-# --------------------------------------------------------------------------
-# Bypass trailer (D6).
-# --------------------------------------------------------------------------
-def tip_bypass_reason(cwd, tip_sha: str, trailer: str) -> str | None:
-    """Return the non-empty bypass reason from the tip commit's
-    `<trailer>: <reason>` trailer, or None. Honored ONLY under
-    client-side-blocking (D6)."""
-    fmt = "--format=%(trailers:key=" + trailer + ",valueonly)"
-    rc, out = git(cwd, ["log", "-1", fmt, tip_sha])
-    if rc == 0 and out.strip():
-        return out.strip()
-    # Fallback: parse the raw body for older git without %(trailers) key filter.
-    rc, body = git(cwd, ["log", "-1", "--format=%B", tip_sha])
-    if rc != 0:
-        return None
-    prefix = f"{trailer}:"
-    for line in body.splitlines():
-        line = line.strip()
-        if line.startswith(prefix):
-            reason = line[len(prefix):].strip()
-            if reason:
-                return reason
-    return None
+# Bypass trailer (D6): tip_bypass_reason imported from git_plumbing.
 
 
 # --------------------------------------------------------------------------
@@ -1320,6 +1268,52 @@ def _unsafe_claude_reviewer_arg(extra: list[str]) -> str | None:
     return None
 
 
+def validate_reviewer_config(cfg: Config, name: str) -> str | None:
+    """Pure fail-closed preflight for one reviewer lane's config: the M1/C2
+    unsafe-arg guards and the #47/#48 two-writers refusals, decided from cfg
+    alone — no subprocess, no filesystem. Returns the refusal message (the
+    runner maps it to exit 2), or None when the lane may run. Reviewers
+    without a builtin lane ("custom" cmd specs) have no preflight here.
+    external-dispatch#03 note: this is the preflight seam the shared dispatch
+    layer consumes; keep it pure."""
+    if name == "codex":
+        extra = cfg.reviewer_args("codex") or []
+        bad = _unsafe_reviewer_arg(extra)
+        if bad:
+            return (f"refusing reviewer_args {bad!r}: not provably sandbox-neutral; "
+                    "the local reviewer is read-only-sandboxed by invariant and "
+                    "must not be bypassed (M1)")
+        # #47: the first-class `model` key and an args `--model`/`-m` are two
+        # writers of the same flag — refuse the combination fail-closed rather
+        # than letting clap's duplicate-flag handling pick a winner silently.
+        if cfg.reviewer_model("codex") and _model_from_args(extra):
+            return ("refusing codex reviewer config: both the `model` key and a "
+                    "`--model`/`-m` reviewer_arg are set — set exactly one (#47)")
+        # #48: same two-writers rule for the effort knob — the args side spells
+        # it `-c model_reasoning_effort=<v>`.
+        if (cfg.reviewer_reasoning_effort("codex")
+                and _config_key_in_args(extra, "model_reasoning_effort")):
+            return ("refusing codex reviewer config: both the `reasoning_effort` "
+                    "key and a `-c model_reasoning_effort=` reviewer_arg are set "
+                    "— set exactly one (#48)")
+    elif name == "claude":
+        extra = cfg.reviewer_args("claude") or []
+        # M1 parity (#32 review C2): refuse any reviewer_arg that is not provably
+        # read-only-neutral BEFORE invoking. The tool allowlist + isolation cannot
+        # cover a flag like --mcp-config/--add-dir/--setting-sources that would
+        # re-widen the surface, so only --model/-m is allowlisted.
+        bad = _unsafe_claude_reviewer_arg(extra)
+        if bad:
+            return (f"refusing claude reviewer_args {bad!r}: only --model/-m is "
+                    "allowlisted; the reviewer is read-only-sandboxed by invariant "
+                    "and must not load tool/permission/MCP/config surfaces (#32 C2)")
+        # #47: same two-writers refusal as the codex lane.
+        if cfg.reviewer_model("claude") and _model_from_args(extra):
+            return ("refusing claude reviewer config: both the `model` key and a "
+                    "`--model`/`-m` reviewer_arg are set — set exactly one (#47)")
+    return None
+
+
 def _killpg(pid: int) -> None:
     """SIGKILL the whole process group led by `pid`; tolerate an already-dead
     child/group. `start_new_session=True` makes pgid == pid, and the group
@@ -1401,26 +1395,14 @@ def default_reviewer_runner(name: str, cfg: Config, cd: dict, sub_dir: Path,
     _clear_stale_reviewer_artefacts(sub_dir)
     prompt = render_adversarial_prompt(cd, user_focus)
     if name == "codex":
+        # Fail-closed preflight (M1 unsafe-arg + #47/#48 two-writers) — the
+        # whole refusal matrix lives in validate_reviewer_config, pure.
+        refusal = validate_reviewer_config(cfg, "codex")
+        if refusal:
+            return refusal, 2
         extra = cfg.reviewer_args("codex") or []
-        bad = _unsafe_reviewer_arg(extra)
-        if bad:
-            return (f"refusing reviewer_args {bad!r}: not provably sandbox-neutral; "
-                    "the local reviewer is read-only-sandboxed by invariant and "
-                    "must not be bypassed (M1)", 2)
         model = cfg.reviewer_model("codex")
-        # #47: the first-class `model` key and an args `--model`/`-m` are two
-        # writers of the same flag — refuse the combination fail-closed rather
-        # than letting clap's duplicate-flag handling pick a winner silently.
-        if model and _model_from_args(extra):
-            return ("refusing codex reviewer config: both the `model` key and a "
-                    "`--model`/`-m` reviewer_arg are set — set exactly one (#47)", 2)
         effort = cfg.reviewer_reasoning_effort("codex")
-        # #48: same two-writers rule for the effort knob — the args side spells
-        # it `-c model_reasoning_effort=<v>`.
-        if effort and _config_key_in_args(extra, "model_reasoning_effort"):
-            return ("refusing codex reviewer config: both the `reasoning_effort` "
-                    "key and a `-c model_reasoning_effort=` reviewer_arg are set "
-                    "— set exactly one (#48)", 2)
         cmd = [cfg.reviewer_bin("codex"), "exec", "--json",
                "--output-schema", str(SCHEMA_PATH),
                "--sandbox", "read-only", "--skip-git-repo-check",
@@ -1675,22 +1657,13 @@ def _run_claude_reviewer(name: str, cfg: Config, prompt: str, sub_dir: Path,
     # cleared, so this is a defensive no-op there; it makes a DIRECT call (or a
     # future caller) self-sufficient — parity with default_validator_runner.
     _clear_stale_reviewer_artefacts(sub_dir)
+    # Fail-closed preflight (#32 C2 unsafe-arg + #47 two-writers) — the whole
+    # refusal matrix lives in validate_reviewer_config, pure.
+    refusal = validate_reviewer_config(cfg, "claude")
+    if refusal:
+        return refusal, 2
     extra = cfg.reviewer_args("claude") or []
-    # M1 parity (#32 review C2): refuse any reviewer_arg that is not provably
-    # read-only-neutral BEFORE invoking. The tool allowlist + isolation below cannot
-    # cover a flag like --mcp-config/--add-dir/--setting-sources that would re-widen
-    # the surface, so only --model/-m is allowlisted.
-    bad = _unsafe_claude_reviewer_arg(extra)
-    if bad:
-        return (f"refusing claude reviewer_args {bad!r}: only --model/-m is "
-                "allowlisted; the reviewer is read-only-sandboxed by invariant "
-                "and must not load tool/permission/MCP/config surfaces (#32 C2)", 2)
     model = cfg.reviewer_model("claude")
-    # #47: same two-writers refusal as the codex runner — the `model` key and
-    # an args `--model`/`-m` must not coexist.
-    if model and _model_from_args(extra):
-        return ("refusing claude reviewer config: both the `model` key and a "
-                "`--model`/`-m` reviewer_arg are set — set exactly one (#47)", 2)
     # Inline schema CONTENT, not a path — a path makes `claude -p --json-schema`
     # exit 0 with EMPTY output (verified, AC#2); empty output then fails closed
     # (missing-result → reviewer failure) but never actually reviews. The schema
@@ -2637,8 +2610,12 @@ def cmd_findings(args) -> int:
         payload["state"] = "unreviewable"
         return _emit_findings(args, payload)
     if not cd["changed_files"]:
-        payload["state"] = "no-changes"
-        return _emit_findings(args, payload)
+        is_auto_base = (args.base_ref is None and args.base_sha is None)
+        if is_auto_base and _pending_artefact(root, cfg, tip, base) is not None:
+            pass
+        else:
+            payload["state"] = "no-changes"
+            return _emit_findings(args, payload)
     scope = review_scope_hash(cfg)
     current_tools = None
     if cfg.freshness_policy == "tool-strict":

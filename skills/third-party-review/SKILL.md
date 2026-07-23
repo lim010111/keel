@@ -187,8 +187,8 @@ reviewers=all — 진행?`. 경로는 **실제 파일로 해소해 명시**한�
 
 ## 부품
 
-- `scripts/prepare_review.py` — JSONL 탐색 + 결정론적 축소 + 타깃 복사 + 프롬프트 조립
-- `reduction_config.py` — 축소 파라미터 (자기검증). 튜닝은 여기만.
+- `scripts/prepare_review.py` — JSONL 탐색 + 타깃 복사 + 프롬프트 조립 (축소는 공유 모듈에 위임)
+- `~/.claude/scripts/session_reduce.py` — 축소 파이프라인 + 파라미터 (자기검증, catch-up과 공유). 튜닝은 여기만.
 - `reviewers.toml` — reviewer별 model(+ codex effort) 설정. 선택사항·기본값 내장.
 - `evaluator-common.md` — 공통 페르소나(posture·read-only·증거기반·출력형식). 두 body가 공유.
 - `evaluator-transcript.md` — transcript 모드 body(궤적 증거규칙 + 6섹션). `{{COMMON}}` 포함.

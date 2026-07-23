@@ -30,7 +30,9 @@ _SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from toml_sections import section_is, section_name, split_sections  # noqa: E402
+from toml_sections import (  # noqa: E402
+    append_section, section_is, section_name, split_sections,
+)
 
 # Canonical local sections (D8). Kept as text so comments survive and the
 # defaults are auditable. The section editor below owns these table names.
@@ -129,15 +131,11 @@ def merge_harness_toml(existing: str) -> str:
             out.append("".join(lines))
     text = "".join(out)
     if not have_merge_gate:
-        if text and not text.endswith("\n"):
-            text += "\n"
-        if text.strip():
-            text += "\n"
-        text += '[merge-gate]\nprofile = "local"\n'
+        text = append_section(text, '[merge-gate]\nprofile = "local"\n')
     if not text.endswith("\n"):
         text += "\n"
     if not has_local:
-        text += "\n" + LOCAL_BLOCK
+        text = append_section(text, LOCAL_BLOCK)
     return text
 
 

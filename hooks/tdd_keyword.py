@@ -10,43 +10,18 @@ keyword (the failure mode that let an earlier feature skip TDD entirely).
 Sticky state lives in ~/.claude/hooks/.tdd-state/mode-<session_id>; the
 PreToolUse guard (tdd_guard.py) and the edit marker (tdd_mark.py) read it.
 """
-import json
 import re
-import signal
 import sys
 import time
 from pathlib import Path
 
+import hook_io
+
 STATE_DIR = Path.home() / ".claude" / "hooks" / ".tdd-state"
 
-# Journal (harness-journal#01): observability is strictly additive — a missing
-# or broken helper must never change this hook's behaviour, so the import is
-# guarded and both callables are never-raise no-op fallbacks on any failure.
-try:
-    sys.path.append(str(Path.home() / ".claude" / "scripts"))
-    from hook_journal import for_hook as _for_hook
-    _journal, _drift = _for_hook("tdd_keyword")
-except Exception:
-    _journal = _drift = lambda *a, **k: None
-
-
-def read_input():
-    """Read hook JSON from stdin with a timeout guard against hangs."""
-    def _timeout(_signum, _frame):
-        raise TimeoutError
-
-    data = ""
-    try:
-        signal.signal(signal.SIGALRM, _timeout)
-        signal.alarm(5)
-        data = sys.stdin.read()
-        signal.alarm(0)
-    except Exception:
-        data = ""
-    try:
-        return json.loads(data) if data.strip() else {}
-    except Exception:
-        return {}
+# Journal (harness-journal#01): observability is strictly additive; hook_io
+# hands back never-raise no-op fallbacks on any failure.
+_journal, _drift = hook_io.journal_for("tdd_keyword")
 
 
 POINTER = """\
@@ -132,10 +107,10 @@ ON_RES = [
 
 
 def main():
-    payload = read_input()
+    payload = hook_io.read_payload()
     _drift(payload, ("session_id", "cwd", "prompt"))
     prompt = str(payload.get("prompt", ""))
-    session_id = str(payload.get("session_id", "")) or "default"
+    session_id = hook_io.session_id(payload)
     state = STATE_DIR / f"mode-{session_id}"
 
     # non-user text (work-interval-tdd#09): no arm, no disarm; sticky

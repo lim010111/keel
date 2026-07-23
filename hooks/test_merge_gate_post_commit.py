@@ -316,7 +316,8 @@ class TestResolveImportRoots(unittest.TestCase):
         self._tmp.cleanup()
 
     @staticmethod
-    def _lay_out(hooks_dir, *, local=True, scheduler=True, prompt=True, schema=True):
+    def _lay_out(hooks_dir, *, local=True, plumbing=True, scheduler=True,
+                 prompt=True, schema=True):
         """A hooks/+scripts/ layout, optionally placing each member of the COMPLETE
         runtime set (#37): the two .py import-closure modules AND the two producer
         assets (adversarial-review prompt + review-output schema). Returns the hooks
@@ -326,6 +327,7 @@ class TestResolveImportRoots(unittest.TestCase):
         (root / "scripts").mkdir(parents=True, exist_ok=True)
         present = [
             (local, ("scripts", "merge_gate_local.py")),
+            (plumbing, ("scripts", "git_plumbing.py")),
             (scheduler, ("hooks", "merge_gate_scheduler.py")),
             (prompt, ("scripts", "merge-gate-assets", "adversarial-review.md")),
             (schema, ("skills", "setup-merge-gate", "templates", "review-output.schema.json")),
@@ -447,6 +449,8 @@ class TestPostCommitHermeticDeps(unittest.TestCase):
                     co / "hooks" / "merge_gate_post_commit.py")
         shutil.copy(SCRIPTS / "merge_gate_local.py",
                     co / "scripts" / "merge_gate_local.py")
+        shutil.copy(SCRIPTS / "git_plumbing.py",
+                    co / "scripts" / "git_plumbing.py")
         shutil.copy(HOOKS / "merge_gate_scheduler.py",
                     co / "hooks" / "merge_gate_scheduler.py")
         prompt_dst = co / "scripts" / "merge-gate-assets" / "adversarial-review.md"

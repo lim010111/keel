@@ -18,15 +18,11 @@ from pathlib import Path
 
 MARKER_DIR = Path.home() / ".claude" / "hooks" / ".tdd-markers"
 
-# Journal (harness-journal#01): observability is strictly additive — a missing
-# or broken helper must never change this hook's behaviour, so the import is
-# guarded and both callables are never-raise no-op fallbacks on any failure.
-try:
-    sys.path.append(str(Path.home() / ".claude" / "scripts"))
-    from hook_journal import for_hook as _for_hook
-    _journal, _drift = _for_hook("tdd_verify")
-except Exception:
-    _journal = _drift = lambda *a, **k: None
+import hook_io
+
+# Journal (harness-journal#01): observability is strictly additive; hook_io
+# hands back never-raise no-op fallbacks on any failure.
+_journal, _drift = hook_io.journal_for("tdd_verify")
 
 # Upper bound on a single suite's wall time. tdd_verify is the sole Stop-time
 # oracle (ADR-0022), and a hung suite (waits on a port, an interactive prompt, an
@@ -40,25 +36,6 @@ ORACLE_TIMEOUT_SECONDS = int(os.environ.get("TDD_ORACLE_TIMEOUT_SECONDS", "600")
 # priority-1 override is checked before conventional markers.
 OVERRIDE_NAME = ".claude/tdd-test-cmd"
 CONVENTIONAL_MARKERS = ["package.json", "pyproject.toml", "pytest.ini", "Cargo.toml", "go.mod"]
-
-
-def read_input():
-    """Read hook JSON from stdin with a timeout guard against hangs."""
-    def _timeout(_signum, _frame):
-        raise TimeoutError
-
-    data = ""
-    try:
-        signal.signal(signal.SIGALRM, _timeout)
-        signal.alarm(5)
-        data = sys.stdin.read()
-        signal.alarm(0)
-    except Exception:
-        data = ""
-    try:
-        return json.loads(data) if data.strip() else {}
-    except Exception:
-        return {}
 
 
 def find_up(start, names, stop_at_git=True):
@@ -309,13 +286,13 @@ def _run_suite(cmd, root):
 
 
 def main():
-    payload = read_input()
+    payload = hook_io.read_payload()
     _drift(payload, ("session_id", "cwd", "transcript_path", "stop_hook_active"))
-    session_id = str(payload.get("session_id", "")) or "default"
-    cwd = payload.get("cwd") or os.getcwd()
+    session_id = hook_io.session_id(payload)
+    cwd = hook_io.cwd(payload)
 
     # loop guard: this Stop was caused by our own block -> enforce only once
-    if payload.get("stop_hook_active") is True:
+    if hook_io.is_reentrant_stop(payload):
         _journal("skip", "loop-guard", payload)
         sys.exit(0)
 

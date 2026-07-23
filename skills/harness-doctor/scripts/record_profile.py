@@ -19,7 +19,7 @@ _SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from toml_sections import section_is, split_sections
+from toml_sections import replace_or_append_section
 
 
 def _atomic_write_text(path, text):
@@ -51,20 +51,11 @@ def merge_harness_section(existing, profile):
     line. (`existing` is read from a `harness.toml` the engine has already parsed,
     so validity is the caller's precondition; this splices text, it does not
     re-validate the sibling blocks it preserves verbatim.)"""
-    block = render_harness_section(profile)
-    if not existing.strip():
-        return block
-    # split_sections/section_is come from the shared toml_sections module —
-    # section_is folds TOML-equivalent header spellings (`[ harness ]`,
-    # `["harness"]`), so an equivalent block is replaced, never duplicated
-    # (codex:finding-0).
-    kept = "".join("".join(lines) for hdr, lines in split_sections(existing)
-                   if not section_is(hdr, "harness"))
-    if not kept.strip():
-        return block            # existing held only a [harness]/whitespace
-    if not kept.endswith("\n"):
-        kept += "\n"
-    return kept + "\n" + block   # blank line before the appended section
+    # replace_or_append_section folds TOML-equivalent header spellings
+    # (`[ harness ]`, `["harness"]`), so an equivalent block is replaced,
+    # never duplicated (codex:finding-0), and owns the newline discipline.
+    return replace_or_append_section(existing, "harness",
+                                     render_harness_section(profile))
 
 
 def render_harness_section(profile):

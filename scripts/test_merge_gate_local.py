@@ -214,6 +214,53 @@ def _gha_jq_normalize(jsonl, exit_code):
 
 
 # --------------------------------------------------------------------------
+# validate_reviewer_config — the pure fail-closed reviewer preflight
+# (#47/#48 two-writers refusals + the M1/C2 unsafe-arg guards), table-tested
+# without driving a runner subprocess.
+# --------------------------------------------------------------------------
+class TestValidateReviewerConfig(unittest.TestCase):
+    def _cfg(self, **rc):
+        d = mg._merge_defaults(mg.DEFAULT_CONFIG, {"reviewer_config": rc})
+        return mg.Config(d)
+
+    def test_codex_clean_config_passes(self):
+        self.assertIsNone(mg.validate_reviewer_config(self._cfg(), "codex"))
+
+    def test_codex_unsafe_arg_refused(self):
+        cfg = self._cfg(codex={"args": ["--sandbox", "danger-full-access"]})
+        msg = mg.validate_reviewer_config(cfg, "codex")
+        self.assertIn("not provably sandbox-neutral", msg)
+
+    def test_codex_model_two_writers_refused(self):
+        cfg = self._cfg(codex={"model": "gpt-5.5", "args": ["--model", "o3"]})
+        msg = mg.validate_reviewer_config(cfg, "codex")
+        self.assertIn("#47", msg)
+
+    def test_codex_effort_two_writers_refused(self):
+        cfg = self._cfg(codex={"reasoning_effort": "xhigh",
+                               "args": ["-c", "model_reasoning_effort=high"]})
+        msg = mg.validate_reviewer_config(cfg, "codex")
+        self.assertIn("#48", msg)
+
+    def test_claude_model_only_arg_passes(self):
+        cfg = self._cfg(claude={"args": ["--model", "opus"]})
+        self.assertIsNone(mg.validate_reviewer_config(cfg, "claude"))
+
+    def test_claude_non_allowlisted_arg_refused(self):
+        cfg = self._cfg(claude={"args": ["--mcp-config", "evil.json"]})
+        msg = mg.validate_reviewer_config(cfg, "claude")
+        self.assertIn("only --model/-m is", msg)
+
+    def test_claude_model_two_writers_refused(self):
+        cfg = self._cfg(claude={"model": "opus", "args": ["-m", "sonnet"]})
+        msg = mg.validate_reviewer_config(cfg, "claude")
+        self.assertIn("#47", msg)
+
+    def test_unknown_reviewer_has_no_preflight(self):
+        self.assertIsNone(mg.validate_reviewer_config(self._cfg(), "custom"))
+
+
+# --------------------------------------------------------------------------
 # review_scope_hash composition
 # --------------------------------------------------------------------------
 class TestScopeHash(unittest.TestCase):
@@ -3370,6 +3417,8 @@ class TestProducerAssetHermeticForeignCheckout(unittest.TestCase):
         (co / "scripts").mkdir(parents=True)
         hooks_src = SCRIPTS.parent / "hooks"
         shutil.copy(mg.__file__, co / "scripts" / "merge_gate_local.py")
+        shutil.copy(SCRIPTS / "git_plumbing.py",
+                    co / "scripts" / "git_plumbing.py")
         shutil.copy(hooks_src / "merge_gate_scheduler.py",
                     co / "hooks" / "merge_gate_scheduler.py")
         prompt_dst = co / "scripts" / "merge-gate-assets" / "adversarial-review.md"

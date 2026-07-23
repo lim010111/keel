@@ -64,6 +64,39 @@ class TestSectionMatching(unittest.TestCase):
         self.assertIsNone(ts.section_name("[[finding]]"))
 
 
+class TestAppendSection(unittest.TestCase):
+    BLOCK = '[harness]\nscaffold = ["x"]\n'
+
+    def test_empty_or_whitespace_text_returns_block_alone(self):
+        self.assertEqual(ts.append_section("", self.BLOCK), self.BLOCK)
+        self.assertEqual(ts.append_section("  \n", self.BLOCK), self.BLOCK)
+
+    def test_blank_line_separator_and_trailing_newline_repair(self):
+        self.assertEqual(ts.append_section("[a]\nk = 1", self.BLOCK),
+                         "[a]\nk = 1\n\n" + self.BLOCK)
+
+
+class TestReplaceOrAppendSection(unittest.TestCase):
+    BLOCK = '[harness]\nscaffold = ["x"]\n'
+
+    def test_appends_when_absent_preserving_siblings_verbatim(self):
+        text = "# preamble\n[a]\nk = 1  # keep me\n"
+        out = ts.replace_or_append_section(text, "harness", self.BLOCK)
+        self.assertEqual(out, text + "\n" + self.BLOCK)
+
+    def test_replaces_equivalent_header_spelling(self):
+        text = '[a]\nk = 1\n\n[ "harness" ]\nold = true\n'
+        out = ts.replace_or_append_section(text, "harness", self.BLOCK)
+        self.assertNotIn("old = true", out)
+        self.assertIn("k = 1", out)
+        self.assertTrue(out.endswith("\n\n" + self.BLOCK))
+
+    def test_existing_holding_only_the_section_returns_block_alone(self):
+        out = ts.replace_or_append_section("[harness]\nold = 1\n",
+                                           "harness", self.BLOCK)
+        self.assertEqual(out, self.BLOCK)
+
+
 class TestArrayOfTablesPreserved(unittest.TestCase):
     def test_aot_after_deleted_block_is_not_dropped(self):
         # The split-then-drop pattern record_profile uses: a `[[…]]` block that

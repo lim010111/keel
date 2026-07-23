@@ -28,23 +28,17 @@ session.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
 HOOKS = Path.home() / ".claude" / "hooks"
 sys.path.insert(0, str(HOOKS))
+import hook_io  # noqa: E402
 import narrative_guard as ng  # noqa: E402  — reuse the exact marker keying `check` reads.
 
-# Journal (harness-journal#01): observability is strictly additive — a missing
-# or broken helper must never change this hook's behaviour, so the import is
-# guarded and both callables are never-raise no-op fallbacks on any failure.
-try:
-    sys.path.append(str(Path.home() / ".claude" / "scripts"))
-    from hook_journal import for_hook as _for_hook
-    _journal, _drift = _for_hook("grill_pause")
-except Exception:
-    _journal = _drift = lambda *a, **k: None
+# Journal (harness-journal#01): observability is strictly additive; hook_io
+# hands back never-raise no-op fallbacks on any failure.
+_journal, _drift = hook_io.journal_for("grill_pause")
 
 # The grilling skills that bracket their session with a narrative-guard pause.
 # An explicit allow-list (not "all skills"): only these defer the narrative.
@@ -68,8 +62,8 @@ def main() -> None:
     # Key the marker the SAME way narrative_guard.check does: session id from the
     # hook payload, repo from repo_root(payload cwd). check() looks up exactly
     # pause_marker_path(session_id, repo_root(cwd)), so this is the path it reads.
-    sid = str(p.get("session_id", "")) or "default"
-    cwd = p.get("cwd") or os.getcwd()
+    sid = hook_io.session_id(p)
+    cwd = hook_io.cwd(p)
     try:
         root = ng.repo_root(cwd)
         ng.state_dir().mkdir(parents=True, exist_ok=True)

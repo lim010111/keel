@@ -12,76 +12,27 @@ Docs/config edits (.md/.json/.yaml/...) are deliberately excluded — they are
 neither code-under-test nor tests.
 """
 import json
-import os
-import re
-import signal
 import sys
 import time
 from pathlib import Path
 
+import hook_io
+import tdd_paths
+
 MARKER_DIR = Path.home() / ".claude" / "hooks" / ".tdd-markers"
 STATE_DIR = Path.home() / ".claude" / "hooks" / ".tdd-state"
 
-# Journal (harness-journal#01): observability is strictly additive — a missing
-# or broken helper must never change this hook's behaviour, so the import is
-# guarded and both callables are never-raise no-op fallbacks on any failure.
-try:
-    sys.path.append(str(Path.home() / ".claude" / "scripts"))
-    from hook_journal import for_hook as _for_hook
-    _journal, _drift = _for_hook("tdd_mark")
-except Exception:
-    _journal = _drift = lambda *a, **k: None
-
-# Source/test file extensions worth re-running tests for.
-CODE_EXT = {
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
-    ".go", ".rs", ".java", ".kt", ".rb", ".php", ".c", ".h",
-    ".cpp", ".cc", ".hpp", ".cs", ".swift", ".scala", ".ex", ".exs",
-}
-
-
-def read_input():
-    """Read hook JSON from stdin with a timeout guard against hangs."""
-    def _timeout(_signum, _frame):
-        raise TimeoutError
-
-    data = ""
-    try:
-        signal.signal(signal.SIGALRM, _timeout)
-        signal.alarm(5)
-        data = sys.stdin.read()
-        signal.alarm(0)
-    except Exception:
-        data = ""
-    try:
-        return json.loads(data) if data.strip() else {}
-    except Exception:
-        return {}
-
-
-def is_test_file(path):
-    """Heuristic: is `path` a test/spec file (vs implementation)?
-
-    Recognizes `foo.test.ts` / `foo.spec.js`, `test_foo.py` / `foo_test.go`,
-    and any path under a `test(s)` / `spec(s)` / `__tests__` directory.
-    """
-    norm = path.replace("\\", "/").lower()
-    base = os.path.basename(norm)
-    if re.search(r"\.(test|spec)\.", base):
-        return True
-    if re.search(r"(^|[_-])(test|spec)s?([_-]|\.)", base):
-        return True
-    parts = norm.split("/")
-    return any(p in ("test", "tests", "spec", "specs", "__tests__", "__test__")
-               for p in parts)
+# Journal (harness-journal#01): observability is strictly additive; hook_io
+# hands back never-raise no-op fallbacks on any failure.
+_journal, _drift = hook_io.journal_for("tdd_mark")
 
 
 def main():
-    payload = read_input()
+    payload = hook_io.read_payload()
     _drift(payload, ("session_id", "cwd", "tool_name", "tool_input"))
-    session_id = str(payload.get("session_id", "")) or "default"
+    session_id = hook_io.session_id(payload)
     file_path = str(payload.get("tool_input", {}).get("file_path", ""))
-    if not file_path or os.path.splitext(file_path)[1].lower() not in CODE_EXT:
+    if not file_path or not tdd_paths.is_code_file(file_path):
         _journal("skip", "non-code", payload)
         sys.exit(0)
 
@@ -113,7 +64,7 @@ def main():
                 data = {}
         except Exception:
             data = {}
-        data["last_test" if is_test_file(file_path) else "last_impl"] = time.time()
+        data["last_test" if tdd_paths.is_test_file(file_path) else "last_impl"] = time.time()
         try:
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             edits.write_text(json.dumps(data))

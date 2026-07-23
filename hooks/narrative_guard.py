@@ -79,23 +79,19 @@ import hashlib
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
 from pathlib import Path
+
+import hook_io
 
 SCRIPTS = Path.home() / ".claude" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import status  # noqa: E402  — pure parse helpers; status.main() is __main__-guarded.
 
-# Journal (harness-journal#01): observability is strictly additive — a missing
-# or broken helper must never change this hook's behaviour, so the import is
-# guarded and both callables are never-raise no-op fallbacks on any failure.
-try:
-    from hook_journal import for_hook as _for_hook
-    _journal, _drift = _for_hook("narrative_guard")
-except Exception:
-    _journal = _drift = lambda *a, **k: None
+# Journal (harness-journal#01): observability is strictly additive; hook_io
+# hands back never-raise no-op fallbacks on any failure.
+_journal, _drift = hook_io.journal_for("narrative_guard")
 
 
 def state_dir() -> Path:
@@ -123,23 +119,9 @@ def pause_marker_path(sid: str, root) -> Path:
     return state_dir() / f"pause-{sid}-{_repo_hash(root)}.json"
 
 
-def read_input() -> dict:
-    """Read hook JSON from stdin with a timeout guard against hangs."""
-    def _timeout(_signum, _frame):
-        raise TimeoutError
-
-    data = ""
-    try:
-        signal.signal(signal.SIGALRM, _timeout)
-        signal.alarm(5)
-        data = sys.stdin.read()
-        signal.alarm(0)
-    except Exception:
-        data = ""
-    try:
-        return json.loads(data) if data.strip() else {}
-    except Exception:
-        return {}
+# Protocol I/O delegated to hook_io; kept as a module name because
+# grill_pause (and tests) reach it as ng.read_input.
+read_input = hook_io.read_payload
 
 
 def repo_root(cwd) -> Path:
@@ -429,8 +411,8 @@ def snapshot() -> None:
         sys.exit(0)
     p = read_input()
     _drift(p, ("session_id", "cwd"))
-    sid = str(p.get("session_id", "")) or "default"
-    cwd = p.get("cwd") or os.getcwd()
+    sid = hook_io.session_id(p)
+    cwd = hook_io.cwd(p)
     try:
         root = repo_root(cwd)
         # Write-once per (session, repo): a resume/compact re-fires SessionStart
@@ -468,12 +450,12 @@ def check() -> None:
         sys.exit(0)
     p = read_input()
     _drift(p, ("session_id", "cwd", "transcript_path", "stop_hook_active"))
-    sid = str(p.get("session_id", "")) or "default"
-    cwd = p.get("cwd") or os.getcwd()
+    sid = hook_io.session_id(p)
+    cwd = hook_io.cwd(p)
     # Loop guard (mirror tdd_verify): this Stop was caused by our own block ->
     # enforce at most once per turn. Checked before the snapshot read so it never
     # re-baselines; an agent who ignores the block and re-stops is let through.
-    if p.get("stop_hook_active") is True:
+    if hook_io.is_reentrant_stop(p):
         _journal("skip", "check:loop-guard", p)
         sys.exit(0)
     try:
