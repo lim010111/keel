@@ -1,17 +1,18 @@
-# improve-prompt method — Claude family core
+# tailor method — shared core
 
-The shared method behind every `/improve-prompt:<model>` profile. The profile
-that loaded this file names the target model and carries its model-specific
-levers and hazards; this file carries the model-agnostic method. Apply both
-together — the profile modulates this method, it never replaces it.
+The shared method behind every `/tailor:<model>` profile, whatever the
+vendor. The profile that loaded this file names the target model and carries its
+model-specific levers and hazards; this file carries the method they all have in
+common. Apply both together — the profile modulates this method, it never
+replaces it.
 
 ## What you're improving for
 
 Ad-hoc agentic prompts — the kind a person types to start a task — not reusable
-API templates. The target model follows instructions faithfully: it won't infer
-work the user didn't ask for. So the single highest-value move is **making scope
-and intent explicit**. Everything else is secondary and applies only when the
-prompt actually needs it.
+API templates. What a model does with an under-specified ask varies — some stop
+short of what was wanted, others expand past it — so the single highest-value
+move is **making scope and intent explicit**. Everything else is secondary and
+applies only when the prompt actually needs it.
 
 ## Method
 
@@ -46,8 +47,8 @@ Strip, don't add:
   becomes plain instruction.
 - Remove invitations to over-engineer ("handle every edge case", "make it
   production-grade and extensible") unless the user asked for that.
-- No assistant prefill (unsupported on Claude 4.6+), and no reflexive "think
-  step by step" or few-shot scaffolding — adaptive thinking makes them redundant.
+- No reflexive "think step by step", no few-shot scaffolding, and no assistant
+  prefill — a reasoning model makes them redundant.
 
 ## Output
 
@@ -64,9 +65,10 @@ Return three parts. Keep each only as long as it needs to be.
 
 3. **Effort / thinking note** *(only when the task profile warrants it)* — one
    line of advice for the fresh run (a new session, or an API / subagent / eval
-   run): e.g. a multi-step build or refactor suits `high` (or `xhigh`) effort with
-   adaptive thinking left on. It's advice for that run — the improver doesn't
-   change the current session. Omit this part for simple asks.
+   run): e.g. a multi-step build or refactor suits a higher reasoning effort.
+   Name levels only from the profile — ladders, defaults, and the thinking and
+   verbosity knobs differ by model. It's advice for that run — the improver
+   doesn't change the current session. Omit this part for simple asks.
 
 ## Examples
 
@@ -116,8 +118,8 @@ Done when a re-run is a no-op and the dashboard counts reconcile with the logs.
 - Backfill range (all history vs a recent window).
 - Language/runtime, and where the script should live.
 
-**Effort / thinking note:** a multi-step backfill suits `high` effort with adaptive
-thinking on; bump to `xhigh` if the event→row mapping turns out to be involved.
+**Effort / thinking note:** a multi-step backfill suits a higher reasoning effort;
+bump it further if the event→row mapping turns out to be involved.
 
 ### Contradiction → preserve and flag
 

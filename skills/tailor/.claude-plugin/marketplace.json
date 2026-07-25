@@ -1,0 +1,14 @@
+{
+  "name": "lim010111-plugins",
+  "owner": {
+    "name": "Woohyun Lim"
+  },
+  "description": "Claude Code plugins by lim010111.",
+  "plugins": [
+    {
+      "name": "tailor",
+      "source": "./",
+      "description": "Proportionate ad-hoc prompt rewriter for a named target model. No default target: /tailor:gpt-5-6-sol, /tailor:opus-5, /tailor:opus-4-8, /tailor:fable-5."
+    }
+  ]
+}

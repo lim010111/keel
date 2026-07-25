@@ -48,7 +48,7 @@ transitions** an artifact crosses on its way to a wider audience, see
 
 | Kind | Items |
 |---|---|
-| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `handle-merge-findings`, `harden-issue`, `harness-doctor`, `improve-prompt` (local plugin: `/improve-prompt:opus-4-8` · `/improve-prompt:fable-5`), `matt-drift-watch`, `run-codex-validators`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `third-party-review` |
+| Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `handle-merge-findings`, `harden-issue`, `harness-doctor`, `matt-drift-watch`, `run-codex-validators`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tailor` (plugin: `/tailor:gpt-5-6-sol` · `:opus-5` · `:opus-4-8` · `:fable-5` — also published standalone as [`prompt-tailor`](https://github.com/lim010111/prompt-tailor)), `third-party-review` |
 | Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `narrative_guard` · `grill_pause`, `merge_gate_post_commit` · `merge_gate_scheduler` |
 | Scripts | `status.py`, `sound_complete.sh` · `sound_permission.sh` · `classify_sound.py`, `merge_gate_local.py` · `merge_gate_adjudicate.py` · `merge_gate_measure.py`, `harness_doctor.py`, `toml_sections.py`, `check_alignment_skill_drift.py`, `hook_journal.py` |
 | Agents | `ci-researcher`, `codex-review-validator` |

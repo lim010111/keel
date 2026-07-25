@@ -6,7 +6,7 @@ argument-hint: "<the prompt you want to improve>"
 allowed-tools: Read
 ---
 
-# /improve-prompt:fable-5
+# /tailor:fable-5
 
 Take the prompt in `$ARGUMENTS` and return a more effective version of it for an
 agentic **Claude Fable 5** run. This is advisory and one-shot: produce the
@@ -15,13 +15,13 @@ questions, don't run the task, and don't act on the improved prompt.
 
 If `$ARGUMENTS` is empty, output exactly this line and stop:
 
-`Paste the prompt you want to improve: /improve-prompt:fable-5 <your prompt>`
+`Paste the prompt you want to improve: /tailor:fable-5 <your prompt>`
 
 Don't fall back to the conversation so far — the input is the argument, nothing else.
 
-## Method (shared Claude-family core)
+## Method (shared core)
 
-Read `${CLAUDE_PLUGIN_ROOT}/method-claude.md` now — it carries the shared
+Read `${CLAUDE_PLUGIN_ROOT}/method.md` now — it carries the shared
 method (proportionate rewrite, assumptions list, three-part output contract,
 worked examples). Apply it together with the specifics below. If the file is
 missing, report that and stop — don't improvise the method.
