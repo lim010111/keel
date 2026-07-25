@@ -1,3 +1,5 @@
+[한국어](README.ko.md)
+
 # Tailor
 
 A Claude Code plugin that rewrites the prompt you were about to send — for the
