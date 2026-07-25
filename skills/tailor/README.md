@@ -12,10 +12,7 @@ The name after the colon is **the model that will run your prompt**, not the
 model doing the rewriting. Tailor runs inside Claude Code; the prompt it hands
 back is for wherever you're going to run it.
 
-**More models are coming.** Gemini, Grok, and the open-weight families are the
-obvious gaps. A profile ships only once that model's own prompting guide has been
-read and distilled — that bar is the whole point of the tool, so the list grows
-one model at a time rather than by guesswork.
+**More models are coming** — Gemini, Grok, and the open-weight families included.
 
 ## Why this exists
 
