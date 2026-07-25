@@ -21,10 +21,12 @@ Don't fall back to the conversation so far — the input is the argument, nothin
 
 ## Method (shared core)
 
-Read `${CLAUDE_PLUGIN_ROOT}/method.md` now — it carries the shared method
-(proportionate rewrite, assumptions list, three-part output contract, worked
-examples). Apply it together with the specifics below. If the file is missing,
-report that and stop — don't improvise the method.
+Read the plugin root's `method.md` now — `${CLAUDE_PLUGIN_ROOT}/method.md` when
+that variable is substituted for you, otherwise `../../method.md` relative to
+this file. It carries the shared method (proportionate rewrite, assumptions list,
+three-part output contract, worked examples). Apply it together with the
+specifics below. If the file is missing, report that and stop — don't improvise
+the method.
 
 ## GPT-5.6 specifics
 

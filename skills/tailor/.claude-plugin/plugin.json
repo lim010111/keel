@@ -1,11 +1,17 @@
 {
   "name": "tailor",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Proportionate ad-hoc prompt rewriter for a named target model. No default target: /tailor:gpt-5-6-sol, /tailor:opus-5, /tailor:opus-4-8, /tailor:fable-5.",
   "author": {
     "name": "Woohyun Lim"
   },
   "license": "MIT",
   "repository": "https://github.com/lim010111/prompt-tailor",
-  "keywords": ["prompt-engineering", "prompt-improver", "claude", "gpt", "openai"]
+  "keywords": [
+    "prompt-engineering",
+    "prompt-improver",
+    "claude",
+    "gpt",
+    "openai"
+  ]
 }

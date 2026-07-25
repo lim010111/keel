@@ -1,0 +1,14 @@
+{
+  "name": "lim010111-plugins",
+  "interface": {
+    "displayName": "lim010111 plugins"
+  },
+  "plugins": [
+    {
+      "name": "tailor",
+      "source": { "source": "local", "path": "./" },
+      "policy": { "installation": "AVAILABLE" },
+      "category": "Productivity"
+    }
+  ]
+}

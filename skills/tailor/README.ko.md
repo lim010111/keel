@@ -11,8 +11,10 @@ Claude Code 플러그인입니다.
     /tailor:fable-5      <프롬프트>
 
 콜론 뒤의 이름은 **당신의 프롬프트를 실행할 모델**입니다. 다시 쓰는 쪽 모델이
-아닙니다. Tailor 자체는 Claude Code 안에서 돌지만, 돌려주는 프롬프트는 당신이
-실제로 실행할 곳을 위한 것입니다.
+아닙니다. 돌려주는 프롬프트는 당신이 실제로 실행할 곳을 위한 것입니다.
+
+**OpenAI Codex CLI에서도 같은 프로필로 동작합니다.** Codex는 스킬을 `/`가 아니라
+`$`로 호출합니다 — `$tailor:gpt-5-6-sol <프롬프트>`.
 
 **모델은 계속 추가됩니다** — Gemini, Grok, 오픈웨이트 계열까지.
 
@@ -84,10 +86,20 @@ Opus 4.8용 조언이 적용되는데도 눈치채지 못합니다. 모델을 �
 
 ## 설치
 
+**Claude Code** — 설치 후 `/tailor:<모델> <프롬프트>` 로 호출합니다.
+
 ```
 /plugin marketplace add lim010111/prompt-tailor
 /plugin install tailor@lim010111-plugins
 /reload-plugins
+```
+
+**Codex CLI** — 설치 후 `$tailor:<모델> <프롬프트>` 로 호출하거나 `/skills` 에서
+프로필을 고릅니다.
+
+```
+codex plugin marketplace add lim010111/prompt-tailor
+codex plugin add tailor@lim010111-plugins
 ```
 
 ## 구성
@@ -95,16 +107,27 @@ Opus 4.8용 조언이 적용되는데도 눈치채지 못합니다. 모델을 �
 - `method.md` — **공유 코어**. 벤더와 무관하게 모든 프로필이 쓰는 방법론입니다
   (부족한 만큼만 다시 쓰기, 가정 나열, 3부 출력, 무엇을 덜어낼지, 예제). 플러그인
   루트에 있습니다.
-- `skills/<model>/SKILL.md` — **모델 버전당 프로필 하나**. 각 프로필은 호출 시점에
-  명시적 지시로 코어를 읽어들입니다: *Read `${CLAUDE_PLUGIN_ROOT}/method.md`*.
-  `${CLAUDE_PLUGIN_ROOT}`는 플러그인 스킬 본문에서 플러그인 루트의 절대경로로
-  치환되므로(Claude Code 2.1.198에서 확인 — 공식 문서는 hooks/MCP 용도로만
-  적어두고 있습니다) 모델이 상대경로 계산을 할 일이 없습니다. 각 프로필은
-  `allowed-tools: Read`도 함께 달고 있어 코어 읽기가 권한 프롬프트를 띄우지
-  않습니다. 플러그인 시스템은 코어를 프로필에 **자동으로 이어붙이지 않으므로**
-  이 지시는 없으면 안 됩니다 — 지우지 마세요. 기각된 대안 두 가지(2.1.198에서
-  확인): bash 주입(`` !`cat …` ``)은 headless `-p` 실행에서 호출 전체를 조용히
-  죽였고, 상대경로 `${CLAUDE_SKILL_DIR}/../../`는 엉뚱한 디렉터리를 읽게 만들었습니다.
+- `skills/<model>/SKILL.md` — **모델 버전당 프로필 하나**. 어느 플러그인 시스템도
+  코어를 프로필에 자동으로 이어붙이지 않기 때문에, 각 프로필이 호출 시점에 명시적
+  지시로 코어를 읽어들입니다 — 없으면 안 되는 지시이니 지우지 마세요. 지시는 **같은
+  파일을 두 경로로** 가리킵니다. `${CLAUDE_PLUGIN_ROOT}/method.md` 는 Claude Code가
+  플러그인 루트의 절대경로로 치환하는 형태이고(2.1.198에서 확인 — 공식 문서는
+  hooks/MCP 용도로만 적어두고 있습니다), `../../method.md` 는 프로필 기준 상대경로로
+  Codex가 쓰는 형태입니다. Codex에는 플러그인 루트 변수가 아예 없고, 상대 참조가
+  공식 문서에 적힌 방식입니다. 두 경로는 같은 파일로 수렴합니다. 기각된 세 번째
+  대안(2.1.198에서 확인): bash 주입(`` !`cat …` ``)은 headless `-p` 실행에서 호출
+  전체를 조용히 죽였습니다.
+- `skills/<model>/agents/openai.yaml` — 해당 프로필의 Codex 호출 정책입니다.
+  `allow_implicit_invocation: false` 로 두어 모델이 스스로 발동시키지 못하게 합니다.
+  Claude Code frontmatter의 `disable-model-invocation: true` 에 대응하는 파일이고,
+  그 필드는 Codex가 무시합니다. Tailor는 양쪽 모두에서 사용자 호출 전용입니다.
+- **플러그인 매니페스트가 두 벌인 건 의도입니다.** `.claude-plugin/`(`plugin.json`
+  + `marketplace.json`)이 Claude Code용, `.codex-plugin/plugin.json` 과
+  `.agents/plugins/marketplace.json` 이 Codex용입니다. 한 트리에 같이 있어도 두 CLI
+  모두 문제 삼지 않습니다. Codex는 `.claude-plugin/marketplace.json` 도 읽기는
+  합니다 — 문서화되지 않은 동작입니다 — 그런데 **스킬 0개로 설치해놓고 끝까지 성공
+  했다고 보고**하므로, 실제로 동작하게 만드는 건 Codex 매니페스트 쪽입니다. 두
+  `plugin.json` 의 `version` 은 항상 같이 올리세요.
 
 ## 프로필 규율 (버전 고정, 문서 기반)
 

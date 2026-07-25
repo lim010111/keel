@@ -11,8 +11,11 @@ model you're about to send it to.
     /tailor:fable-5      <prompt>
 
 The name after the colon is **the model that will run your prompt**, not the
-model doing the rewriting. Tailor runs inside Claude Code; the prompt it hands
-back is for wherever you're going to run it.
+model doing the rewriting. The prompt Tailor hands back is for wherever you're
+going to run it.
+
+**It runs on OpenAI Codex CLI too**, with the same profiles. Codex invokes skills
+with `$` rather than `/` — `$tailor:gpt-5-6-sol <prompt>`.
 
 **More models are coming** — Gemini, Grok, and the open-weight families included.
 
@@ -86,10 +89,20 @@ model is what makes the rewrite specific enough to be worth anything.
 
 ## Install
 
+**Claude Code** — then invoke with `/tailor:<model> <prompt>`.
+
 ```
 /plugin marketplace add lim010111/prompt-tailor
 /plugin install tailor@lim010111-plugins
 /reload-plugins
+```
+
+**Codex CLI** — then invoke with `$tailor:<model> <prompt>`, or pick the profile
+from `/skills`.
+
+```
+codex plugin marketplace add lim010111/prompt-tailor
+codex plugin add tailor@lim010111-plugins
 ```
 
 ## Layout
@@ -98,16 +111,27 @@ model is what makes the rewrite specific enough to be worth anything.
   vendor (rewrite in proportion to the gap, list the assumptions, the three-part
   output, what to strip, worked examples). Lives at the plugin root.
 - `skills/<model>/SKILL.md` — one **profile per model version**. Each profile
-  loads the core at invocation with an explicit instruction: *Read
-  `${CLAUDE_PLUGIN_ROOT}/method.md`*. `${CLAUDE_PLUGIN_ROOT}` is substituted in
-  plugin-skill content to the plugin root's absolute path (verified on Claude
-  Code 2.1.198, though the skills doc only lists it for hooks/MCP), so the model
-  never does relative-path math. Each profile also carries `allowed-tools: Read`
-  so the core read doesn't hit a permission prompt. The plugin system does **not**
-  auto-concatenate the core into a profile, so this instruction is load-bearing —
-  keep it. Two rejected alternatives (verified on 2.1.198): bash injection
-  (`` !`cat …` ``) silently killed the whole invocation in headless `-p` runs, and
-  a relative `${CLAUDE_SKILL_DIR}/../../` path invited wrong-directory reads.
+  loads the core at invocation with an explicit instruction, because neither
+  plugin system auto-concatenates it — so that instruction is load-bearing, keep
+  it. It names **two paths for the same file**: `${CLAUDE_PLUGIN_ROOT}/method.md`,
+  which Claude Code substitutes to the plugin root's absolute path (verified on
+  2.1.198, though the skills doc only lists the variable for hooks/MCP), and
+  `../../method.md` relative to the profile, which is what Codex uses — Codex has
+  no plugin-root variable at all, and relative references are its documented
+  idiom. Both resolve to the same file. A rejected third option (verified on
+  2.1.198): bash injection (`` !`cat …` ``) silently killed the whole invocation
+  in headless `-p` runs.
+- `skills/<model>/agents/openai.yaml` — Codex's invocation policy for that
+  profile: `allow_implicit_invocation: false`, so the model can't fire it on its
+  own. It is the counterpart of Claude Code's `disable-model-invocation: true` in
+  the frontmatter, which Codex ignores. Tailor is user-invoked on both.
+- **Two plugin manifests, on purpose.** `.claude-plugin/` (`plugin.json` +
+  `marketplace.json`) is Claude Code's; `.codex-plugin/plugin.json` and
+  `.agents/plugins/marketplace.json` are Codex's. They coexist without either CLI
+  complaining. Codex *does* read `.claude-plugin/marketplace.json` — undocumented
+  behaviour — but installs the plugin with **zero skills**, reporting success the
+  whole way, so the Codex manifest is what actually makes it work. Keep the
+  `version` in both `plugin.json` files in step.
 
 ## Profile discipline (version-pinned, doc-grounded)
 
