@@ -146,6 +146,10 @@ plugin: it contains `.claude-plugin/plugin.json`, so Claude Code loads it in pla
 as `tailor@skills-dir` — no install step while developing. Reference:
 <https://code.claude.com/docs/en/plugins-reference> (§ Skills-directory plugins).
 
+Installing the published plugin **shadows** that copy — an installed plugin wins
+the name, and Claude Code reports `tailor@skills-dir: Not loaded`. Uninstall the
+marketplace copy to develop against the working tree again.
+
 To refresh this mirror:
 
 ```
