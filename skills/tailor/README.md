@@ -12,6 +12,11 @@ The name after the colon is **the model that will run your prompt**, not the
 model doing the rewriting. Tailor runs inside Claude Code; the prompt it hands
 back is for wherever you're going to run it.
 
+**More models are coming.** Gemini, Grok, and the open-weight families are the
+obvious gaps. A profile ships only once that model's own prompting guide has been
+read and distilled — that bar is the whole point of the tool, so the list grows
+one model at a time rather than by guesswork.
+
 ## Why this exists
 
 **The same prompt doesn't work the same way on every model.** Model makers
@@ -57,36 +62,28 @@ Three things:
 3. **An effort note**, when the task is big enough to warrant one — which
    reasoning setting suits the run.
 
-**It often barely changes anything, on purpose.** If your prompt already says
-which file, what to change, and what not to touch, you get it back nearly as-is
-with a note that no real change was needed. That's the intended behaviour, not a
-failure. Tailor rewrites in proportion to what's actually missing — it won't pad
-your prompt with structure, caveats, or invented requirements just to look busy.
-It sharpens your ask; it doesn't replace your voice.
+**It doesn't change what you're asking for.** Tailor fills in what you left
+unsaid — which files, what "done" means, what to leave alone — but the thing you
+asked for stays the thing you get. It won't quietly turn *explain this* into
+*rewrite this*, or attach a goal you never had.
+
+It will make your request more specific than you typed it; that's the job. If
+your prompt already says which file, what to change, and what to leave alone,
+though, you get it back nearly as-is with a note saying so.
 
 It also never runs your task. It answers once and stops.
 
 ## What makes it different
 
-**Every profile is written from that model's own official prompting guide**, and
-the guide's URL is pinned inside the profile. You can click through and check the
-advice yourself. Tailor isn't guessing at what a model likes.
+**Every profile is written from that model's own official prompting guide.** The
+guide's URL *and the date it was read* are both pinned inside the profile, so you
+can click through and check any piece of advice against its source. Tailor isn't
+guessing at what a model likes — and it isn't asking you to take its word for it.
 
 **There is deliberately no plain `/tailor`.** You have to name the target model.
 That's friction on purpose: a default would quietly go stale as models change,
 and you'd get Opus 4.8 advice applied to a GPT run without noticing. Naming the
 model is what makes the rewrite specific enough to be worth anything.
-
-## Does it actually work?
-
-Honest answer: **not measured yet.** A blind A/B evaluation — same task, original
-prompt versus tailored prompt, judged without knowing which is which — is in
-progress and unfinished.
-
-So what's claimed here is *where the advice comes from*, not a proven win. Every
-profile traces to a published vendor guide you can read yourself. If you want
-measured improvement, wait for the eval. If you want your half-typed request
-turned into something that states its own scope, that works today.
 
 ## Install
 
@@ -115,8 +112,12 @@ turned into something that states its own scope, that works today.
 
 ## Profile discipline (version-pinned, doc-grounded)
 
-- **A model version is immutable**, so a profile pinned to it never decays.
-  Profiles are added and pruned, never "updated to the latest model".
+- **Pin to a model version, never to "the latest".** Profiles are added and
+  pruned, never "updated to the newest model" — a moving target is how advice
+  ends up applied to a model it was never written for. The version a profile
+  names is fixed; the vendor guide behind it is not. Vendors do revise these
+  pages after launch, so every profile records the URL it was authored from and
+  the date that URL was read.
 - **Profile names must not contain a dot.** Claude Code's command tokenizer fails
   to resolve `/tailor:opus-4.8` (typed or headless; verified on 2.1.198 — the line
   falls through to the model as plain text). Spell the version dot as a dash:
