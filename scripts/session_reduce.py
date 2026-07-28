@@ -121,7 +121,13 @@ def active_path_uuids(raw):
     while cur and cur in by_uuid and cur not in active:   # cur not in: cycle guard
         active.add(cur)
         cur = by_uuid[cur].get("parentUuid")
-    return active, True
+    # ok ONLY when the walk left the tree through an explicit root (no parent).
+    # A still-set `cur` means it stopped early — the parent is missing (read_raw
+    # deliberately skips torn JSONL lines, so this is a supported failure mode) or
+    # the cycle guard tripped. Reporting True there made load_events treat a
+    # PARTIAL uuid set as authoritative and discard every other message, silently
+    # dropping earlier human turns; False keeps the linear transcript and warns.
+    return active, not cur
 
 
 def load_events(raw):

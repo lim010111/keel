@@ -106,3 +106,4 @@ settings.json
 # Orca-app-specific tooling (third-party app the author merely uses).
 # The matching settings.json entries are stripped by sync.sh's redaction.
 # exclude: hooks/orca_surface_route.py
+# exclude: hooks/test_orca_surface_route.py

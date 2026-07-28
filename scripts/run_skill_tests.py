@@ -18,12 +18,20 @@ This runner closes the gap:
   file carries the `__main__` guard — direct execution is the one contract
   both styles honor.
 
-Exit 0 iff every suite passes.
+Exit 0 iff every suite passes AND at least --min-suites were collected.
 """
 import argparse
 import subprocess
 import sys
 from pathlib import Path
+
+# The authored suite count — the default collection floor. Bump when an authored
+# skill gains its first suite; a DROP below this is a discovery regression, which
+# must be loud rather than a vacuous green (see --min-suites).
+EXPECTED_SUITES = 6
+
+# Per-file wall-clock bound for the standalone CLI path.
+SUITE_TIMEOUT_SECONDS = 300
 
 
 def suite_dirs(claude_dir: Path) -> list:
@@ -41,11 +49,20 @@ def suite_dirs(claude_dir: Path) -> list:
     return out
 
 
-def run_suite(d: Path) -> int:
+def run_suite(d: Path, timeout: float = SUITE_TIMEOUT_SECONDS) -> int:
     rc = 0
     for f in sorted(d.glob("test_*.py")):
-        r = subprocess.run([sys.executable, str(f)], cwd=str(d))
-        rc = rc or r.returncode
+        try:
+            r = subprocess.run([sys.executable, str(f)], cwd=str(d),
+                               timeout=timeout)
+            rc = rc or r.returncode
+        except subprocess.TimeoutExpired:
+            # Bounded standalone too: inside the Stop hook tdd_verify's own
+            # ORACLE_TIMEOUT_SECONDS + killpg caps this, but the module is
+            # documented and tested as a CLI, where a wedged suite hung forever.
+            print(f"[skill-tests] TIMEOUT after {timeout}s: {f.name}",
+                  file=sys.stderr)
+            rc = rc or 124
     return rc
 
 
@@ -53,10 +70,24 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--claude-dir", type=Path,
                     default=Path(__file__).resolve().parent.parent)
+    # A FLOOR, not an equality: adding an authored suite is fine, losing one is
+    # loud. Without it `main` returned 0 on an empty collection — so anything that
+    # broke discovery (skills tree moved, --claude-dir resolving through an
+    # unexpected parent, every skill symlinked after an ~/.agents re-link, the
+    # scripts/ convention renamed) turned this whole oracle leg green while
+    # covering nothing. That is the exact failure the leg was added to close.
+    ap.add_argument("--min-suites", type=int, default=EXPECTED_SUITES,
+                    help=f"fail if fewer than N suites are collected "
+                         f"(default {EXPECTED_SUITES}, the authored count)")
     args = ap.parse_args(argv)
 
     failed = []
     dirs = suite_dirs(args.claude_dir)
+    if len(dirs) < args.min_suites:
+        print(f"[skill-tests] FAILED: collected {len(dirs)} suites, expected at "
+              f"least {args.min_suites} — discovery is broken, not the suites "
+              f"(searched {args.claude_dir / 'skills'})", file=sys.stderr)
+        return 1
     for d in dirs:
         rel = d.relative_to(args.claude_dir)
         print(f"[skill-tests] {rel}", flush=True)

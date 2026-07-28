@@ -75,6 +75,55 @@ class TestLoadEvents(unittest.TestCase):
             sum(1 for e in events if e["kind"] == "human"), 2)
 
 
+class TestBrokenAncestryIsNotOk(unittest.TestCase):
+    """`path_ok=True` means "the active branch was reconstructed" — callers act on
+    it by DISCARDING every message off that branch. read_raw() deliberately skips
+    torn JSONL lines, so a missing ancestor is a supported failure mode: the walk
+    stopping early must report False and let the caller keep the linear transcript
+    and warn. Reporting True dropped an earlier human instruction while keeping the
+    leaf (merge-gate finding, reproduced)."""
+
+    def test_missing_parent_is_not_ok(self):
+        raw = [
+            {"uuid": "leaf", "parentUuid": "GONE-torn-line",
+             "message": msg("user", [{"type": "text", "text": "hi"}])},
+            {"type": "last-prompt", "leafUuid": "leaf"},
+        ]
+        active, ok = sr.active_path_uuids(raw)
+        self.assertFalse(ok)
+        self.assertEqual(active, {"leaf"})      # what it walked, still returned
+
+    def test_parent_cycle_is_not_ok(self):
+        raw = [
+            {"uuid": "a", "parentUuid": "b"},
+            {"uuid": "b", "parentUuid": "a"},
+            {"type": "last-prompt", "leafUuid": "a"},
+        ]
+        _active, ok = sr.active_path_uuids(raw)
+        self.assertFalse(ok)
+
+    def test_walk_to_an_explicit_root_is_ok(self):
+        raw = [
+            {"uuid": "root", "parentUuid": None},
+            {"uuid": "leaf", "parentUuid": "root"},
+            {"type": "last-prompt", "leafUuid": "leaf"},
+        ]
+        active, ok = sr.active_path_uuids(raw)
+        self.assertTrue(ok)
+        self.assertEqual(active, {"root", "leaf"})
+
+    def test_broken_ancestry_keeps_the_linear_transcript(self):
+        # End-to-end: the caller must NOT discard off-path messages when the
+        # reconstruction failed — that is the actual data loss.
+        raw = make_raw()
+        leaf = next(r for r in raw if r.get("uuid") == "u6")
+        leaf["parentUuid"] = "GONE-torn-line"
+        events, _rewound, path_ok = sr.load_events(raw)
+        self.assertFalse(path_ok)
+        self.assertGreaterEqual(
+            sum(1 for e in events if e["kind"] == "human"), 2)
+
+
 class TestClipAndStages(unittest.TestCase):
     def test_clip_lines_elides_middle_and_caps_chars(self):
         text = "\n".join(f"l{i}" for i in range(100))

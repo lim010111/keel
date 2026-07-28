@@ -81,9 +81,12 @@ class TestRunnerProcess(unittest.TestCase):
         self.root = make_tree(Path(self.tmp.name))
         self.addCleanup(self.tmp.cleanup)
 
-    def run_runner(self):
+    def run_runner(self, *extra):
+        # --min-suites 2 = the fake tree's real count; the DEFAULT floor is the
+        # authored count in ~/.claude (see test_zero_suites_exits_nonzero).
         return subprocess.run(
-            [sys.executable, str(RUNNER), "--claude-dir", str(self.root)],
+            [sys.executable, str(RUNNER), "--claude-dir", str(self.root),
+             "--min-suites", "2", *extra],
             capture_output=True, text=True, timeout=120,
         )
 
@@ -101,6 +104,40 @@ class TestRunnerProcess(unittest.TestCase):
         r = self.run_runner()
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("vendored-a", r.stdout + r.stderr)
+
+
+class TestCollectionFloor(unittest.TestCase):
+    """A vacuous green is worse than a red: this runner is the oracle's THIRD leg
+    (.claude/tdd-test-cmd), so anything that breaks collection — the skills tree
+    moving, --claude-dir resolving through an unexpected parent, every skill
+    becoming a symlink after an ~/.agents re-link, a rename of the scripts/
+    convention — used to turn the whole leg green while covering nothing."""
+
+    def run_runner(self, root, *extra):
+        return subprocess.run(
+            [sys.executable, str(RUNNER), "--claude-dir", str(root), *extra],
+            capture_output=True, text=True, timeout=120,
+        )
+
+    def test_zero_suites_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self.run_runner(tmp)                    # no skills/ at all
+            self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("0", r.stdout + r.stderr)
+
+    def test_collection_below_the_floor_exits_nonzero(self):
+        # A suite that silently disappears (renamed, moved, symlinked) must be
+        # loud, not green — the floor is a MINIMUM, so adding suites is fine.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_tree(Path(tmp))
+            r = self.run_runner(root, "--min-suites", "3")   # tree has 2
+            self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_default_floor_matches_the_authored_tree(self):
+        # The real ~/.claude must satisfy the DEFAULT floor — otherwise the leg
+        # that runs every turn is either vacuous or permanently red.
+        r = self.run_runner(HERE.parent)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
 if __name__ == "__main__":

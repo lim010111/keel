@@ -64,7 +64,8 @@ min_interval_seconds = 600
 reviewers = ["codex"]                   # ordered reviewer set (ADR-0010)
 
 # Model/effort knobs (#47/#48): ship PINNED below (codex gpt-5.5/xhigh, validator
-# + dispatcher opus); comment any out to fall back to that tool's own default.
+# agent opus, dispatcher sonnet/low); comment any out to fall back to that tool's
+# own default.
 # Changing ANY of them busts review_scope_hash → next verify re-reviews (intended).
 [merge-gate.local.producer.codex]
 bin = "codex"
@@ -81,9 +82,9 @@ reasoning_effort = "xhigh"              # minimal|low|medium|high|xhigh (codex d
 # reasoning_effort = "high"             # low|medium|high|xhigh|max (model-dependent)
 
 [merge-gate.local.validator]
-model             = "opus"              # validator AGENT (judgment subagent) — tier alias only: haiku|sonnet|opus|fable; comment out = agent default
-dispatcher_model  = "opus"             # validator DISPATCHER (headless orchestration session); alias or full id; comment out = CLI default
-# dispatcher_effort = "medium"          # low|medium|high|xhigh|max (model-dependent); agent effort is frontmatter-only (no per-repo knob)
+model             = "opus"              # validator AGENT (judgment subagent) — tier alias only: haiku|sonnet|opus|fable; comment out = agent default. Judgment is NOT where you save.
+dispatcher_model  = "sonnet"            # validator DISPATCHER (headless orchestration session); alias or full id; comment out = CLI default. It is pipeline, not judge — measured at opus it cost 2.5x the judge's context to run 5 shell commands in order (claude-harness-work#56).
+dispatcher_effort = "low"               # low|medium|high|xhigh|max (model-dependent); agent effort is frontmatter-only (no per-repo knob)
 """
 
 

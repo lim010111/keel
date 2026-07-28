@@ -13,6 +13,11 @@
     "defaultMode": "auto"
   },
   "model": "opus[1m]",
+  "skillOverrides": {
+    "weekly-dev-log": "off",
+    "ai-readiness-cartography": "off",
+    "caveman": "off"
+  },
   "hooks": {
     "PermissionRequest": [
       {
@@ -150,7 +155,7 @@
       }
     }
   },
-  "effortLevel": "high",
+  "effortLevel": "xhigh",
   "tui": "fullscreen",
   "skipDangerousModePermissionPrompt": true,
   "autoCompactEnabled": false,

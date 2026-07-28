@@ -1479,6 +1479,14 @@ _CLAUDE_REVIEWER_TOOLS = "Read,Grep,Glob"
 # but a single token avoids swallowing a trailing reviewer_arg; the comma form was
 # verified to deny). SECOND layer behind `--tools`; Read/Grep/Glob are intentionally
 # absent here so the allowlist and denylist never conflict.
+#
+# #53 AC3 — `MultiEdit` and `SlashCommand` are KEPT deliberately. Older CLIs warned
+# `Permission deny rule "MultiEdit" matches no known tool — check for typos.` twice
+# per spawn (archived pre-2.1.198 reviewer.stderr), which is why the issue flagged
+# them. On 2.1.220 the real reviewer spawn writes a ZERO-BYTE stderr (measured), so
+# the pollution is gone and an unmatched rule is inert. Both tools existed in earlier
+# CLIs and could return; over-inclusiveness is exactly what a defense-in-depth layer
+# is for, so removing them would trade coverage for nothing.
 _CLAUDE_REVIEWER_DENIED_TOOLS = ",".join([
     # mutating / exec
     "Bash", "BashOutput", "KillShell", "Edit", "Write", "MultiEdit", "NotebookEdit",
@@ -1634,6 +1642,38 @@ def _fresh_claude_session_env(extra: dict) -> dict:
     return base
 
 
+def _claude_json_schema_arg(text: str) -> str:
+    """The schema argument for `claude -p --json-schema` (#53). The CLI's schema
+    validator cannot resolve the `$schema` meta declaration's ref and exits 1
+    BEFORE the model call —
+
+        Error: --json-schema is not a valid JSON Schema: no schema with key or
+        ref "https://json-schema.org/draft/2020-12/schema"
+
+    — which killed the claude lane in EVERY installed repo from 2026-07-02
+    (CLI 2.1.198) through 2.1.220, verdict=error at ~1s with no review. So strip
+    that one key at the spawn site. Deliberately NOT fixed in the template file:
+    the file keeps its draft declaration (still a valid schema for any other
+    consumer) and `schema_sha` — a review_scope_hash component — stays put, so no
+    installed repo's cached artefacts churn; and the codex lane, which consumes
+    the SAME file by PATH (`--output-schema`), is untouched by construction.
+
+    Anything that is not a JSON *object* passes through unchanged: the CLI then
+    rejects it and the lane fails CLOSED (missing-result -> verdict error), exactly
+    as today. Raising here would instead crash produce — so the non-object guard
+    matters as much as the not-JSON one (`[]` / `null` / `"x"` all parse, and
+    `.pop` on them raises; caught by the restored claude lane reviewing this very
+    commit)."""
+    try:
+        d = json.loads(text)
+    except ValueError:
+        return text
+    if not isinstance(d, dict):
+        return text
+    d.pop("$schema", None)
+    return json.dumps(d)
+
+
 def _run_claude_reviewer(name: str, cfg: Config, prompt: str, sub_dir: Path,
                          cwd: Path) -> tuple[str, int]:
     """The Claude second reviewer (#32, ADR-0010/0012): headless
@@ -1668,7 +1708,10 @@ def _run_claude_reviewer(name: str, cfg: Config, prompt: str, sub_dir: Path,
     # exit 0 with EMPTY output (verified, AC#2); empty output then fails closed
     # (missing-result → reviewer failure) but never actually reviews. The schema
     # file is ~1.7KB, well under the per-arg limit, so it stays an inline arg.
-    schema_content = SCHEMA_PATH.read_text(encoding="utf-8")
+    # #53: minus the `$schema` meta key, which the current CLI's validator rejects
+    # outright (see _claude_json_schema_arg — the whole lane died on it).
+    schema_content = _claude_json_schema_arg(
+        SCHEMA_PATH.read_text(encoding="utf-8"))
     # #32 review C3 (argv MAX_ARG_STRLEN ≈ 128KB): the diff-bearing prompt is fed
     # via STDIN — parity with the Codex runner — NOT as the `-p` argv positional.
     # A large in-scope diff as a single argv element would exceed the per-arg limit,
@@ -1738,13 +1781,59 @@ def _run_claude_reviewer(name: str, cfg: Config, prompt: str, sub_dir: Path,
     return p.stdout.decode("utf-8", "replace"), p.returncode
 
 
+def _findings_count(findings_json: Path) -> int:
+    """How many findings the reviewer produced, per the normalized payload
+    (#56). Returns -1 when the count cannot be established — an unreadable or
+    off-shape file must NOT be read as "zero findings", or a parse bug would
+    silently skip judgment on a real critical. Callers short-circuit only on an
+    exact 0; -1 means "do the work"."""
+    try:
+        doc = json.loads(findings_json.read_text(encoding="utf-8"))
+        findings = doc["result"]["findings"]
+    except Exception:
+        return -1
+    return len(findings) if isinstance(findings, list) else -1
+
+
+def _write_empty_validator_artefact(sub_dir: Path) -> None:
+    """The "nothing to judge" artefact (#56). Deliberately NOT a `fallback`
+    payload: a fallback means the validator layer FAILED, whereas here it
+    correctly had nothing to do. Shape mirrors what aggregate.py write-outputs
+    emits for an empty findings list — aggregate.py stays the format owner;
+    this is a duplicate the shape test pins."""
+    (sub_dir / "validators.json").write_text(
+        json.dumps({"validators": [], "aggregate": []}, indent=2) + "\n",
+        encoding="utf-8")
+    (sub_dir / "validators.md").write_text(
+        "### `merge-gate / codex-review` — validator layer\n"
+        "\n"
+        "_No findings to validate; the validator was not dispatched._\n",
+        encoding="utf-8")
+
+
 def default_validator_runner(name: str, findings_json: Path, sub_dir: Path,
                              cwd: Path, intent_file: Path | None,
-                             cfg: Config | None = None) -> dict | None:
+                             cfg: Config | None = None,
+                             changed_files: list[str] | None = None,
+                             status_out: dict | None = None) -> dict | None:
     """Run the validator in its OWN headless context (#24/#26/#29). Returns the
     parsed validators.json (with `aggregate`) or None on failure. `cfg` (#47)
     carries the two validator model knobs; None (a legacy direct caller) means
-    both unset — the tool defaults."""
+    both unset — the tool defaults. `changed_files` (#55) is the producer's
+    AUTHORITATIVE changed-path list; None (a legacy direct caller) leaves the
+    skill to derive its own.
+
+    `status_out` (#58) is an out-dict the caller reads back for WHY the
+    validator did or did not produce a verdict — `ok` / `timeout` /
+    `exit-nonzero` / `artefact-missing` / `skipped-no-findings`. The producer
+    already split those branches to `err()` on stderr, where summary.json never
+    saw them, so an archive could not tell "the judge said unsure" from "the
+    session died on a usage limit" (14 of 226 runs). The `None` RETURN contract
+    is deliberately unchanged — it is the load-bearing "trust no artefact this
+    run" signal that F2 turns into a fail-safe block."""
+    def _status(value: str) -> None:
+        if status_out is not None:
+            status_out["status"] = value
     # Clear any leftover artefact from a prior produce of the same tuple
     # (produce mkdir's sub_dir with exist_ok=True and never clears it). After
     # this, ANY validators.json present afterward was written THIS run, so a
@@ -1752,15 +1841,61 @@ def default_validator_runner(name: str, findings_json: Path, sub_dir: Path,
     # return None -> build_summary F2 fail-safe blocks rather than pairing a
     # STALE dismiss with a NEW critical (C1).
     vj = sub_dir / "validators.json"
-    for stale in (vj, sub_dir / "validators.md"):
+    cf_file = sub_dir / "changed-files.txt"
+    for stale in (vj, sub_dir / "validators.md", cf_file):
         try:
             stale.unlink()
         except OSError:
             pass
+    # #56: nothing to judge → do not spawn the headless dispatcher at all. It was
+    # called unconditionally, so 60/226 measured runs (reviewer returned 0 findings,
+    # or failed outright) burned 32.2M cache_read + 799k output on a pipeline whose
+    # only possible output was an empty aggregate. Write the empty artefact
+    # DIRECTLY: every downstream consumer reads the file, and skipping the write
+    # would trade a cheap short-circuit for the "artefact missing" condition that
+    # makes build_summary F2 blanket over-block. Same reason this does not shell out
+    # to aggregate.py — a path-resolution failure here would be that same inversion.
+    # aggregate.py owns the format; the shape is pinned by test.
+    if _findings_count(findings_json) == 0:
+        _write_empty_validator_artefact(sub_dir)
+        _status("skipped-no-findings")
+        try:
+            return json.loads(vj.read_text(encoding="utf-8"))
+        except Exception:
+            _status("artefact-missing")
+            return None
+    # #58: derive the posture label instead of hardcoding it. `--soft-mode` was
+    # pinned to `false` for all 226 runs, so validators.md announced "HARD
+    # (blocking on upheld/unsure critical/high)" on a repo whose
+    # enforcement_policy is `advisory` and where advisory is the END STATE
+    # (ADR-0021) — the human-readable artefact stated the opposite of its own
+    # gate's posture. cfg absent (a legacy direct caller) keeps the old literal.
+    soft_mode = "true" if (cfg is not None
+                           and cfg.enforcement_policy == "advisory") else "false"
     slash = (f"/run-codex-validators --codex-json {findings_json} "
-             f"--soft-mode false --out-dir {sub_dir}")
+             f"--soft-mode {soft_mode} --out-dir {sub_dir}")
+    # #57: name the reviewer that produced these findings. ADR-0010 widened
+    # reviewers to a SET, but the payload carried no provenance and the agent's
+    # own <role> asserted "Codex produces the findings" — so 57/226 runs judged
+    # claude-lane findings under a false, and backwards, calibration premise
+    # (the claude reviewer reads the repo's AGENTS.md; "blind to local
+    # conventions" does not hold for it). The historical `codex_json` key name
+    # stays for schema compatibility.
+    slash += f" --reviewer {name}"
     if intent_file is not None:
         slash += f" --intent-from {intent_file}"
+    # #55: hand the skill the AUTHORITATIVE changed-path list instead of letting
+    # it re-derive one. Its own derivation is `git diff origin/${BASE_REF:-main}`,
+    # which the producer never sets — so it yields an EMPTY list on any repo whose
+    # default branch is not `main` (claude-config is `master`: 44/46 runs empty)
+    # and on every post-push run where origin/main has collapsed onto the tip.
+    # The judge cannot tell an empty list from a missing one, so starvation read
+    # as "nothing changed" and skewed verdicts AWAY from `unsure` — the opposite
+    # of the agent's fail-toward-unsure contract. produce already holds this list
+    # in `cd["changed_files"]`; passing it costs one file write.
+    if changed_files is not None:
+        cf_file.write_text("".join(f"{p}\n" for p in changed_files), encoding="utf-8")
+        slash += f" --changed-files-from {cf_file}"
     # #47: the validator AGENT's model rides the slash invocation (the skill
     # passes it to the Agent tool's `model:` param) — the skill reads no
     # harness.toml by contract, so the CLI arg is the only carrier. Absent →
@@ -1808,22 +1943,29 @@ def default_validator_runner(name: str, findings_json: Path, sub_dir: Path,
     except subprocess.TimeoutExpired:
         err(f"validator headless run for {name} timed out after "
             f"{_CLAUDE_VALIDATOR_TIMEOUT_S}s; not trusting any artefact (fail-safe)")
+        _status("timeout")
         return None
     except Exception as e:
         err(f"validator headless run failed for {name}: {e}")
+        _status("exit-nonzero")
         return None
     # Fail-safe: a non-zero exit means we do not trust any artefact this run
     # might have left (errs toward over-block per the fail-safe posture).
     if proc.returncode != 0:
         err(f"validator headless run for {name} exited {proc.returncode}; "
             "not trusting any artefact (fail-safe)")
+        _status("exit-nonzero")
         return None
     if not vj.exists():
+        _status("artefact-missing")
         return None
     try:
-        return json.loads(vj.read_text(encoding="utf-8"))
+        out = json.loads(vj.read_text(encoding="utf-8"))
     except Exception:
+        _status("artefact-missing")
         return None
+    _status("ok")
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -1973,8 +2115,11 @@ def _render_archive_entry(summary: dict, citations: dict) -> str:
         revs = "+".join(f.get("producing_reviewers") or []) or "?"
         loc = f"{f.get('file')}:{f.get('line_start')}"
         flag = " ✓block" if f.get("block") else ""
-        lines.append(f"- [{revs}] {f.get('severity')} {f.get('validator_verdict')} "
-                     f"{loc}{flag}")
+        # #58: mark the fail-safe `unsure` that no judge ever produced, so the
+        # archive does not read a billing-window block as a judged one.
+        judged = "" if f.get("validator_ran", True) else "(not-run) "
+        lines.append(f"- [{revs}] {f.get('severity')} {judged}"
+                     f"{f.get('validator_verdict')} {loc}{flag}")
         citation = citations.get(f.get("id"))
         if citation:
             lines.append(f"  ↳ {citation}")
@@ -2065,8 +2210,18 @@ def produce(cwd: Path, cfg: Config, base_sha: str, cd: dict, *,
             json.dumps(normalized, ensure_ascii=False), encoding="utf-8")
         reviewer_elapsed = time.time() - t0
         t_v = time.time()
+        # #55: thread the canonical diff's changed-path list to the validator so
+        # the judge is never starved of "what changed" by the skill's own base
+        # re-derivation. `cd` is the SAME canonical diff the gate keys its tuple
+        # on, so the list is authoritative by construction.
+        # #58: the runner reports WHY it did or did not produce a verdict via
+        # this out-dict; an injected fake (the seam) simply leaves it empty and
+        # the fallback below infers from the return value alone.
+        vstatus: dict = {}
         validators = validator_runner(reviewer, sub_dir / "findings.json", sub_dir,
-                                      cwd, intent_file, cfg)
+                                      cwd, intent_file, cfg,
+                                      changed_files=cd["changed_files"],
+                                      status_out=vstatus)
         validator_elapsed = time.time() - t_v
         per_reviewer.append({
             "reviewer": reviewer,
@@ -2074,6 +2229,8 @@ def produce(cwd: Path, cfg: Config, base_sha: str, cd: dict, *,
             "model": _reviewer_model(reviewer, jsonl),  # AC#8 (#31 input)
             "findings": findings,
             "validators": validators,
+            "validator_status": vstatus.get(
+                "status", "ok" if validators is not None else "artefact-missing"),
             "reviewer_seconds": round(reviewer_elapsed, 3),
             "validator_seconds": round(validator_elapsed, 3),
         })
@@ -2113,6 +2270,15 @@ def build_summary(cfg: Config, base_sha: str, cd: dict, scope_hash: str,
             # F2: a missing aggregate entry (whole validator absent) must be
             # treated as fail-safe unsure, never silently un-blocked.
             verdict = a.get("verdict", "unsure")
+            # #58: record whether that `unsure` is a JUDGMENT or the ABSENCE of
+            # one. F2's fail-safe is right to block, but writing plain "unsure"
+            # made "the judge read it and could not decide" indistinguishable
+            # from "the judge never ran" (18/226 runs left no artefact, 13 of
+            # them killed by a usage limit). A sibling field, NOT a fourth
+            # verdict value — the verdict string has many consumers (archive,
+            # citation snapshot, /handle-merge-findings, Layer-2 ledger) and
+            # widening its value set would break all of them.
+            validator_ran = fid in agg_by_id
             # Defense-in-depth (m1 + #32 finding-1): normalize severity with
             # strip().lower() and treat ANY value outside the known SEVERITIES
             # set — including a MISSING/empty one — as blocking. The Codex path is
@@ -2140,6 +2306,7 @@ def build_summary(cfg: Config, base_sha: str, cd: dict, scope_hash: str,
                 "line_start": f.get("line_start"),
                 "severity": severity,
                 "validator_verdict": verdict,
+                "validator_ran": validator_ran,  # #58 — judgment vs its absence
                 "block": block,
                 # Explicit concordance count (#32 open call): how many distinct
                 # reviewers surfaced this (file, line_start). Stored directly so
@@ -2205,6 +2372,12 @@ def build_summary(cfg: Config, base_sha: str, cd: dict, scope_hash: str,
         "per_reviewer_timings": [
             {"reviewer": pr["reviewer"], "codex_status": pr["codex_status"],
              "model": pr.get("model") or reviewer_models.get(pr["reviewer"]),
+             # #58: why the validator did or did not produce verdicts for this
+             # reviewer — ok / timeout / exit-nonzero / artefact-missing /
+             # skipped-no-findings. The producer already split these branches to
+             # stderr; this is the same fact, durable in the artefact, so an
+             # archive can tell a judged block from a billing-window block.
+             "validator_status": pr.get("validator_status", "ok"),
              "reviewer_seconds": pr["reviewer_seconds"],
              "validator_seconds": pr["validator_seconds"]}
             for pr in per_reviewer
@@ -2482,7 +2655,8 @@ def cmd_verify(args) -> int:
 # CONTENT joined with the gate's verdict + validator citation, waiting for an
 # in-flight produce. WRITES NOTHING (D1, instrument-around ADR-0009) — it only
 # re-reads the tuple artefacts the gate already produced. The validator verdict
-# travels as a HINT, never a filter (#31 measured it 100% over-blocking).
+# travels as a HINT, never a filter — the implementing agent reproduces or refutes
+# every finding itself regardless of how accurate the validator is (ADR-0027).
 # --------------------------------------------------------------------------
 def _reviewer_finding_content(tdir: Path) -> dict:
     """Snapshot {namespaced_fid: {title, body, recommendation, confidence,
@@ -2529,7 +2703,10 @@ def _join_findings(summary: dict, tdir: Path) -> list[dict]:
             "line_start": fe.get("line_start"),
             "line_end": c.get("line_end"),
             "severity": fe.get("severity"),
-            "validator_verdict": fe.get("validator_verdict"),  # HINT only (#31)
+            "validator_verdict": fe.get("validator_verdict"),  # HINT only (ADR-0027)
+            # #58: False ⇒ this `unsure` is F2's fail-safe, not a judgment. Read
+            # it as "unjudged", never as "the validator was undecided".
+            "validator_ran": fe.get("validator_ran", True),
             "block": fe.get("block"),
             "reviewer_confidence": fe.get("reviewer_confidence"),
             "concordance_count": fe.get("concordance_count"),
@@ -2556,12 +2733,14 @@ def _emit_findings(args, payload: dict) -> int:
     if not findings:
         print("  (no findings)")
         return 0
-    print("  validator verdict is a HINT only (#31) — judge content as-is.")
+    print("  validator verdict is a HINT only (ADR-0027) — judge content as-is.")
     for f in findings:
         revs = "+".join(f["reviewers"]) or "?"
         flag = " ✓block" if f["block"] else ""
+        # #58: an unjudged finding must not read as an undecided one.
+        judged = "" if f.get("validator_ran", True) else " (NOT RUN)"
         print(f"\n- [{revs}] {f['severity']} · validator={f['validator_verdict']}"
-              f" · {f['file']}:{f['line_start']}{flag}")
+              f"{judged} · {f['file']}:{f['line_start']}{flag}")
         if f.get("title"):
             print(f"  {f['title']}")
         if f.get("body"):
@@ -2580,14 +2759,15 @@ def cmd_findings(args) -> int:
     `_await_pending_artefact`, keyed on the pushed tip), then joins each finding's
     reviewer CONTENT with the gate's verdict + validator citation. WRITES NOTHING
     (D1). Always exits 0 — this is not a gate; the validator verdict is a HINT,
-    never a filter (#31)."""
+    never a filter (ADR-0027)."""
     cwd = Path(args.cwd or os.getcwd())
     payload = {
         "state": None, "base_sha": None, "diff_hash": None, "tip_sha": None,
         "head_sha": None, "verdict": None, "block_count": None,
         "produced_at_iso": None, "waited_seconds": None, "pending_tip": None,
-        "validator_verdict_note": "hint only — measured unreliable (#31); "
-                                  "never an include/exclude filter",
+        "validator_verdict_note": "hint only — you reproduce or refute every "
+                                  "finding yourself (ADR-0027), whatever the "
+                                  "verdict says; never an include/exclude filter",
         "findings": [],
     }
     root = repo_root(cwd)

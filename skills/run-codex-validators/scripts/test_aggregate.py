@@ -274,6 +274,97 @@ class TestBuildInput(unittest.TestCase):
         self.assertNotIn("durable_context", json.loads(r.stdout))
 
 
+def build_input_with(*extra) -> tuple[dict, str]:
+    """build-input over the standard fixture plus `extra` args; (payload, stderr).
+    Exit 0 is part of the runtime contract, so a non-zero exit raises here."""
+    r = subprocess.run(
+        ["python3", str(AGGREGATE), "build-input",
+         "--codex-json", str(FIXTURES / "single_doc_with_result.json"),
+         "--issue-ref", "x", *extra],
+        capture_output=True, text=True, timeout=20,
+    )
+    if r.returncode != 0:
+        raise AssertionError(f"build-input exited {r.returncode}: {r.stderr}")
+    return json.loads(r.stdout), r.stderr
+
+
+class TestChangedFilesStatus(unittest.TestCase):
+    """claude-harness-work#55 — the judge could not distinguish an EMPTY
+    changed-files list from an UNRESOLVED one, so a failed derivation read as
+    "nothing changed" and skewed verdicts away from `unsure`. build-input now
+    labels which one it is, inferred MECHANICALLY (no caller judgment call).
+
+    This is the SKILL-SIDE half of the #55 regression coverage; the
+    PRODUCER-SIDE half (produce writes the authoritative list and passes the
+    flag on a `master` repo / after base collapse) lives in
+    test_merge_gate_local.py. The payload itself is assembled by an LLM-driven
+    skill, so no single test can span both — the two seam tests together are
+    the regression."""
+
+    def _build(self, *extra):
+        return build_input_with(*extra)
+
+    def test_supplied_list_is_resolved_and_not_empty(self):
+        """The producer path: a caller-supplied list rides through verbatim."""
+        tmp = Path(tempfile.mkdtemp(prefix="aggregatetest-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        cf = tmp / "changed-files.txt"
+        cf.write_text("src/a.py\nsrc/b.py\n")
+        payload, _ = self._build("--changed-files-from", str(cf))
+        self.assertEqual(payload["changed_files"], ["src/a.py", "src/b.py"])
+        self.assertEqual(payload["changed_files_status"], "resolved")
+
+    def test_no_flag_is_unavailable_not_empty_resolved(self):
+        """The manual path where derivation failed and the skill DROPPED the
+        flag. The list is empty either way — the status is what tells the judge
+        not to treat that emptiness as evidence."""
+        payload, _ = self._build()
+        self.assertEqual(payload["changed_files"], [])
+        self.assertEqual(payload["changed_files_status"], "unavailable")
+
+    def test_unreadable_path_is_unavailable_with_stderr_and_exit_zero(self):
+        payload, stderr = self._build("--changed-files-from", "/nonexistent/cf.txt")
+        self.assertEqual(payload["changed_files"], [])
+        self.assertEqual(payload["changed_files_status"], "unavailable")
+        self.assertIn("could not read changed-files list", stderr)
+
+    def test_authoritative_empty_list_is_resolved(self):
+        """An empty list the caller VOUCHED for is a real answer ("nothing in
+        scope changed") — it must not be downgraded to unavailable."""
+        tmp = Path(tempfile.mkdtemp(prefix="aggregatetest-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        cf = tmp / "empty.txt"
+        cf.write_text("")
+        payload, _ = self._build("--changed-files-from", str(cf))
+        self.assertEqual(payload["changed_files"], [])
+        self.assertEqual(payload["changed_files_status"], "resolved")
+
+
+class TestReviewerProvenance(unittest.TestCase):
+    """claude-harness-work#57 — reviewers are a SET (ADR-0010), but the payload
+    named none of them, so the judge calibrated every lane as if Codex had filed
+    it (and the agent's <role> said so out loud). The payload now names the
+    source; the historical `codex_json` key is deliberately left alone."""
+
+    def test_reviewer_rides_into_the_payload(self):
+        for name in ("codex", "claude", "gemini"):
+            payload, _ = build_input_with("--reviewer", name)
+            self.assertEqual(payload["reviewer"], name)
+
+    def test_reviewer_omitted_when_unsupplied(self):
+        """Manual run: the key is ABSENT, not a placeholder — the agent then
+        judges with no reviewer assumption rather than a wrong one."""
+        payload, _ = build_input_with()
+        self.assertNotIn("reviewer", payload)
+
+    def test_codex_json_key_name_is_unchanged(self):
+        """The historical envelope key stays put — schema compatibility (#57
+        explicitly declines the rename)."""
+        payload, _ = build_input_with("--reviewer", "claude")
+        self.assertIn("codex_json", payload)
+        self.assertIn("findings", payload["codex_json"])
+
+
 class TestOutDirThreading(unittest.TestCase):
     """The --out-dir arg lands the artefacts wherever the producer points it
     (local profile passes the per-reviewer tuple sub-dir). aggregate.py has

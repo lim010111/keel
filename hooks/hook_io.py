@@ -40,8 +40,15 @@ def read_payload():
     try:
         signal.signal(signal.SIGALRM, _timeout)
         signal.alarm(5)
-        data = sys.stdin.read()
-        signal.alarm(0)
+        try:
+            data = sys.stdin.read()
+        finally:
+            # ALWAYS cancel — a read() that raises anything but the alarm's own
+            # TimeoutError (UnicodeDecodeError on a non-UTF-8 payload, OSError on
+            # an odd fd) used to leave the alarm pending, so TimeoutError fired
+            # later inside the hook's real work: mid tdd_verify oracle run or mid
+            # narrative_guard git call, crashing a Stop hook that fails OPEN.
+            signal.alarm(0)
     except Exception:
         data = ""
     try:

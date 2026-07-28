@@ -72,9 +72,14 @@ ask once (AskUserQuestion) whether to keep the shipped pins or customize:
     per-repo knob (Agent tool exposes only `model`; effort is the agent
     frontmatter's, global).
   - `[merge-gate.local.validator] dispatcher_model` — the headless
-    orchestration session; alias or full id
+    orchestration session; alias or full id. It is **pipeline, not judge**
+    (CONTEXT.md `validator`), so it ships a tier BELOW the agent and should
+    stay there: measured at `opus` it burned 2.5× the judge's context and
+    3.4× its output tokens to run five shell commands in order
+    (claude-harness-work#56). Not `haiku`, though — the pipeline has real
+    branches and a wrong turn ends as a blanket over-block.
   - `[merge-gate.local.validator] dispatcher_effort` —
-    `low`/`medium`/`high`/`xhigh`/`max`
+    `low`/`medium`/`high`/`xhigh`/`max`; ships `low` for the same reason
 
 Any model/effort change later (edit `harness.toml` directly) busts
 `review_scope_hash` — the next verify re-reviews; that is intended.

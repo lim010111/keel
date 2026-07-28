@@ -1,17 +1,17 @@
 ---
 name: handle-merge-findings
-description: Consumer-side handling of advisory merge-gate findings (#49, ADR-0027) — the implementing session's single-pass, human-gated reproduce-or-refute loop. Read all findings as-is (the validator verdict is a HINT, never a filter — #31 measured it 100% over-blocking) → triage by judgment → delegate reproduce-or-refute to a sub that returns a runnable FAILING test (an oracle), never a bare verdict → main re-runs it to confirm → delegate the fix to a SEPARATE sub that makes the frozen test pass without editing it → batch confirmed fixes into ONE commit+push → hand off (the human gates any pass 2+). Use after pushing in-scope changes when a merge-gate local profile is installed, when the user asks to "handle the findings", "run a findings pass", "reproduce or refute the merge-gate findings", invokes /handle-merge-findings, or for pass 2+ on a prior fix-push's new review. Korean: "머지 게이트 findings 처리", "findings 한 패스 돌려줘", "리뷰 지적 재현해서 처리".
+description: Consumer-side handling of advisory merge-gate findings (#49, ADR-0027) — the implementing session's single-pass, human-gated reproduce-or-refute loop. Read all findings as-is (the validator verdict is a HINT, never a filter — you reproduce or refute every finding yourself regardless of how accurate the validator is) → triage by judgment → delegate reproduce-or-refute to a sub that returns a runnable FAILING test (an oracle), never a bare verdict → main re-runs it to confirm → delegate the fix to a SEPARATE sub that makes the frozen test pass without editing it → batch confirmed fixes into ONE commit+push → hand off (the human gates any pass 2+). Use after pushing in-scope changes when a merge-gate local profile is installed, when the user asks to "handle the findings", "run a findings pass", "reproduce or refute the merge-gate findings", invokes /handle-merge-findings, or for pass 2+ on a prior fix-push's new review. Korean: "머지 게이트 findings 처리", "findings 한 패스 돌려줘", "리뷰 지적 재현해서 처리".
 ---
 
 # Handle advisory merge-gate findings — the consumer-side loop
 
-The merge gate is **advisory end-state** (#31: at reliable N=15, 100% of blocking
-findings were over-blocks, 0 confirmed true-positives — yet real bugs *do* surface,
-#40). So findings are **rare signal buried under false positives**. This skill is
-the implementing session's *empirical* handling of them (CONTEXT.md → *finding
-reproduction*): after your change is pushed, you run **one automatic pass** that
-proves or refutes each finding by running the code, fixes only the proven ones, and
-hands off. The decisions here are locked in **ADR-0027** — do not re-litigate them.
+The merge gate is **advisory end-state** (#31, ADR-0021). Findings are **rare
+signal buried under false positives** — real bugs *do* surface (#40), but most
+blocking findings are not worth blocking on. This skill is the implementing
+session's *empirical* handling of them (CONTEXT.md → *finding reproduction*):
+after your change is pushed, you run **one automatic pass** that proves or refutes
+each finding by running the code, fixes only the proven ones, and hands off. The
+decisions here are locked in **ADR-0027** — do not re-litigate them.
 
 **The gate is never touched** (instrument-around, ADR-0009; D1, ADR-0014): this
 loop only *reads* findings and acts in the work interval. It changes no
@@ -20,8 +20,10 @@ loop only *reads* findings and acts in the work interval. It changes no
 ## Hard invariants (these ARE the design — ADR-0027)
 
 - **Validator verdict is a HINT, never a filter.** Read every finding as-is; no
-  severity gate, no validator-upheld filter. The verdict is the one signal #31
-  measured unreliable. You judge content.
+  severity gate, no validator-upheld filter. This holds *however accurate the
+  validator is* — it classifies statically and cannot run code, so its verdict
+  can never stand in for the reproduction you owe each finding (ADR-0027). You
+  judge content.
 - **Reproduce sub returns an oracle, not an opinion.** Its deliverable is a
   *runnable test that fails on HEAD*, or a refutation — never a bare "it's real."
   You consult the oracle; you never trust the sub's verdict.
@@ -74,7 +76,7 @@ This is **read-only** (writes nothing — D1). It surfaces, for the pushed
 and the validator's `citation`. Parse the JSON.
 
 - `state: "missing" | "no-changes"` with empty `findings` → nothing to handle.
-  Note it and **exit** (this is the common, cheap path under 100% over-block).
+  Note it and **exit** (this is the common, cheap path — most pushes have none).
 - `state: "pending-timeout"` → a review **matched this push and is still in
   flight** (produce ran past `MERGE_GATE_VERIFY_WAIT_SECONDS`); `pending_tip` names
   it. This is **not** "no findings" — do **not** exit as nothing-to-handle. Re-run
@@ -82,9 +84,19 @@ and the validator's `citation`. Parse the JSON.
   in-flight (possibly blocking) review is not silently dropped.
 - `findings: [...]` → continue to triage.
 
+**`validator_ran: false` means the judge never ran on that finding** — its
+`validator_verdict: "unsure"` was manufactured by the gate's fail-safe (a
+timed-out, crashed, or usage-limit-killed validator session), not produced by
+reading the code. The text form marks these `(NOT RUN)`. Treat them as
+*unjudged*, never as "the validator was undecided": there is no verdict to weigh,
+so the finding arrives with strictly less context than the others, not with a
+hedge attached. Nothing else changes — you were reproducing every finding
+regardless (claude-harness-work#58).
+
 (`findings-log.md` in the artefact root is only a thin index — location + verdict +
-citation. The **content to judge** is what this command joins in from the
-per-reviewer `findings.json`. Read the command's output, not the archive.)
+citation, with unjudged rows marked `(not-run)`. The **content to judge** is what
+this command joins in from the per-reviewer `findings.json`. Read the command's
+output, not the archive.)
 
 ## Step 2 — Triage by judgment (content-based, no severity gate)
 

@@ -158,19 +158,40 @@ def adapt_finding(f: dict, idx: int) -> dict:
 
 def cmd_build_input(args: argparse.Namespace) -> int:
     findings = [adapt_finding(f, i) for i, f in enumerate(load_codex_findings(args.codex_json))]
+    # claude-harness-work#55: the validator could not distinguish an EMPTY
+    # changed-files list from an UNRESOLVED one, so a failed derivation read as
+    # "nothing changed" and skewed verdicts away from `unsure`. The status is
+    # inferred MECHANICALLY here — no caller judgment call — from whether a list
+    # was supplied at all and whether it could be read:
+    #   resolved    = a list was supplied and read (an authoritative empty list
+    #                 is a real answer: "the diff touched nothing in scope")
+    #   unavailable = no --changed-files-from at all, or it could not be read
+    # The skill's manual path therefore OMITS the flag when its own `git diff`
+    # fails, rather than writing an empty file — that is what makes this
+    # inference correct without asking the caller to classify anything.
     changed_files: list[str] = []
+    changed_files_status = "unavailable"
     if args.changed_files_from:
         try:
             with open(args.changed_files_from, encoding="utf-8") as fh:
                 changed_files = [ln.strip() for ln in fh if ln.strip()]
+            changed_files_status = "resolved"
         except Exception as e:
             err(f"could not read changed-files list at {args.changed_files_from}: {e}")
     payload = {
         "issue_ref": args.issue_ref,
         "changed_files": changed_files,
+        "changed_files_status": changed_files_status,
         "codex_json": {"findings": findings},
         "project_refs": PROJECT_REFS,
     }
+    # claude-harness-work#57: name the reviewer whose findings these are.
+    # Reviewers are a SET (ADR-0010); without this the judge calibrated every
+    # lane as if Codex had produced it. Omitted when unsupplied (a manual run) —
+    # same convention as durable_context — and the agent then judges with NO
+    # reviewer assumption rather than a wrong one.
+    if args.reviewer:
+        payload["reviewer"] = args.reviewer
     # D11 (claude-harness-work#30): the local profile has no PR body, so the
     # producer threads durable intent (published-range commit messages, branch,
     # optional operator-supplied intent) as additional, written context.
@@ -507,6 +528,10 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--issue-ref", required=True)
     b.add_argument("--changed-files-from", default=None,
                    help="file with one path per line; empty list if missing")
+    b.add_argument("--reviewer", default=None,
+                   help="name of the reviewer that produced these findings "
+                        "(codex/claude/custom); omitted from the payload when "
+                        "unset, so the judge assumes no provenance (#57)")
     b.add_argument("--durable-context-from", default=None,
                    help="optional file of durable validator context (branch / "
                         "published-range commit messages / operator intent); "

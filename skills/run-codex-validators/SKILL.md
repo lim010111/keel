@@ -21,7 +21,12 @@ claude -p "/run-codex-validators --codex-json <path> --soft-mode <true|false>" \
 
 - Working directory is the target repo root.
 - `--codex-json` default: `./codex-review.json`.
-- `--soft-mode` is `true` or `false`; required.
+- `--soft-mode` is `true` or `false`; required. It is a **posture label only** —
+  it selects the Mode line in `validators.md` and changes nothing the gate
+  computes. The local producer derives it from the repo's `enforcement_policy`
+  (`advisory` → `true`, `client-side-blocking` → `false`), so the artefact stops
+  announcing "HARD (blocking)" on a repo that cannot block
+  (claude-harness-work#58).
 - `--out-dir` (optional) default `./.merge-gate/` — the directory the two
   output files are written to. The default sits inside the local profile's
   gitignored, review-scope-excluded artifact root (claude-harness-work#46),
@@ -35,6 +40,19 @@ claude -p "/run-codex-validators --codex-json <path> --soft-mode <true|false>" \
   The local profile has no PR body, so the producer supplies this written
   intent for the validator to weigh like a PR description (D11). Pass it
   through to `build-input` as `--durable-context-from` (step 4).
+- `--reviewer <name>` (optional, claude-harness-work#57) — the reviewer that
+  produced the findings (`codex`, `claude`, or a custom name). Reviewers are a
+  **set** (ADR-0010), so the judge must not assume Codex. Pass it through to
+  `build-input` (step 4). Absent (a manual invocation) → the payload omits the
+  key and the agent judges with no reviewer assumption.
+- `--changed-files-from <path>` (optional, claude-harness-work#55) — a file of
+  changed paths, one per line, supplied by the **caller**. When present it is
+  **authoritative**: use it verbatim and do not run `git diff` (step 3). The
+  local producer always passes it — it already holds the canonical diff's path
+  list, whereas this skill's own derivation silently yields an empty list on any
+  repo whose default branch is not `main` and on every post-push run. Absent (a
+  manual invocation) → derive once, and on failure drop the flag so the payload
+  records `changed_files_status: "unavailable"`.
 - `--agent-model <alias>` (optional, claude-harness-work#47) — tier alias
   (`haiku`/`sonnet`/`opus`) for the **validator agent** (the judgment
   subagent). The producer reads it from `[merge-gate.local.validator] model`
@@ -51,14 +69,25 @@ fallback artifacts (via `scripts/aggregate.py write-fallback`) and
 return success. The merge-gate's `verify` step is the sole authoritative
 gate (ADR-0005; composition — ADR-0011).
 
+## Names here are historical
+
+`run-codex-validators`, `codex-review-validator`, and the payload's `codex_json`
+key all date from when Codex was the only reviewer. Reviewers have been a **set**
+since ADR-0010 (`codex` + `claude` + custom), and this runtime is reviewer-neutral
+— it validates whatever reviewer's findings it is handed, named by `--reviewer`.
+The names are kept deliberately: renaming touches 12 real references across the
+skill, agent, producer, three test suites, the keel mirror and its `.allowlist`,
+and the producer composes the slash-command name as a string. Treat every `codex`
+in an identifier here as "the reviewer", not "Codex" (claude-harness-work#57).
+
 ## Adapter table — the silent bug killer
 
-Codex emits findings at `.result.findings[]` with a `line_start` field.
+The reviewer emits findings at `.result.findings[]` with a `line_start` field.
 The validator agent's `<input>` block (see
 `~/.claude/agents/codex-review-validator.md`) expects `.codex_json.findings[].line`.
 Map per this table — `scripts/aggregate.py build-input` implements it:
 
-| Codex `.result.findings[]` | Validator `<input>.codex_json.findings[]` | Notes |
+| Reviewer `.result.findings[]` | Validator `<input>.codex_json.findings[]` | Notes |
 |---|---|---|
 | `id`            | `id`            | pass-through |
 | `severity`      | `severity`      | pass-through (`critical|high|medium|low`) |
@@ -68,6 +97,8 @@ Map per this table — `scripts/aggregate.py build-input` implements it:
 | `body`          | `body`          | pass-through |
 | `suggested_fix` | `suggested_fix` | pass-through (optional) |
 | `line_end`      | *(dropped)*     | validator only reads `line` |
+| *(`--reviewer` arg)* | `reviewer`  | **added** (#57) — which reviewer produced these findings; omitted when unsupplied, and the agent then assumes no provenance |
+| *(the whole envelope)* | `codex_json` | **historical name** — holds an arbitrary reviewer's findings, not necessarily Codex's. Kept for schema compatibility; do NOT rename |
 
 `project_refs` is hardcoded to the validator agent's documented defaults
 (`AGENTS.md`, `docs/adr/*.md`, `CONTEXT-MAP.md`, `src/*/CONTEXT.md`).
@@ -168,10 +199,12 @@ ADR-0021.) Below, `$AGG` stands for that resolved path;
 1. **Parse arguments.** Extract `--codex-json` (default
    `./codex-review.json`), `--soft-mode`, `--out-dir` (default
    `.merge-gate` → call it `$OUT_DIR`), the optional `--intent-from`
-   (call it `$INTENT_FROM`, unset if absent), and the optional
-   `--agent-model` (call it `$AGENT_MODEL`, unset if absent) from the
-   slash-command invocation. If `--soft-mode` is missing or not
-   `true|false`, run
+   (call it `$INTENT_FROM`, unset if absent), the optional
+   `--changed-files-from` (call it `$CHANGED_FILES_FROM`, unset if absent),
+   the optional `--reviewer` (call it `$REVIEWER`, unset if absent), and
+   the optional `--agent-model` (call it `$AGENT_MODEL`, unset if
+   absent) from the slash-command invocation. If `--soft-mode` is missing
+   or not `true|false`, run
    `python3 "$AGG" write-fallback --reason "soft-mode flag missing or invalid" --out-dir "$OUT_DIR"`
    and return.
 
@@ -181,36 +214,67 @@ ADR-0021.) Below, `$AGG` stands for that resolved path;
    (`"codex JSON missing at <path>"` or `"codex JSON failed to parse"`),
    then return.
 
-3. **Derive `changed_files`.** Pick a base ref:
-   `${BASE_REF:-${GITHUB_BASE_REF:-main}}`. Write
-   `git diff --name-only "origin/${BASE_REF}"` (with `2>/dev/null`) to a
-   `mktemp` file. On error or empty remote, write an empty file and log
-   one stderr line — never abort.
+3. **Resolve `changed_files` — do NOT re-derive it when the caller gave you
+   one.** Run this block verbatim:
 
-4. **Build validator input.** Run
-   `python3 "$AGG" build-input --codex-json "$CODEX_JSON" --issue-ref "$ISSUE_REF" --changed-files-from "$CHANGED_FILES_TMP" > "$INPUT_TMP"`.
-   Derive `$ISSUE_REF` from env: prefer
-   `PR #${GITHUB_PR_NUMBER}` if set; else
-   `branch ${GITHUB_HEAD_REF:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)}`.
-   **If `$INTENT_FROM` was passed**, append
-   `--durable-context-from "$INTENT_FROM"` to the `build-input` call so the
-   validator receives the durable intent (D11). When absent, omit it — the
-   payload then has no `durable_context` key.
+   ```bash
+   if [ -n "$CHANGED_FILES_FROM" ]; then
+     # The producer passed the AUTHORITATIVE list (claude-harness-work#55).
+     # Do NOT run git diff. Do NOT second-guess it, even if it looks empty.
+     CF_ARG="--changed-files-from $CHANGED_FILES_FROM"
+   else
+     # Manual run only. Derive once; if it fails, DROP THE FLAG (never write an
+     # empty file) so build-input records changed_files_status=unavailable.
+     CHANGED_FILES_TMP="$(mktemp)"
+     BASE_REF="${BASE_REF:-${GITHUB_BASE_REF:-main}}"
+     if git diff --name-only "origin/${BASE_REF}" > "$CHANGED_FILES_TMP" 2>/dev/null; then
+       CF_ARG="--changed-files-from $CHANGED_FILES_TMP"
+     else
+       CF_ARG=""
+       echo "run-codex-validators: could not derive changed_files from origin/${BASE_REF}" >&2
+     fi
+   fi
+   ```
+
+   Never abort on a derivation failure — an empty `CF_ARG` is a valid outcome
+   and the payload will say so.
+
+4. **Build validator input.** Run this block verbatim:
+
+   ```bash
+   INPUT_TMP="$(mktemp)"
+   ISSUE_REF="${GITHUB_PR_NUMBER:+PR #${GITHUB_PR_NUMBER}}"
+   ISSUE_REF="${ISSUE_REF:-branch ${GITHUB_HEAD_REF:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)}}"
+   python3 "$AGG" build-input \
+     --codex-json "$CODEX_JSON" \
+     --issue-ref  "$ISSUE_REF" \
+     ${REVIEWER:+--reviewer "$REVIEWER"} \
+     ${INTENT_FROM:+--durable-context-from "$INTENT_FROM"} \
+     $CF_ARG > "$INPUT_TMP"
+   ```
+
+   The `${VAR:+…}` expansions are how an absent `--reviewer` / `--intent-from`
+   becomes an omitted `reviewer` / `durable_context` key — do not substitute a
+   placeholder value for either.
 
 5. **Dispatch the validator subagent.** Use the Agent tool with
-   `subagent_type: codex-review-validator` and pass the contents of
-   `$INPUT_TMP` (the JSON payload) as the agent prompt body. **If
-   `$AGENT_MODEL` is set**, also pass it as the Agent tool's `model`
-   parameter; when unset, omit the parameter so the agent definition's
-   frontmatter default applies (#47). The subagent runs in its own
-   context window per PRD design intent. Capture its full response
-   into `$VALIDATOR_OUT_TMP`.
+   `subagent_type: codex-review-validator`. **Read `$INPUT_TMP` and pass its
+   CONTENTS inline as the agent prompt body** — never pass the path. (A path
+   makes the payload the subagent's problem to fetch, and fixed-name temp files
+   collide between concurrent produces.) **If `$AGENT_MODEL` is set**, also pass
+   it as the Agent tool's `model` parameter; when unset, omit the parameter so
+   the agent definition's frontmatter default applies (#47). The subagent runs
+   in its own context window per PRD design intent. Write its full response to
+   `$VALIDATOR_OUT_TMP` (`mktemp`).
 
 6. **Write outputs.** Run
    `python3 "$AGG" write-outputs --codex-json "$CODEX_JSON" --validator-output "$VALIDATOR_OUT_TMP" --soft-mode "$SOFT_MODE" --out-dir "$OUT_DIR"`.
 
-7. **Report and return.** Print one line confirming the two output files
-   exist. Do not return non-zero.
+7. **Report and return.** Print **at most two lines** naming the two output
+   files. No markdown report, no severity table, no summary of the verdicts, no
+   restatement of what you did — the artefacts ARE the output and the merge-gate
+   reads them from disk. Nothing you write here is read by anything
+   (claude-harness-work#56). Do not return non-zero.
 
 ## Error handling
 
@@ -226,13 +290,14 @@ python3 "$AGG" write-fallback \
 then return success. The merge-gate's `verify` step handles the rest.
 
 The fallback writes `validators.json` with `aggregate: []` and a non-empty
-`fallback: "<reason>"` key. The merge-gate's `verify` step
-(`merge_gate_local.py`) is the sole gate decision-maker and inspects both:
-under blocking enforcement it fails closed when `.fallback` is non-empty
-AND the normalized Codex payload reports critical/high findings
-(claude-harness-work#24). The runtime's "always exit 0" contract is
-preserved — do NOT change `write-fallback` to embed Codex findings into
-`aggregate[]`; the gate already has the information it needs to decide.
+`fallback: "<reason>"` key. The merge-gate is the sole gate decision-maker, and
+an empty `aggregate[]` is all it needs: `build_summary`'s F2 fail-safe gives
+every finding with no aggregate entry a `unsure` verdict, which blocks at
+critical/high under blocking enforcement (claude-harness-work#24), and records
+`validator_ran: false` so the archive can tell that fail-safe from a real
+verdict (#58). The runtime's "always exit 0" contract is preserved — do NOT
+change `write-fallback` to embed findings into `aggregate[]`; the gate already
+has the information it needs to decide.
 
 ## What this skill must not do
 

@@ -498,7 +498,7 @@ def make_fake_reviewer(findings_by_name):
     return runner
 
 
-def fake_validator_uphold_all(name, findings_json, sub_dir, cwd, intent_file, cfg=None):
+def fake_validator_uphold_all(name, findings_json, sub_dir, cwd, intent_file, cfg=None, **_kw):
     """Validator stand-in: reads the namespaced findings.json, upholds every
     finding, blocks crit/high — what /run-codex-validators would write."""
     doc = json.loads(Path(findings_json).read_text())
@@ -513,7 +513,7 @@ def fake_validator_uphold_all(name, findings_json, sub_dir, cwd, intent_file, cf
     return vj
 
 
-def fake_validator_dismiss_all(name, findings_json, sub_dir, cwd, intent_file, cfg=None):
+def fake_validator_dismiss_all(name, findings_json, sub_dir, cwd, intent_file, cfg=None, **_kw):
     """Validator stand-in that DISMISSES every finding (even critical). A genuine
     validator dismiss must un-block — the block decision is
     (severity in blocking) AND (verdict in uphold/unsure), so dismiss → no block."""
@@ -527,6 +527,15 @@ def fake_validator_dismiss_all(name, findings_json, sub_dir, cwd, intent_file, c
     Path(sub_dir, "validators.json").write_text(json.dumps(vj))
     Path(sub_dir, "validators.md").write_text("# validator\n")
     return vj
+
+
+# A findings.json payload with ONE finding. Tests that pin the validator
+# DISPATCH contract (cmd/env/timeout/flags) need the dispatcher to actually
+# run, and since #56 a 0-findings payload short-circuits it away — so they
+# seed one finding rather than an empty list.
+_DISPATCH_FIXTURE = {"result": {"findings": [
+    {"id": "f1", "severity": "high", "file": "a.py", "line_start": 1,
+     "title": "t", "body": "b"}]}}
 
 
 def _finding(sev, file="a.py", line=1):
@@ -748,7 +757,7 @@ def _verify_ns(root, *, base_sha=None, tip_sha=None, base_ref=None, enforcement=
     return ns
 
 
-def fake_validator_none(name, findings_json, sub_dir, cwd, intent_file, cfg=None):
+def fake_validator_none(name, findings_json, sub_dir, cwd, intent_file, cfg=None, **_kw):
     """Validator stand-in for a WHOLESALE failure: writes nothing and returns
     None (default_validator_runner's failure path). The wrapper must then treat
     every finding as fail-safe unsure (Finding 2), not silently un-block."""
@@ -1533,7 +1542,7 @@ class TestC1StaleValidatorArtifact(ProduceFixture):
     def test_c1_failed_rerun_ignores_stale_and_unlinks(self):
         sub = self._sub_dir()
         findings_json = sub / "findings.json"
-        findings_json.write_text(json.dumps({"result": {"findings": []}}))
+        findings_json.write_text(json.dumps(_DISPATCH_FIXTURE))
         # Seed a STALE artefact from a "prior run" (an all-dismiss aggregate that,
         # if trusted, would silently un-block).
         stale = sub / "validators.json"
@@ -1565,7 +1574,7 @@ class TestC1StaleValidatorArtifact(ProduceFixture):
         # Pre-rc-check (or if the rc-check block were removed): returns the dict.
         sub = self._sub_dir()
         findings_json = sub / "findings.json"
-        findings_json.write_text(json.dumps({"result": {"findings": []}}))
+        findings_json.write_text(json.dumps(_DISPATCH_FIXTURE))
         written = {"validators": [],
                    "aggregate": [{"finding_id": "codex:finding-0",
                                   "severity": "critical", "verdict": "dismiss"}]}
@@ -1585,7 +1594,7 @@ class TestC1StaleValidatorArtifact(ProduceFixture):
     def test_c1_successful_run_returns_fresh(self):
         sub = self._sub_dir()
         findings_json = sub / "findings.json"
-        findings_json.write_text(json.dumps({"result": {"findings": []}}))
+        findings_json.write_text(json.dumps(_DISPATCH_FIXTURE))
         fresh = {"validators": [{"name": "claude", "lines": []}],
                  "aggregate": [{"finding_id": "codex:finding-0",
                                 "severity": "high", "verdict": "uphold"}]}
@@ -2313,7 +2322,7 @@ class TestM3ValidatorInvocationContract(ProduceFixture):
         sub = self.root / ".merge-gate" / "local" / "t" / "codex"
         sub.mkdir(parents=True, exist_ok=True)
         findings_json = sub / "findings.json"
-        findings_json.write_text(json.dumps({"result": {"findings": []}}))
+        findings_json.write_text(json.dumps(_DISPATCH_FIXTURE))
         intent = self.root / ".intent.txt"
         intent.write_text("ctx", encoding="utf-8")
         rec = {}
@@ -2351,7 +2360,7 @@ class TestM3ValidatorInvocationContract(ProduceFixture):
         sub = self.root / ".merge-gate" / "local" / "t" / "codex"
         sub.mkdir(parents=True, exist_ok=True)
         findings_json = sub / "findings.json"
-        findings_json.write_text(json.dumps({"result": {"findings": []}}))
+        findings_json.write_text(json.dumps(_DISPATCH_FIXTURE))
         rec = {}
 
         def fake_run(cmd, **kw):
@@ -2391,7 +2400,7 @@ class TestM3ValidatorInvocationContract(ProduceFixture):
         sub = self.root / ".merge-gate" / "local" / "t" / "codex"
         sub.mkdir(parents=True, exist_ok=True)
         findings_json = sub / "findings.json"
-        findings_json.write_text(json.dumps({"result": {"findings": []}}))
+        findings_json.write_text(json.dumps(_DISPATCH_FIXTURE))
         rec = {}
 
         def fake_run(cmd, **kw):
@@ -2414,7 +2423,7 @@ class TestM3ValidatorInvocationContract(ProduceFixture):
         sub = self.root / ".merge-gate" / "local" / "t" / "codex"
         sub.mkdir(parents=True, exist_ok=True)
         findings_json = sub / "findings.json"
-        findings_json.write_text(json.dumps({"result": {"findings": []}}))
+        findings_json.write_text(json.dumps(_DISPATCH_FIXTURE))
 
         def fake_run(cmd, **kw):
             raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
@@ -2426,6 +2435,510 @@ class TestM3ValidatorInvocationContract(ProduceFixture):
         finally:
             mg._run_reaped = orig
         self.assertIsNone(out)
+
+
+# --------------------------------------------------------------------------
+# #55 — the judge was going in blind. The skill derived `changed_files` itself
+# as `git diff origin/${BASE_REF:-main}`, which the producer never sets, so the
+# list came out EMPTY on any repo whose default branch is not `main` (claude-
+# config is `master`: 44/46 measured runs empty) and on every post-push run
+# where origin/main had collapsed onto the tip. produce already holds the
+# authoritative list; it now hands it over instead.
+#
+# These are the PRODUCER-SIDE half of the regression. The SKILL-SIDE half
+# (that the handed-over file becomes a non-empty payload `changed_files` with
+# `changed_files_status: "resolved"`) lives in the run-codex-validators
+# test_aggregate.py::TestChangedFilesStatus — the payload is assembled by an
+# LLM-driven skill, so no one test can span both seams.
+# --------------------------------------------------------------------------
+class TestF55ChangedFilesHandover(ProduceFixture):
+
+    def _capture_produce(self, cfg, base, cd):
+        """Run produce with the REAL default_validator_runner but the headless
+        `claude -p` mocked out, and return the composed slash command."""
+        rec = {}
+
+        def fake_run(cmd, **kw):
+            rec["slash"] = cmd[2]
+            out_dir = Path(cmd[2].split("--out-dir ", 1)[1].split()[0])
+            (out_dir / "validators.json").write_text(
+                json.dumps({"validators": [], "aggregate": []}))
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            mg.produce(self.root, cfg, base, cd,
+                       reviewer_runner=make_fake_reviewer({"codex": [_finding("high")]}))
+        finally:
+            mg._run_reaped = orig
+        return rec["slash"]
+
+    def _assert_list_handed_over(self, cfg, base, cd):
+        slash = self._capture_produce(cfg, base, cd)
+        self.assertIn("--changed-files-from ", slash)
+        cf = Path(slash.split("--changed-files-from ", 1)[1].split()[0])
+        handed = [ln for ln in cf.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        # The exact list the gate keyed its tuple on — authoritative by
+        # construction, and (this is the whole bug) NOT empty.
+        self.assertEqual(handed, cd["changed_files"])
+        self.assertTrue(handed, "changed_files handed to the judge must not be empty")
+        return handed
+
+    def test_master_branch_repo_still_hands_over_a_list(self):
+        """The exact path that produced this issue: default branch `master`, so
+        the skill's own `git diff origin/main` could never resolve."""
+        self.repo.git("branch", "-m", "master")
+        cfg = self._cfg(reviewers=["codex"])
+        base, cd = self._cd(cfg)
+        self.assertEqual(
+            self.repo.git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip(), "master")
+        self._assert_list_handed_over(cfg, base, cd)
+
+    def test_base_collapse_still_hands_over_a_list(self):
+        """Post-push: origin/main has collapsed onto the tip, so the skill's own
+        `git diff origin/main` yields nothing (the #51/#39 base-collapse family,
+        hitting a different repair surface — payload assembly)."""
+        cfg = self._cfg(reviewers=["codex"])
+        base, cd = self._cd(cfg)
+        self.repo.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.assertEqual(self.repo.git("diff", "--name-only", "origin/main").stdout.strip(), "")
+        self._assert_list_handed_over(cfg, base, cd)
+
+    def test_direct_call_without_list_omits_the_flag(self):
+        """Manual path (no caller list): the flag is absent, so build-input
+        records `unavailable` rather than an indistinguishable empty list."""
+        sub = self.root / ".merge-gate" / "local" / "t" / "codex"
+        sub.mkdir(parents=True, exist_ok=True)
+        findings_json = sub / "findings.json"
+        findings_json.write_text(json.dumps(_DISPATCH_FIXTURE))
+        rec = {}
+
+        def fake_run(cmd, **kw):
+            rec["slash"] = cmd[2]
+            (sub / "validators.json").write_text(json.dumps({"aggregate": []}))
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            mg.default_validator_runner("codex", findings_json, sub, self.root, None)
+        finally:
+            mg._run_reaped = orig
+        self.assertNotIn("--changed-files-from", rec["slash"])
+        self.assertFalse((sub / "changed-files.txt").exists())
+
+    def test_stale_changed_files_is_cleared(self):
+        """C1 parity: a leftover list from a prior produce of the same tuple must
+        never be handed to a NEW run's judge."""
+        sub = self.root / ".merge-gate" / "local" / "t" / "codex"
+        sub.mkdir(parents=True, exist_ok=True)
+        (sub / "changed-files.txt").write_text("stale/from/last/run.py\n")
+        findings_json = sub / "findings.json"
+        findings_json.write_text(json.dumps(_DISPATCH_FIXTURE))
+
+        def fake_run(cmd, **kw):
+            (sub / "validators.json").write_text(json.dumps({"aggregate": []}))
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            mg.default_validator_runner("codex", findings_json, sub, self.root, None)
+        finally:
+            mg._run_reaped = orig
+        self.assertFalse((sub / "changed-files.txt").exists())
+
+
+# --------------------------------------------------------------------------
+# #57 — the judge believed every lane was Codex. ADR-0010 widened reviewers to a
+# SET, but the payload carried no provenance field and the agent's own <role>
+# asserted "Codex produces the findings … blind to this project's local
+# conventions" — a premise that is false, and BACKWARDS, for the claude lane
+# (which reads the repo's AGENTS.md). 57/226 measured runs were claude-lane.
+# The producer now names the reviewer; the agent asserts nothing about it.
+# --------------------------------------------------------------------------
+class TestF57ReviewerProvenance(ProduceFixture):
+
+    def _slash_for(self, reviewer_name):
+        sub = self.root / ".merge-gate" / "local" / "t" / reviewer_name
+        sub.mkdir(parents=True, exist_ok=True)
+        findings_json = sub / "findings.json"
+        findings_json.write_text(json.dumps(_DISPATCH_FIXTURE))
+        rec = {}
+
+        def fake_run(cmd, **kw):
+            rec["slash"] = cmd[2]
+            (sub / "validators.json").write_text(json.dumps({"aggregate": []}))
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            mg.default_validator_runner(reviewer_name, findings_json, sub, self.root, None)
+        finally:
+            mg._run_reaped = orig
+        return rec["slash"]
+
+    def test_codex_lane_names_itself(self):
+        self.assertIn("--reviewer codex", self._slash_for("codex"))
+
+    def test_claude_lane_names_itself_not_codex(self):
+        slash = self._slash_for("claude")
+        self.assertIn("--reviewer claude", slash)
+        self.assertNotIn("--reviewer codex", slash)
+
+    def test_custom_reviewer_name_rides_through(self):
+        self.assertIn("--reviewer gemini", self._slash_for("gemini"))
+
+    def test_every_reviewer_in_a_two_lane_produce_is_named(self):
+        """End-to-end through produce: each lane's dispatch names ITS OWN
+        reviewer, so a two-reviewer set can never cross-attribute."""
+        cfg = self._cfg(reviewers=["codex", "claude"],
+                        reviewer_config={"codex": {"bin": "codex"},
+                                         "claude": {"bin": "claude"}})
+        base, cd = self._cd(cfg)
+        seen = []
+
+        def two_lane_runner(name, cfg_, cd_, sub_dir, cwd, user_focus):
+            # each lane must emit ITS OWN envelope — the Claude adapter cannot
+            # read Codex JSONL, and since #56 a lane that normalizes to zero
+            # findings correctly skips its dispatch entirely.
+            if name == "claude":
+                return _claude_envelope(_review_payload([_finding("low")])), 0
+            return _agent_msg_jsonl([_finding("high")]), 0
+
+        def fake_run(cmd, **kw):
+            slash = cmd[2]
+            out_dir = Path(slash.split("--out-dir ", 1)[1].split()[0])
+            seen.append((out_dir.name, slash.split("--reviewer ", 1)[1].split()[0]))
+            (out_dir / "validators.json").write_text(
+                json.dumps({"validators": [], "aggregate": []}))
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            mg.produce(self.root, cfg, base, cd, reviewer_runner=two_lane_runner)
+        finally:
+            mg._run_reaped = orig
+        self.assertEqual(seen, [("codex", "codex"), ("claude", "claude")])
+
+
+# --------------------------------------------------------------------------
+# #56 — the plumbing cost 2.5x the judgment. The dispatcher ran unconditionally,
+# so 60/226 measured runs (0 findings, or the reviewer failed outright) spawned a
+# full headless session whose only possible output was an empty aggregate —
+# 32.2M cache_read + 799k output for nothing. Short-circuit, but still WRITE the
+# artefact: downstream consumers read the file, and its absence is exactly the
+# condition that makes build_summary F2 blanket over-block.
+# --------------------------------------------------------------------------
+class TestF56ZeroFindingsShortCircuit(ProduceFixture):
+
+    def _run(self, findings, *, reviewer="codex"):
+        sub = self.root / ".merge-gate" / "local" / "t" / reviewer
+        sub.mkdir(parents=True, exist_ok=True)
+        fj = sub / "findings.json"
+        fj.write_text(json.dumps({"result": {"findings": findings}}))
+        spawned = []
+
+        def fake_run(cmd, **kw):
+            spawned.append(cmd)
+            (sub / "validators.json").write_text(json.dumps({"aggregate": []}))
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            out = mg.default_validator_runner(reviewer, fj, sub, self.root, None)
+        finally:
+            mg._run_reaped = orig
+        return out, spawned, sub
+
+    def test_zero_findings_does_not_spawn_the_dispatcher(self):
+        out, spawned, sub = self._run([])
+        self.assertEqual(spawned, [], "no findings → no headless session")
+        self.assertTrue((sub / "validators.json").exists())
+        self.assertTrue((sub / "validators.md").exists())
+        self.assertIsNotNone(out)
+
+    def test_short_circuit_artefact_shape(self):
+        """List-shaped, empty aggregate, and NO `fallback` key — a fallback means
+        the validator layer failed, which is not what happened here."""
+        _, _, sub = self._run([])
+        data = json.loads((sub / "validators.json").read_text())
+        self.assertEqual(data["aggregate"], [])
+        self.assertIsInstance(data["validators"], list)
+        self.assertNotIn("fallback", data)
+
+    def test_findings_present_still_spawns(self):
+        _, spawned, _ = self._run([{"id": "f1", "severity": "high"}])
+        self.assertEqual(len(spawned), 1)
+
+    def test_unparsable_findings_file_still_spawns(self):
+        """An unreadable / off-shape payload must NOT be read as "zero findings"
+        — that would silently skip judgment on a real critical."""
+        sub = self.root / ".merge-gate" / "local" / "t" / "codex"
+        sub.mkdir(parents=True, exist_ok=True)
+        for bad in ("not json at all", json.dumps({"no_result": 1})):
+            fj = sub / "findings.json"
+            fj.write_text(bad)
+            spawned = []
+
+            def fake_run(cmd, **kw):
+                spawned.append(cmd)
+                (sub / "validators.json").write_text(json.dumps({"aggregate": []}))
+                return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+            orig = mg._run_reaped
+            try:
+                mg._run_reaped = fake_run
+                mg.default_validator_runner("codex", fj, sub, self.root, None)
+            finally:
+                mg._run_reaped = orig
+            self.assertEqual(len(spawned), 1, f"must not short-circuit on: {bad!r}")
+
+    def test_gate_arithmetic_is_unchanged_by_the_short_circuit(self):
+        """The whole point: the saving must not move the gate. A 0-findings
+        produce through the REAL runner (dispatcher mocked, but never called)
+        must yield the same verdict/block_count as the injected-fake path that
+        always "ran" the validator."""
+        cfg = self._cfg(reviewers=["codex"])
+        base, cd = self._cd(cfg)
+
+        def fail_if_called(cmd, **kw):
+            raise AssertionError("dispatcher must not be spawned for 0 findings")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fail_if_called
+            live = mg.produce(self.root, cfg, base, cd, force=True,
+                              reviewer_runner=make_fake_reviewer({"codex": []}))
+        finally:
+            mg._run_reaped = orig
+        baseline = mg.produce(self.root, cfg, base, cd, force=True,
+                              reviewer_runner=make_fake_reviewer({"codex": []}),
+                              validator_runner=fake_validator_uphold_all)
+        for key in ("verdict", "block_count", "reviewer_failures", "findings"):
+            self.assertEqual(live[key], baseline[key], key)
+        self.assertEqual(live["verdict"], "pass")
+        self.assertEqual(live["block_count"], 0)
+
+    def test_failed_reviewer_short_circuits_but_still_verdicts_error(self):
+        """A reviewer that FAILED also normalizes to zero findings, so it now
+        skips its dispatch too — that is most of the 60/226 waste. The F3
+        fail-safe must still refuse to call that a pass: no reviewer output
+        means no review happened, whatever the validator did or didn't do."""
+        cfg = self._cfg(reviewers=["codex"])
+        base, cd = self._cd(cfg)
+
+        def dead_reviewer(name, cfg_, cd_, sub_dir, cwd, user_focus):
+            return "", 1  # non-zero exit, no payload
+
+        spawned = []
+
+        def fake_run(cmd, **kw):
+            spawned.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            summary = mg.produce(self.root, cfg, base, cd, force=True,
+                                 reviewer_runner=dead_reviewer)
+        finally:
+            mg._run_reaped = orig
+        self.assertEqual(spawned, [], "a dead reviewer must not cost a dispatch")
+        self.assertEqual(summary["verdict"], "error")
+        self.assertEqual(summary["reviewer_failures"], ["codex"])
+
+    def test_every_validators_json_consumer_survives_the_empty_artefact(self):
+        """#56 AC — enumerate the consumers and prove the empty artefact is
+        benign. They all funnel through read_citations(): locate_citations,
+        append_findings_archive, and _join_findings (cmd_findings). NOTE:
+        `verify` is NOT a consumer — it reads summary.json only."""
+        cfg = self._cfg(reviewers=["codex"])
+        base, cd = self._cd(cfg)
+
+        def fail_if_called(cmd, **kw):
+            raise AssertionError("dispatcher must not be spawned for 0 findings")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fail_if_called
+            summary = mg.produce(self.root, cfg, base, cd, force=True,
+                                 reviewer_runner=make_fake_reviewer({"codex": []}))
+        finally:
+            mg._run_reaped = orig
+        artifact_root = self.root / cfg.artifact_root
+        tdir = mg.tuple_dir(artifact_root, base, cd["diff_hash"])
+
+        self.assertEqual(mg.read_citations(tdir), {})
+        self.assertEqual(mg.locate_citations(self.root, base, cd["diff_hash"]), {})
+        self.assertEqual(mg._join_findings(summary, tdir), [])
+        summary["head_sha"] = "deadbeef"
+        mg.append_findings_archive(artifact_root, tdir, summary)
+        log = mg.findings_log_path(artifact_root)
+        self.assertTrue(log.exists())
+        self.assertIn("(no findings)", log.read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------
+# #58 — two things the artefact lied about. (1) `--soft-mode` was hardcoded
+# `false`, so validators.md announced "HARD (blocking)" on every one of 226 runs
+# including repos whose enforcement_policy is `advisory` and where advisory is
+# the END state (ADR-0021). (2) A validator that never ran was recorded as an
+# `unsure` VERDICT, so no consumer could tell "the judge could not decide" from
+# "the judge was killed by a usage limit" (14/226). The gate arithmetic is
+# deliberately untouched — this is observation only.
+# --------------------------------------------------------------------------
+class TestF58SoftModeAndValidatorAbsence(ProduceFixture):
+
+    def _slash(self, cfg=None):
+        sub = self.root / ".merge-gate" / "local" / "t" / "codex"
+        sub.mkdir(parents=True, exist_ok=True)
+        fj = sub / "findings.json"
+        fj.write_text(json.dumps(_DISPATCH_FIXTURE))
+        rec = {}
+
+        def fake_run(cmd, **kw):
+            rec["slash"] = cmd[2]
+            (sub / "validators.json").write_text(json.dumps({"aggregate": []}))
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            mg.default_validator_runner("codex", fj, sub, self.root, None, cfg)
+        finally:
+            mg._run_reaped = orig
+        return rec["slash"]
+
+    def test_advisory_repo_reports_soft(self):
+        self.assertIn("--soft-mode true",
+                      self._slash(self._cfg(enforcement_policy="advisory")))
+
+    def test_blocking_repo_reports_hard(self):
+        self.assertIn("--soft-mode false",
+                      self._slash(self._cfg(enforcement_policy="client-side-blocking")))
+
+    def test_no_cfg_keeps_the_legacy_literal(self):
+        self.assertIn("--soft-mode false", self._slash(None))
+
+    def test_aggregate_renders_soft_mode_line(self):
+        """The other half: `--soft-mode true` must actually surface as
+        "SOFT (report-only)" in the human-readable artefact."""
+        agg = (Path(mg.__file__).resolve().parent.parent / "skills"
+               / "run-codex-validators" / "scripts" / "aggregate.py")
+        self.assertTrue(agg.exists(), agg)
+        out_dir = self.root / "vout"
+        cj = self.root / "cj.json"
+        cj.write_text(json.dumps({"result": {"findings": []}}))
+        vo = self.root / "vo.txt"
+        vo.write_text("")
+        for soft, expect in (("true", "SOFT (report-only"), ("false", "HARD (blocking")):
+            subprocess.run(["python3", str(agg), "write-outputs",
+                            "--codex-json", str(cj), "--validator-output", str(vo),
+                            "--soft-mode", soft, "--out-dir", str(out_dir)],
+                           check=True, capture_output=True, timeout=30)
+            self.assertIn(expect, (out_dir / "validators.md").read_text(encoding="utf-8"))
+
+    # -- validator absence: observation added, arithmetic frozen --------------
+
+    def _produce(self, validator_runner):
+        cfg = self._cfg(reviewers=["codex"])
+        base, cd = self._cd(cfg)
+        return mg.produce(self.root, cfg, base, cd, force=True,
+                          reviewer_runner=make_fake_reviewer({"codex": [_finding("high")]}),
+                          validator_runner=validator_runner)
+
+    def test_validator_ran_true_when_judged(self):
+        s = self._produce(fake_validator_uphold_all)
+        self.assertTrue(all(f["validator_ran"] for f in s["findings"]))
+
+    def test_validator_ran_false_when_absent(self):
+        s = self._produce(fake_validator_none)
+        self.assertEqual([f["validator_ran"] for f in s["findings"]], [False])
+        # the fail-safe verdict itself is unchanged — `unsure`, not a 4th value
+        self.assertEqual([f["validator_verdict"] for f in s["findings"]], ["unsure"])
+
+    def test_absence_does_not_move_the_gate(self):
+        """The whole safety claim: adding observation must leave block /
+        block_count / verdict byte-identical to before. Compare the summary with
+        ONLY the new keys removed — anything else that moved is a regression."""
+        absent = self._produce(fake_validator_none)
+        self.assertEqual(absent["verdict"], "block")
+        self.assertEqual(absent["block_count"], 1)
+        self.assertTrue(absent["findings"][0]["block"])
+        # every pre-#58 field of the finding row is untouched
+        row = dict(absent["findings"][0])
+        row.pop("validator_ran")
+        self.assertEqual(set(row), {
+            "id", "producing_reviewers", "file", "line_start", "severity",
+            "validator_verdict", "block", "concordance_count",
+            "confidence_score", "reviewer_confidence"})
+
+    def test_validator_status_records_why(self):
+        cfg = self._cfg(reviewers=["codex"])
+        base, cd = self._cd(cfg)
+
+        def timing_out(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = timing_out
+            s = mg.produce(self.root, cfg, base, cd, force=True,
+                           reviewer_runner=make_fake_reviewer({"codex": [_finding("high")]}))
+        finally:
+            mg._run_reaped = orig
+        self.assertEqual(s["per_reviewer_timings"][0]["validator_status"], "timeout")
+        # ...and the block it caused is still there, just now attributable
+        self.assertEqual(s["verdict"], "block")
+        self.assertFalse(s["findings"][0]["validator_ran"])
+
+    def test_validator_status_ok_and_skipped(self):
+        cfg = self._cfg(reviewers=["codex"])
+        base, cd = self._cd(cfg)
+
+        def good(cmd, **kw):
+            out_dir = Path(cmd[2].split("--out-dir ", 1)[1].split()[0])
+            (out_dir / "validators.json").write_text(json.dumps(
+                {"validators": [], "aggregate": [
+                    {"finding_id": "codex:finding-0", "severity": "high",
+                     "verdict": "uphold", "block": True}]}))
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = good
+            judged = mg.produce(self.root, cfg, base, cd, force=True,
+                                reviewer_runner=make_fake_reviewer({"codex": [_finding("high")]}))
+            skipped = mg.produce(self.root, cfg, base, cd, force=True,
+                                 reviewer_runner=make_fake_reviewer({"codex": []}))
+        finally:
+            mg._run_reaped = orig
+        self.assertEqual(judged["per_reviewer_timings"][0]["validator_status"], "ok")
+        self.assertTrue(judged["findings"][0]["validator_ran"])
+        self.assertEqual(skipped["per_reviewer_timings"][0]["validator_status"],
+                         "skipped-no-findings")
+
+    def test_unjudged_rows_are_humanly_distinguishable(self):
+        """AC: a human (and /handle-merge-findings) must be able to tell an
+        unjudged row from an undecided one — in the archive and in the read."""
+        cfg = self._cfg(reviewers=["codex"])
+        base, cd = self._cd(cfg)
+        summary = mg.produce(self.root, cfg, base, cd, force=True,
+                             reviewer_runner=make_fake_reviewer({"codex": [_finding("high")]}),
+                             validator_runner=fake_validator_none)
+        artifact_root = self.root / cfg.artifact_root
+        tdir = mg.tuple_dir(artifact_root, base, cd["diff_hash"])
+        summary["head_sha"] = "deadbeef"
+        mg.append_findings_archive(artifact_root, tdir, summary)
+        self.assertIn("(not-run) unsure",
+                      mg.findings_log_path(artifact_root).read_text(encoding="utf-8"))
+        # the json read carries the flag through to the consumer skill
+        self.assertFalse(mg._join_findings(summary, tdir)[0]["validator_ran"])
 
 
 # --------------------------------------------------------------------------
@@ -2612,7 +3125,7 @@ class TestNormalizeClaude(unittest.TestCase):
         self.assertEqual(mg._reviewer_model("claude", env), "claude-opus-4-8[1m]")
 
 
-def fake_validator_uphold_no_severity(name, findings_json, sub_dir, cwd, intent_file, cfg=None):
+def fake_validator_uphold_no_severity(name, findings_json, sub_dir, cwd, intent_file, cfg=None, **_kw):
     """A validator that UPHOLDS every finding but cannot determine severity (the
     finding omitted it, as a soft-schema Claude reviewer can) — so its aggregate
     entry carries NO severity. build_summary must then treat the finding as
@@ -2815,10 +3328,14 @@ class TestClaudeReviewerRecursionGuard(ProduceFixture):
         self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "dontAsk")
         self.assertNotIn("bypassPermissions", cmd)
         self.assertIn("--disallowedTools", cmd)   # defense-in-depth layer present
-        # --json-schema carries INLINE schema CONTENT, not a file path (AC#2).
+        # --json-schema carries INLINE schema CONTENT, not a file path (AC#2) —
+        # minus the `$schema` meta declaration, which the CLI's validator rejects
+        # (#53; see TestClaudeSchemaArgStripsSchemaMeta).
         sval = cmd[cmd.index("--json-schema") + 1]
         self.assertNotEqual(sval, str(mg.SCHEMA_PATH))
-        self.assertEqual(json.loads(sval), json.loads(mg.SCHEMA_PATH.read_text()))
+        expected = json.loads(mg.SCHEMA_PATH.read_text())
+        expected.pop("$schema", None)
+        self.assertEqual(json.loads(sval), expected)
         # Hard subprocess timeout so a wedged turn fails closed (R1 "no timeout").
         self.assertEqual(rec["timeout"], mg._CLAUDE_REVIEWER_TIMEOUT_S)
 
@@ -2849,7 +3366,10 @@ class TestClaudeReviewerRecursionGuard(ProduceFixture):
         cmd = rec["cmd"]
         self.assertIn("--disallowedTools", cmd)
         denied = set(cmd[cmd.index("--disallowedTools") + 1].split(","))
-        # the round-1 leaks + the obvious mutators/exec/spawn must all be denied
+        # the round-1 leaks + the obvious mutators/exec/spawn must all be denied.
+        # MultiEdit/SlashCommand match no tool on the current CLI and are KEPT
+        # deliberately (#53 AC3: zero-byte stderr measured on 2.1.220, so an
+        # unmatched rule is inert; see the denylist comment) — do not "clean" them.
         for t in ("Bash", "Edit", "Write", "MultiEdit", "NotebookEdit",
                   "WebFetch", "WebSearch", "Agent", "Task", "Workflow",
                   "SlashCommand", "Skill", "ToolSearch", "ScheduleWakeup",
@@ -2944,6 +3464,72 @@ class TestClaudeReviewerRecursionGuard(ProduceFixture):
                              reviewer_runner=junk_runner,
                              validator_runner=fake_validator_uphold_all)
         self.assertEqual(summary["verdict"], "error")
+
+
+class TestClaudeSchemaArgStripsSchemaMeta(ProduceFixture):
+    """#53 — the claude reviewer lane died for 3.5 weeks (CLI 2.1.198 through
+    2.1.220, every installed repo) because `claude -p --json-schema <content>`
+    rejects the template's `$schema` meta declaration BEFORE the model call:
+
+        Error: --json-schema is not a valid JSON Schema: no schema with key or
+        ref "https://json-schema.org/draft/2020-12/schema"
+
+    Repair (b) of the two options in the issue: strip that ONE key at the claude
+    spawn site. The template file keeps its draft declaration (it stays a valid
+    schema for every other consumer) and `schema_sha` — a review_scope_hash
+    component — does not churn, so no installed repo's cache is invalidated."""
+
+    def test_strips_only_the_schema_meta_key(self):
+        raw = mg.SCHEMA_PATH.read_text(encoding="utf-8")
+        out = json.loads(mg._claude_json_schema_arg(raw))
+        self.assertNotIn("$schema", out)
+        expected = json.loads(raw)
+        expected.pop("$schema")
+        self.assertEqual(out, expected)   # everything else byte-for-byte intact
+
+    def test_malformed_json_passes_through_untouched(self):
+        # A broken asset must behave exactly as it does today: the CLI rejects it,
+        # the lane fails CLOSED (missing-result → verdict error). Raising here
+        # instead would crash produce.
+        self.assertEqual(mg._claude_json_schema_arg("not json <<<"), "not json <<<")
+
+    def test_json_valid_non_object_passes_through_untouched(self):
+        # The restored claude lane caught this reviewing its own fix: `[]`, `null`,
+        # `"x"` and `3` all PARSE, so the not-JSON guard above misses them, and
+        # `.pop` on a list/None/str/int raises out of _run_claude_reviewer — which
+        # is NOT wrapped, so produce crashes instead of degrading to verdict=error.
+        for text in ("[]", "null", '"x"', "3"):
+            self.assertEqual(mg._claude_json_schema_arg(text), text, text)
+
+    def test_template_keeps_its_draft_declaration(self):
+        # Freezes the (b)-not-(a) decision: the fix is spawn-local, so the vendored
+        # template must still declare its draft. If someone later removes it from
+        # the file, schema_sha changes and EVERY installed repo's artefacts go
+        # scope-mismatch — that is a deliberate act, not a drive-by edit.
+        self.assertIn("$schema", json.loads(mg.SCHEMA_PATH.read_text()))
+
+    def test_codex_lane_still_gets_the_schema_path(self):
+        # #53 AC2 — codex consumes the SAME file by PATH (`--output-schema`), so a
+        # spawn-site strip on the claude side cannot touch it.
+        cfg = self._cfg(reviewers=["codex"],
+                        reviewer_config={"codex": {"bin": "codex"}})
+        base, cd = self._cd(cfg)
+        sub = self.root / ".merge-gate" / "local" / "cx" / "codex"
+        sub.mkdir(parents=True, exist_ok=True)
+        rec = {}
+
+        def fake_run(cmd, **kw):
+            rec["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        orig = mg._run_reaped
+        try:
+            mg._run_reaped = fake_run
+            mg.default_reviewer_runner("codex", cfg, cd, sub, self.root, "")
+        finally:
+            mg._run_reaped = orig
+        cmd = rec["cmd"]
+        self.assertEqual(cmd[cmd.index("--output-schema") + 1], str(mg.SCHEMA_PATH))
 
 
 class TestClaudeReviewerArgGuard(ProduceFixture):
@@ -3485,7 +4071,7 @@ class TestProducerAssetHermeticForeignCheckout(unittest.TestCase):
         self.assertIn("review_scope_hash", summary)
 
 
-def fake_validator_uphold_with_citation(name, findings_json, sub_dir, cwd, intent_file, cfg=None):
+def fake_validator_uphold_with_citation(name, findings_json, sub_dir, cwd, intent_file, cfg=None, **_kw):
     """Like uphold_all but writes a real validators.json `lines[]` citation per
     finding (`[sev] verdict id=<fid> file:line — <citation>`), so the archive's
     disk-read citation snapshot has something to join on (the empty-lines fakes
@@ -3772,7 +4358,7 @@ class Test47PerComponentModelKeys(ProduceFixture):
         sub = self.root / ".merge-gate" / "local" / "t" / "codex"
         sub.mkdir(parents=True, exist_ok=True)
         findings_json = sub / "findings.json"
-        findings_json.write_text(json.dumps({"result": {"findings": []}}))
+        findings_json.write_text(json.dumps(_DISPATCH_FIXTURE))
         rec = {}
 
         def fake_run(cmd, **kw):
@@ -4019,7 +4605,7 @@ class Test48ReasoningEffortKeys(Test47PerComponentModelKeys):
 # with summary.json verdicts + validator citation, waiting for an in-flight
 # produce. D1-clean: it writes nothing.
 # --------------------------------------------------------------------------
-def fake_validator_with_citation(name, findings_json, sub_dir, cwd, intent_file, cfg=None):
+def fake_validator_with_citation(name, findings_json, sub_dir, cwd, intent_file, cfg=None, **_kw):
     """Like uphold_all, but emits a citation line per finding so read_citations
     has something to join (the `[SEV] verdict id=<fid> file:line — citation`
     grammar)."""

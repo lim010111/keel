@@ -40,16 +40,15 @@ class TestHarnessMerge(unittest.TestCase):
         self.assertEqual(local["producer"]["codex"]["bin"], "codex")
 
     def test_fresh_file_ships_pinned_model_keys(self):
-        # #47/#48 — the codex reviewer + validator model/effort knobs ship
-        # PINNED (gpt-5.5/xhigh, opus, opus); harness.toml still self-documents
-        # the full menu inline. The optional Claude reviewer and dispatcher_effort
-        # stay commented (opt-in); comment a pinned knob out to fall back to that
+        # #47/#48/#56 — the codex reviewer + validator knobs ship PINNED
+        # (gpt-5.5/xhigh, agent opus, dispatcher sonnet/low); harness.toml still
+        # self-documents the full menu inline. The optional Claude reviewer stays
+        # commented (opt-in); comment a pinned knob out to fall back to that
         # tool's own default.
         out = il.merge_harness_toml("")
         self.assertIn("[merge-gate.local.validator]", out)
-        # optional second reviewer + dispatcher_effort stay opt-in (commented)
+        # optional second reviewer stays opt-in (commented)
         self.assertIn('# [merge-gate.local.producer.claude]', out)
-        self.assertIn('# dispatcher_effort = "medium"', out)
         # official-name guides present (#48)
         self.assertIn("gpt-5.4-mini", out)
         self.assertIn("claude-opus-4-8", out)
@@ -58,9 +57,13 @@ class TestHarnessMerge(unittest.TestCase):
         self.assertEqual(codex["model"], "gpt-5.5")
         self.assertEqual(codex["reasoning_effort"], "xhigh")
         v = d["merge-gate"]["local"]["validator"]
+        # #56: the DISPATCHER is pipeline, not judge — it drops a tier and gets a
+        # low effort budget, while the JUDGE stays on opus. A fresh install that
+        # shipped them at the same tier is the defect this pins against.
         self.assertEqual(v["model"], "opus")
-        self.assertEqual(v["dispatcher_model"], "opus")
-        self.assertNotIn("dispatcher_effort", v)   # stays commented (opt-in)
+        self.assertEqual(v["dispatcher_model"], "sonnet")
+        self.assertEqual(v["dispatcher_effort"], "low")
+        self.assertNotEqual(v["dispatcher_model"], v["model"])
         self.assertNotIn("claude", d["merge-gate"]["local"]["producer"])  # opt-in
 
     def test_reinstall_preserves_customized_validator_table(self):
