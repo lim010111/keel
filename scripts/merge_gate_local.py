@@ -1798,9 +1798,12 @@ def _findings_count(findings_json: Path) -> int:
 def _write_empty_validator_artefact(sub_dir: Path) -> None:
     """The "nothing to judge" artefact (#56). Deliberately NOT a `fallback`
     payload: a fallback means the validator layer FAILED, whereas here it
-    correctly had nothing to do. Shape mirrors what aggregate.py write-outputs
-    emits for an empty findings list — aggregate.py stays the format owner;
-    this is a duplicate the shape test pins."""
+    correctly had nothing to do. Only the `aggregate` key mirrors what
+    aggregate.py write-outputs emits for an empty findings list; `validators`
+    is [] where write-outputs would still record a dispatched validator's
+    {name, raw_stdout, lines} entry — no dispatch happened here, and an
+    invented entry would claim a run that never was. aggregate.py stays the
+    format owner; the shape test pins what consumers rely on."""
     (sub_dir / "validators.json").write_text(
         json.dumps({"validators": [], "aggregate": []}, indent=2) + "\n",
         encoding="utf-8")
@@ -2790,12 +2793,8 @@ def cmd_findings(args) -> int:
         payload["state"] = "unreviewable"
         return _emit_findings(args, payload)
     if not cd["changed_files"]:
-        is_auto_base = (args.base_ref is None and args.base_sha is None)
-        if is_auto_base and _pending_artefact(root, cfg, tip, base) is not None:
-            pass
-        else:
-            payload["state"] = "no-changes"
-            return _emit_findings(args, payload)
+        payload["state"] = "no-changes"
+        return _emit_findings(args, payload)
     scope = review_scope_hash(cfg)
     current_tools = None
     if cfg.freshness_policy == "tool-strict":
