@@ -20,18 +20,33 @@ WATCHED="${MDW_WATCHED:-engineering productivity}"   # categories we surface NEW
 
 is_watched() { case " $WATCHED " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
-# 1. fetch upstream HEAD (cheap re-runs via cached shallow clone; skip for offline/tests)
+is_shallow() { [ "$(git -C "$CACHE" rev-parse --is-shallow-repository 2>/dev/null || true)" = "true" ]; }
+
+# 1. fetch upstream HEAD. FULL history, not --depth 1: step 2 of SKILL.md resolves diff
+#    direction by reading the file's history in this cache, which a 1-commit clone makes
+#    impossible. The repo is ~2.5M with all its history, so depth buys nothing.
 if [ -z "${MDW_SKIP_FETCH:-}" ]; then
   if [ -d "$CACHE/.git" ]; then
-    git -C "$CACHE" fetch --depth 1 origin "$BRANCH" >/dev/null 2>&1
+    # a plain fetch KEEPS an already-shallow cache shallow → unshallow it explicitly.
+    if is_shallow; then
+      git -C "$CACHE" fetch --unshallow origin "$BRANCH" >/dev/null 2>&1 \
+        || git -C "$CACHE" fetch origin "$BRANCH" >/dev/null 2>&1
+    else
+      git -C "$CACHE" fetch origin "$BRANCH" >/dev/null 2>&1
+    fi
     git -C "$CACHE" reset --hard FETCH_HEAD >/dev/null 2>&1
   else
     rm -rf "$CACHE"
-    git clone --depth 1 --branch "$BRANCH" "$REPO" "$CACHE" >/dev/null 2>&1
+    git clone --branch "$BRANCH" "$REPO" "$CACHE" >/dev/null 2>&1
   fi
   echo "== upstream HEAD: $(git -C "$CACHE" log -1 --format='%h %ci %s')"
 else
   echo "== upstream HEAD: (fetch skipped — using cache $CACHE)"
+fi
+# Fail loud, not silent: without history, step 2 can't tell an authored local delta from
+# pre-sync upstream state, and the run guesses. Matters most under MDW_SKIP_FETCH.
+if is_shallow; then
+  echo "  WARN  shallow cache — history unavailable; step-2 direction checks cannot run"
 fi
 echo "== diff legend:  '<' = our rented copy   '>' = upstream HEAD"
 echo
@@ -68,7 +83,19 @@ for entry in "$OURS_ROOT"/*; do
   tgt="$(readlink -f "$entry" 2>/dev/null || true)"
   case "$tgt" in "$AGENTS_ROOT"/*) ;; *) continue ;; esac   # only rented-layer symlinks
   up="${up_path[$name]:-}"
-  [ -n "$up" ] || continue                                  # upstream doesn't have it (not Matt's / deleted upstream)
+  if [ -z "$up" ]; then
+    # No CURRENT upstream copy. Two very different cases — never conflate them: a skill that
+    # was never Matt's is a correct skip, but one upstream renamed/deleted is a rental that
+    # silently stopped being watched. Ask history which it is.
+    # The trailing /** is load-bearing: a wildcard pathspec is wildmatched against the full
+    # path, so 'skills/*/NAME' matches nothing at all. Placement is load-bearing too — this
+    # probe is only sound because $up is empty; run standalone it would fire on any skill
+    # that ever had a file deleted (e.g. tdd dropping refactoring.md).
+    gone="$(git -C "$CACHE" log -1 --format='%h %ad %s' --date=short \
+              --diff-filter=D -- "skills/*/$name/**" 2>/dev/null || true)"
+    [ -n "$gone" ] && echo "  ORPHANED   $name  (gone from upstream: $gone)"
+    continue
+  fi
   matched["$name"]=1
   note=""
   if ! is_watched "${up_cat[$name]}"; then note="   [upstream moved to ${up_cat[$name]}/]"; fi

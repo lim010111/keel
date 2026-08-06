@@ -24,8 +24,12 @@ to adopt). Read it before you classify.
    legend). It also emits **health signals** you must surface in the report:
    `BROKEN-SYMLINK` / `MISSING-SYMLINK` (a rented skill whose `~/.claude/skills` symlink is
    dangling or absent — we rent it but it isn't wired up, so it was *not* diffed),
-   `WARN collision` (one skill name in two upstream categories), and `[upstream moved to
-   <cat>/]` (a rented skill upstream-relocated out of the watched categories).
+   `WARN collision` (one skill name in two upstream categories), `[upstream moved to
+   <cat>/]` (a rented skill upstream-relocated out of the watched categories), `ORPHANED`
+   (a rented skill upstream **renamed or deleted** — it still works locally but tracks
+   nothing, so it is no longer watched at all and needs a keep-or-retire decision), and
+   `WARN shallow cache` (no upstream history, so step 2 below cannot run — re-run with a
+   fetch rather than classifying blind).
    - Done when: every rented match shows a status and every upstream skill is
      matched-or-`NEW`. The printed HEAD sha/date is your dateline for the report.
 

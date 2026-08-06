@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TDD hook 3/4 - Stop verifier.
+"""TDD Stop verifier (paired with tdd_mark's change marker).
 
 Fires every time Claude finishes responding. When code changed this turn
 (per-session marker present), it detects the project's test command, runs

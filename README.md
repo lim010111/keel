@@ -49,7 +49,7 @@ transitions** an artifact crosses on its way to a wider audience, see
 | Kind | Items |
 |---|---|
 | Skills | `ai-readiness-cartography`, `audit-and-write-readme`, `ci-setup`, `handle-merge-findings`, `harden-issue`, `harness-doctor`, `matt-drift-watch`, `run-codex-validators`, `setup-agents-md`, `setup-merge-gate`, `setup-status-harness`, `status`, `tailor` (plugin: `/tailor:gpt-5-6-sol` · `:opus-5` · `:opus-4-8` · `:fable-5` — also published standalone as [`prompt-tailor`](https://github.com/lim010111/prompt-tailor)), `third-party-review` |
-| Hooks | `tdd_keyword` · `tdd_guard` · `tdd_mark` · `tdd_verify`, `narrative_guard` · `grill_pause`, `merge_gate_post_commit` · `merge_gate_scheduler` |
+| Hooks | `tdd_mark` · `tdd_verify`, `narrative_guard` · `grill_pause`, `merge_gate_post_commit` · `merge_gate_scheduler` |
 | Scripts | `status.py`, `sound_complete.sh` · `sound_permission.sh` · `classify_sound.py`, `merge_gate_local.py` · `merge_gate_adjudicate.py` · `merge_gate_measure.py`, `harness_doctor.py`, `toml_sections.py`, `check_alignment_skill_drift.py`, `hook_journal.py` |
 | Agents | `ci-researcher`, `codex-review-validator` |
 | Config | `CLAUDE.md`, `statusline.sh`, `settings.json` |
@@ -60,18 +60,19 @@ feature.
 
 ### 1. The TDD enforcement pipeline (hooks)
 
-Four hooks form a pipeline, wired together through session files in
-`~/.claude/hooks/.tdd-state/`:
+Two hooks form a pipeline, wired together through per-session marker files in
+`~/.claude/hooks/.tdd-markers/`:
 
-1. `tdd_keyword.py` — `UserPromptSubmit`. Detects TDD keywords in the prompt
-   and turns on a sticky **TDD MODE**.
-2. `tdd_guard.py` — `PreToolUse(Edit|Write)`. While TDD MODE is on, if no test
-   file has been touched yet, it **hard-blocks** the creation of a new
-   implementation file.
-3. `tdd_mark.py` — `PostToolUse(Edit|Write)`. Records that a test file was
-   edited.
-4. `tdd_verify.py` — `Stop`. On session end, checks that the test suite is
-   GREEN.
+1. `tdd_mark.py` — `PostToolUse(Edit|Write)`. Drops a marker when Claude edits
+   a source or test file. Docs/config edits (`.md`/`.json`/`.yaml`/…) are
+   deliberately excluded — they are neither code-under-test nor tests.
+2. `tdd_verify.py` — `Stop`. On every turn that left a marker, it detects the
+   project's test command, runs it, and **hard-blocks** the turn (exit 2) if
+   the suite is not green.
+
+The trigger is *code changed this turn*, not a keyword in the prompt: a
+keyword-driven mode (`tdd_keyword.py` + a `PreToolUse` blocker `tdd_guard.py`)
+was retired because prompt wording is a poor proxy for whether code moved.
 
 `test_tdd_hooks.py` covers this pipeline.
 

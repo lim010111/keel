@@ -13,37 +13,24 @@
     "defaultMode": "auto"
   },
   "model": "opus[1m]",
+  "skillOverrides": {
+    "weekly-dev-log": "off",
+    "ai-readiness-cartography": "off",
+    "caveman": "off"
+  },
   "hooks": {
     "PermissionRequest": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/scripts/sound_permission.sh"
+            "command": ": # SOUND OFF (temp) — restore: $HOME/.claude/scripts/sound_permission.sh"
           }
         ]
       }
     ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 $HOME/.claude/hooks/tdd_keyword.py"
-          }
-        ]
-      }
-    ],
+    "UserPromptSubmit": [],
     "PreToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 $HOME/.claude/hooks/tdd_guard.py"
-          }
-        ]
-      },
       {
         "matcher": "Skill",
         "hooks": [
@@ -96,7 +83,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/scripts/sound_complete.sh",
+            "command": ": # SOUND OFF (temp) — restore: $HOME/.claude/scripts/sound_complete.sh",
             "timeout": 20
           }
         ]
@@ -125,7 +112,12 @@
           }
         ]
       }
-    ]
+    ],
+    "StopFailure": [],
+    "SubagentStart": [],
+    "SubagentStop": [],
+    "TeammateIdle": [],
+    "PostToolUseFailure": []
   },
   "statusLine": {
     "type": "command",
@@ -145,7 +137,7 @@
       }
     }
   },
-  "effortLevel": "xhigh",
+  "effortLevel": "high",
   "tui": "fullscreen",
   "skipDangerousModePermissionPrompt": true,
   "autoCompactEnabled": false,

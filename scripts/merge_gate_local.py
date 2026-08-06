@@ -2793,8 +2793,12 @@ def cmd_findings(args) -> int:
         payload["state"] = "unreviewable"
         return _emit_findings(args, payload)
     if not cd["changed_files"]:
-        payload["state"] = "no-changes"
-        return _emit_findings(args, payload)
+        is_auto_base = (args.base_ref is None and args.base_sha is None)
+        if is_auto_base and _pending_artefact(root, cfg, tip, base) is not None:
+            pass
+        else:
+            payload["state"] = "no-changes"
+            return _emit_findings(args, payload)
     scope = review_scope_hash(cfg)
     current_tools = None
     if cfg.freshness_policy == "tool-strict":

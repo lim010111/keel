@@ -16,12 +16,12 @@
 #   - claude : model only; Claude has no reasoning-effort knob.
 
 [codex]
-model  = "gpt-5.5"
+model  = "gpt-5.6-sol"
 effort = "xhigh"          # minimal | low | medium | high | xhigh
 
 [agy]
-# Full label EXACTLY as `agy models` prints it — effort is the parenthetical.
-model  = "Gemini 3.5 Flash (High)"
+# Label EXACTLY as `agy models` prints it — effort is the trailing segment.
+model  = "gemini-3.6-flash-high"
 
 [claude]
 model  = "opus"           # alias or full id; no effort knob

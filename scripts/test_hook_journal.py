@@ -221,10 +221,10 @@ class TestHookIntegrationFailOpen(JournalTest):
     """AC: a payload missing expected fields → drift event journaled AND the
     hook's own behaviour stays fail-open (exit 0, baseline stdout)."""
 
-    def test_tdd_guard_missing_fields_drift_plus_fail_open(self):
+    def test_tdd_mark_missing_fields_drift_plus_fail_open(self):
         payload = {"session_id": "JOURNALTEST-nosuch", "tool_name": "Write"}
         r = subprocess.run(
-            ["python3", str(HOOKS / "tdd_guard.py")],
+            ["python3", str(HOOKS / "tdd_mark.py")],
             input=json.dumps(payload), capture_output=True, text=True,
             env=self._env(), timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)     # fail-open preserved
@@ -233,7 +233,7 @@ class TestHookIntegrationFailOpen(JournalTest):
         self.assertIn("drift", events)
         self.assertIn("cwd", events["drift"]["reason"])
         self.assertIn("tool_input", events["drift"]["reason"])
-        self.assertIn("skip", events)                   # mode-off no-op
+        self.assertIn("skip", events)                   # non-code no-op
 
     def _env(self):
         env = {k: v for k, v in os.environ.items()

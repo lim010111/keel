@@ -23,8 +23,6 @@ skills/status
 skills/third-party-review
 
 # --- Hooks ---
-hooks/tdd_guard.py
-hooks/tdd_keyword.py
 hooks/tdd_mark.py
 hooks/tdd_verify.py
 hooks/test_tdd_hooks.py

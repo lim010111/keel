@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Verification suite for the 4 TDD hooks (tdd_keyword/guard/mark/verify).
+"""Verification suite for the TDD hooks (tdd_mark/tdd_verify).
 
 Stdlib `unittest` only — pytest is not installed in this environment.
 Run:  python3 hooks/test_tdd_hooks.py -v
 
 Isolation: every test uses a synthetic `VERIFY-<uuid>` session id and cleans
 up its own state files. `setUpModule`/`tearDownModule` assert that no real
-(non-`VERIFY-`) session file under .tdd-state / .tdd-markers was changed.
+(non-`VERIFY-`) session file under .tdd-markers was changed.
 """
 import json
 import os
@@ -21,7 +21,6 @@ from pathlib import Path
 from unittest import mock
 
 HOOKS = Path(__file__).resolve().parent
-STATE_DIR = Path.home() / ".claude" / "hooks" / ".tdd-state"
 MARKER_DIR = Path.home() / ".claude" / "hooks" / ".tdd-markers"
 
 # harness-journal#01: hook runs under test must never spam the real journal.
@@ -51,22 +50,16 @@ def _names(d):
 
 
 def setUpModule():
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
     MARKER_DIR.mkdir(parents=True, exist_ok=True)
-    _SNAPSHOT["state"] = [n for n in _names(STATE_DIR) if "VERIFY-" not in n]
     _SNAPSHOT["marker"] = [n for n in _names(MARKER_DIR) if "VERIFY-" not in n]
 
 
 def tearDownModule():
     # Safety gate: no real session file may have been added/removed/clobbered.
-    state_after = [n for n in _names(STATE_DIR) if "VERIFY-" not in n]
     marker_after = [n for n in _names(MARKER_DIR) if "VERIFY-" not in n]
-    assert state_after == _SNAPSHOT["state"], (
-        "real .tdd-state changed!", _SNAPSHOT["state"], state_after)
     assert marker_after == _SNAPSHOT["marker"], (
         "real .tdd-markers changed!", _SNAPSHOT["marker"], marker_after)
-    leftover = ([n for n in _names(STATE_DIR) if "VERIFY-" in n]
-                + [n for n in _names(MARKER_DIR) if "VERIFY-" in n])
+    leftover = [n for n in _names(MARKER_DIR) if "VERIFY-" in n]
     assert not leftover, ("VERIFY- state files were not cleaned up", leftover)
 
 
@@ -87,32 +80,18 @@ class HookTest(unittest.TestCase):
         tdd_verify._pytest_retry_used = False
 
     def tearDown(self):
-        for p in (self.mode_file(), self.edits_file(), self.marker_file()):
-            try:
-                p.unlink()
-            except FileNotFoundError:
-                pass
+        try:
+            self.marker_file().unlink()
+        except FileNotFoundError:
+            pass
         for t in self._tmps:
             t.cleanup()
 
     # --- paths ---
-    def mode_file(self):
-        return STATE_DIR / f"mode-{self.sid}"
-
-    def edits_file(self):
-        return STATE_DIR / f"edits-{self.sid}.json"
-
     def marker_file(self):
         return MARKER_DIR / f"marker-{self.sid}"
 
     # --- helpers ---
-    def tdd_on(self):
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        self.mode_file().write_text(str(time.time()))
-
-    def set_edits(self, **kw):
-        self.edits_file().write_text(json.dumps(kw))
-
     def write_marker(self, path="/some/changed/file.py"):
         MARKER_DIR.mkdir(parents=True, exist_ok=True)
         self.marker_file().write_text(path)
@@ -145,208 +124,6 @@ class HookTest(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
-# tdd_keyword.py  (UserPromptSubmit)
-# --------------------------------------------------------------------------
-class TestKeywordHook(HookTest):
-
-    def test_on_english(self):
-        for prompt in ["use tdd for this", "test-driven development please",
-                       "let's go test first", "do a red-green cycle"]:
-            with self.subTest(prompt=prompt):
-                self.mode_file().unlink(missing_ok=True)
-                r = run_hook("tdd_keyword.py",
-                             {"prompt": prompt, "session_id": self.sid})
-                self.assertEqual(r.returncode, 0)
-                self.assertIn("[TDD MODE]", r.stdout)
-                self.assertTrue(self.mode_file().exists())
-
-    def test_on_korean(self):
-        for prompt in ["테스트 주도로 짜줘", "테스트 먼저 작성해줘",
-                       "테스트 우선으로 가자", "테스트부터 만들어",
-                       "레드 그린 사이클로"]:
-            with self.subTest(prompt=prompt):
-                self.mode_file().unlink(missing_ok=True)
-                r = run_hook("tdd_keyword.py",
-                             {"prompt": prompt, "session_id": self.sid})
-                self.assertEqual(r.returncode, 0)
-                self.assertIn("[TDD MODE]", r.stdout)
-                self.assertTrue(self.mode_file().exists())
-
-    def test_off(self):
-        for prompt in ["tdd off", "tdd 종료", "tdd 모드 해제"]:
-            with self.subTest(prompt=prompt):
-                self.tdd_on()
-                r = run_hook("tdd_keyword.py",
-                             {"prompt": prompt, "session_id": self.sid})
-                self.assertEqual(r.returncode, 0)
-                self.assertIn("[TDD MODE OFF]", r.stdout)
-                self.assertFalse(self.mode_file().exists())
-
-    def test_sticky(self):
-        r1 = run_hook("tdd_keyword.py",
-                      {"prompt": "use tdd", "session_id": self.sid})
-        self.assertIn("[TDD MODE]", r1.stdout)
-        # follow-up prompt with no TDD keyword still re-injects the pointer
-        r2 = run_hook("tdd_keyword.py",
-                      {"prompt": "now add a logout button", "session_id": self.sid})
-        self.assertIn("[TDD MODE]", r2.stdout)
-
-    def test_bare_test_no_trigger(self):
-        for prompt in ["테스트해줘", "run the tests please", "just test it"]:
-            with self.subTest(prompt=prompt):
-                r = run_hook("tdd_keyword.py",
-                             {"prompt": prompt, "session_id": self.sid})
-                self.assertEqual(r.returncode, 0)
-                self.assertNotIn("[TDD MODE]", r.stdout)
-                self.assertFalse(self.mode_file().exists())
-
-    def test_nonuser_notification_no_trigger(self):
-        # work-interval-tdd#09 reproduction: task notifications are delivered
-        # through UserPromptSubmit too; a body that mentions TDD must not arm
-        # the sticky mode. Shapes below were captured live on 2026-07-11.
-        system_notification = (
-            "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
-            "This is an automated background-task event, NOT a message from "
-            "the user.\n\n"
-            "<task-notification>\n<task-id>abc123</task-id>\n"
-            "<summary>Background research on TDD hook behavior completed"
-            "</summary>\n</task-notification>"
-        )
-        bare_tag = (
-            "<task-notification>\n<task-id>abc123</task-id>\n"
-            "<summary>agent finished: adopt test-driven development"
-            "</summary>\n</task-notification>"
-        )
-        for prompt in [system_notification, bare_tag]:
-            with self.subTest(prompt=prompt.splitlines()[0]):
-                r = run_hook("tdd_keyword.py",
-                             {"prompt": prompt, "session_id": self.sid})
-                self.assertEqual(r.returncode, 0)
-                self.assertNotIn("[TDD MODE]", r.stdout)
-                self.assertFalse(self.mode_file().exists())
-
-    def test_pasted_notification_block_does_not_count(self):
-        # Boundary (work-interval-tdd#09): a user prompt QUOTING a complete
-        # notification block. The keyword inside the quoted block only → the
-        # block's text never counts as the user's own speech → no arm.
-        pasted = (
-            "방금 백그라운드에서 이런 알림이 왔는데 봐줘:\n"
-            "<task-notification>\n<task-id>abc</task-id>\n"
-            "<summary>research on TDD hook behavior completed</summary>\n"
-            "</task-notification>\n뭐가 잘못된 거야?"
-        )
-        r = run_hook("tdd_keyword.py",
-                     {"prompt": pasted, "session_id": self.sid})
-        self.assertEqual(r.returncode, 0)
-        self.assertNotIn("[TDD MODE]", r.stdout)
-        self.assertFalse(self.mode_file().exists())
-        # ...but the user's own words OUTSIDE the block still arm.
-        mixed = (
-            "use tdd for this fix. context, the notification that broke it:\n"
-            "<task-notification>\n<summary>background job done</summary>\n"
-            "</task-notification>"
-        )
-        r = run_hook("tdd_keyword.py",
-                     {"prompt": mixed, "session_id": self.sid})
-        self.assertEqual(r.returncode, 0)
-        self.assertIn("[TDD MODE]", r.stdout)
-        self.assertTrue(self.mode_file().exists())
-
-    def test_boundary_default_is_user(self):
-        # Pins the #09 boundary DEFAULT: text that merely resembles an
-        # injection — marker strings mentioned mid-text, or a truncated
-        # block with no closing tag — counts as USER speech and arms.
-        # (Accepted tradeoff: rare false arm over silent 미발; see the
-        # NONUSER_PREFIXES comment in tdd_keyword.py.)
-        for prompt in [
-            # today's real genuine prompt shape: mentions both markers
-            "`[SYSTEM NOTIFICATION`, `<task-notification>` 오발 건을 tdd로 고쳐줘",
-            # truncated block — open tag, no close
-            "use tdd here. the log cut off:\n<task-notification>\n<summary>...",
-        ]:
-            with self.subTest(prompt=prompt[:40]):
-                self.mode_file().unlink(missing_ok=True)
-                r = run_hook("tdd_keyword.py",
-                             {"prompt": prompt, "session_id": self.sid})
-                self.assertEqual(r.returncode, 0)
-                self.assertIn("[TDD MODE]", r.stdout)
-                self.assertTrue(self.mode_file().exists())
-
-    def test_nonuser_text_cannot_disarm(self):
-        # Non-user text must not flip the switch in EITHER direction: a
-        # notification containing an off-phrase leaves the mode armed, and
-        # the sticky pointer is still re-injected on that machine turn.
-        self.tdd_on()
-        notification = (
-            "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
-            "<task-notification>\n<summary>agent said: stop tdd loop, "
-            "tdd off</summary>\n</task-notification>"
-        )
-        r = run_hook("tdd_keyword.py",
-                     {"prompt": notification, "session_id": self.sid})
-        self.assertEqual(r.returncode, 0)
-        self.assertNotIn("[TDD MODE OFF]", r.stdout)
-        self.assertIn("[TDD MODE]", r.stdout)
-        self.assertTrue(self.mode_file().exists())
-
-
-# --------------------------------------------------------------------------
-# tdd_guard.py  (PreToolUse Edit|Write)
-# --------------------------------------------------------------------------
-class TestGuardHook(HookTest):
-
-    def _guard(self, tool, file_path):
-        return run_hook("tdd_guard.py", {
-            "session_id": self.sid, "tool_name": tool,
-            "tool_input": {"file_path": str(file_path)},
-        })
-
-    def test_noop_when_off(self):
-        r = self._guard("Write", self.tmpdir() / "new.py")
-        self.assertEqual(r.returncode, 0)
-        self.assertEqual(r.stderr.strip(), "")
-
-    def test_block_new_impl_no_test(self):
-        self.tdd_on()
-        r = self._guard("Write", self.tmpdir() / "feature.py")  # not on disk
-        self.assertEqual(r.returncode, 2)
-        self.assertIn("blocked: creating a new implementation file", r.stderr)
-
-    def test_warn_existing_impl_no_test(self):
-        self.tdd_on()
-        existing = self.tmpdir() / "feature.py"
-        existing.write_text("# already here\n")
-        r = self._guard("Edit", existing)
-        self.assertEqual(r.returncode, 0)
-        self.assertIn("[TDD MODE] You are editing an implementation file",
-                      r.stdout)
-
-    def test_allow_test_file(self):
-        self.tdd_on()
-        d = self.tmpdir()
-        for rel in ["test_x.py", "x.spec.ts", "tests/x.py"]:
-            with self.subTest(path=rel):
-                r = self._guard("Write", d / rel)
-                self.assertEqual(r.returncode, 0)
-                self.assertNotIn("blocked", r.stderr)
-                self.assertNotIn("[TDD MODE]", r.stdout)
-
-    def test_allow_after_test_edited(self):
-        self.tdd_on()
-        self.set_edits(last_test=time.time())
-        r = self._guard("Write", self.tmpdir() / "feature.py")
-        self.assertEqual(r.returncode, 0)
-
-    def test_allow_non_code_ext(self):
-        self.tdd_on()
-        d = self.tmpdir()
-        for rel in ["README.md", "config.yaml"]:
-            with self.subTest(path=rel):
-                r = self._guard("Write", d / rel)
-                self.assertEqual(r.returncode, 0)
-
-
-# --------------------------------------------------------------------------
 # tdd_mark.py  (PostToolUse Edit|Write)
 # --------------------------------------------------------------------------
 class TestMarkHook(HookTest):
@@ -376,24 +153,6 @@ class TestMarkHook(HookTest):
         r = self._mark("/repo/notes.md")
         self.assertEqual(r.returncode, 0)
         self.assertFalse(self.marker_file().exists())
-
-    def test_records_last_test_when_on(self):
-        self.tdd_on()
-        self._mark("/repo/tests/test_foo.py")
-        data = json.loads(self.edits_file().read_text())
-        self.assertGreater(data.get("last_test", 0), 0)
-        self.assertNotIn("last_impl", data)
-
-    def test_records_last_impl_when_on(self):
-        self.tdd_on()
-        self._mark("/repo/src/foo.py")
-        data = json.loads(self.edits_file().read_text())
-        self.assertGreater(data.get("last_impl", 0), 0)
-
-    def test_no_edits_when_off(self):
-        self._mark("/repo/src/foo.py")  # no mode file
-        self.assertTrue(self.marker_file().exists())
-        self.assertFalse(self.edits_file().exists())
 
 
 # --------------------------------------------------------------------------
