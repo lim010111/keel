@@ -286,7 +286,7 @@ hardening tasks are still open:
 
 ## Docs
 
-- [`CONTEXT.md`](CONTEXT.md) — terminology.
+- [`GLOSSARY.md`](GLOSSARY.md) — terminology.
 - [`docs/HARNESS-DESIGN.md`](docs/HARNESS-DESIGN.md) — how the harness gates
   trust transitions (the four-gate v1 shape).
 - [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md) — third-party dependencies not

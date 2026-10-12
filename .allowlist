@@ -14,7 +14,6 @@ skills/handle-merge-findings
 skills/harden-issue
 skills/harness-doctor
 skills/tailor
-skills/matt-drift-watch
 skills/run-codex-validators
 skills/setup-agents-md
 skills/setup-merge-gate
@@ -56,8 +55,6 @@ scripts/toml_sections.py
 scripts/test_toml_sections.py
 scripts/classify_sound.py
 scripts/test_classify_sound.py
-scripts/check_alignment_skill_drift.py
-scripts/test_check_alignment_skill_drift.py
 scripts/hook_journal.py
 scripts/test_hook_journal.py
 scripts/git_plumbing.py
